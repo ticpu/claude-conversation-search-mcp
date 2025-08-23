@@ -60,7 +60,10 @@ impl SearchEngine {
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
         let searcher = self.reader.searcher();
 
-        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field, self.session_field, self.project_field]);
+        let query_parser = QueryParser::for_index(
+            &self.index,
+            vec![self.content_field, self.session_field, self.project_field],
+        );
         let text_query = query_parser.parse_query(&query.text)?;
 
         let mut final_query_parts = vec![(

@@ -153,6 +153,7 @@ impl CacheManager {
         Ok(())
     }
 
+    #[cfg(feature = "cli")]
     pub fn clear_cache(&mut self) -> Result<()> {
         if self.cache_dir.exists() {
             fs::remove_dir_all(&self.cache_dir)?;

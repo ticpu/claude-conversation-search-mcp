@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "claude-search": {
+      "command": "/mnt/bcachefs/home/jerome/GIT/claude-code-conversation-search/target/release/claude-search-mcp",
+      "args": [],
+      "env": {
+        "RUST_LOG": "claude_search=info"
+      }
+    }
+  }
+}
