@@ -34,6 +34,7 @@ pub enum MessageType {
 pub struct SearchQuery {
     pub text: String,
     pub project_filter: Option<String>,
+    pub session_filter: Option<String>,
     pub limit: usize,
 }
 

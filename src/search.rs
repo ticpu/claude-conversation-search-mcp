@@ -60,23 +60,34 @@ impl SearchEngine {
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
         let searcher = self.reader.searcher();
 
-        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
+        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field, self.session_field, self.project_field]);
         let text_query = query_parser.parse_query(&query.text)?;
 
-        let final_query = if let Some(project_filter) = query.project_filter {
+        let mut final_query_parts = vec![(
+            Occur::Must,
+            Box::new(text_query) as Box<dyn tantivy::query::Query>,
+        )];
+
+        // Add project filter if specified
+        if let Some(project_filter) = query.project_filter {
             let project_term = Term::from_field_text(self.project_field, &project_filter);
             let project_query =
                 TermQuery::new(project_term, tantivy::schema::IndexRecordOption::Basic);
+            final_query_parts.push((Occur::Must, Box::new(project_query)));
+        }
 
-            let mut subqueries = vec![(
-                Occur::Must,
-                Box::new(text_query) as Box<dyn tantivy::query::Query>,
-            )];
-            subqueries.push((Occur::Must, Box::new(project_query)));
+        // Add session filter if specified
+        if let Some(session_filter) = query.session_filter {
+            let session_term = Term::from_field_text(self.session_field, &session_filter);
+            let session_query =
+                TermQuery::new(session_term, tantivy::schema::IndexRecordOption::Basic);
+            final_query_parts.push((Occur::Must, Box::new(session_query)));
+        }
 
-            Box::new(BooleanQuery::new(subqueries)) as Box<dyn tantivy::query::Query>
+        let final_query = if final_query_parts.len() > 1 {
+            Box::new(BooleanQuery::new(final_query_parts)) as Box<dyn tantivy::query::Query>
         } else {
-            text_query
+            final_query_parts.into_iter().next().unwrap().1
         };
 
         let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
