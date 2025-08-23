@@ -14,6 +14,11 @@ pub struct SearchEngine {
     project_field: Field,
     session_field: Field,
     timestamp_field: Field,
+    technologies_field: Option<Field>,
+    code_languages_field: Option<Field>,
+    tools_mentioned_field: Option<Field>,
+    has_code_field: Option<Field>,
+    has_error_field: Option<Field>,
 }
 
 impl SearchEngine {
@@ -30,6 +35,13 @@ impl SearchEngine {
         let session_field = schema.get_field("session_id")?;
         let timestamp_field = schema.get_field("timestamp")?;
 
+        // Try to get new metadata fields (may not exist in older indexes)
+        let technologies_field = schema.get_field("technologies").ok();
+        let code_languages_field = schema.get_field("code_languages").ok();
+        let tools_mentioned_field = schema.get_field("tools_mentioned").ok();
+        let has_code_field = schema.get_field("has_code").ok();
+        let has_error_field = schema.get_field("has_error").ok();
+
         Ok(Self {
             index,
             reader,
@@ -37,6 +49,11 @@ impl SearchEngine {
             project_field,
             session_field,
             timestamp_field,
+            technologies_field,
+            code_languages_field,
+            tools_mentioned_field,
+            has_code_field,
+            has_error_field,
         })
     }
 
@@ -97,6 +114,42 @@ impl SearchEngine {
 
             let snippet = self.generate_snippet(&content, &query.text);
 
+            // Extract metadata fields (with fallbacks for older indexes)
+            let technologies = self
+                .technologies_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_str())
+                .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
+            let code_languages = self
+                .code_languages_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_str())
+                .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
+            let tools_mentioned = self
+                .tools_mentioned_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_str())
+                .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
+            let has_code = self
+                .has_code_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let has_error = self
+                .has_error_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let word_count = content.split_whitespace().count();
+
             results.push(SearchResult {
                 content,
                 project,
@@ -104,6 +157,12 @@ impl SearchEngine {
                 timestamp,
                 score,
                 snippet,
+                technologies,
+                code_languages,
+                tools_mentioned,
+                has_code,
+                has_error,
+                word_count,
             });
         }
 

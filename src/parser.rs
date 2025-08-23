@@ -1,3 +1,4 @@
+use crate::metadata::MetadataExtractor;
 use crate::models::{ConversationEntry, MessageType};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
@@ -37,7 +38,7 @@ impl JsonlParser {
         Ok(entries)
     }
 
-    fn parse_entry(&self, json: Value, project_name: &str) -> Result<ConversationEntry> {
+    fn parse_entry(&self, json: Value, fallback_project_name: &str) -> Result<ConversationEntry> {
         let session_id = json
             .get("sessionId")
             .and_then(|v| v.as_str())
@@ -80,15 +81,32 @@ impl JsonlParser {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Use cwd for project path if available, otherwise fallback to directory name
+        let project_path = if let Some(ref cwd_path) = cwd {
+            self.extract_project_name_from_path(cwd_path)
+        } else {
+            fallback_project_name.to_string()
+        };
+
+        // Extract metadata from content
+        let (technologies, tools_mentioned, code_languages, has_code, has_error, word_count) =
+            MetadataExtractor::extract_all_metadata(&content);
+
         Ok(ConversationEntry {
             session_id,
             message_uuid,
-            project_path: project_name.to_string(),
+            project_path,
             timestamp,
             message_type,
             content,
             model,
             cwd,
+            technologies,
+            has_code,
+            code_languages,
+            has_error,
+            tools_mentioned,
+            word_count,
         })
     }
 
@@ -120,6 +138,42 @@ impl JsonlParser {
     fn extract_project_name(&self, path: &Path) -> String {
         path.parent()
             .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    fn extract_project_name_from_path(&self, cwd_path: &str) -> String {
+        // Extract a nice project name from the cwd path
+        let path = Path::new(cwd_path);
+
+        // Try to find a meaningful project name by looking for common patterns
+        let components: Vec<&str> = path
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
+
+        // Look for patterns like /home/user/project or /mnt/drive/path/to/project
+        // Take the last meaningful directory name
+        for i in (0..components.len()).rev() {
+            let component = components[i];
+
+            // Skip common non-project directories
+            if matches!(
+                component,
+                "src" | "lib" | "bin" | "target" | "node_modules" | ".git"
+            ) {
+                continue;
+            }
+
+            // If we find a component that looks like a project name, use it
+            if !component.starts_with('.') && component.len() > 1 {
+                return component.to_string();
+            }
+        }
+
+        // Fallback to the last component
+        path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string()

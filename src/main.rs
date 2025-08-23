@@ -1,5 +1,7 @@
+mod cache;
 mod cli;
 mod indexer;
+mod metadata;
 mod models;
 mod parser;
 mod search;

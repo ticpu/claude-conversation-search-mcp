@@ -11,6 +11,14 @@ pub struct ConversationEntry {
     pub content: String,
     pub model: Option<String>,
     pub cwd: Option<String>,
+
+    // Enhanced metadata for better search and categorization
+    pub technologies: Vec<String>,
+    pub has_code: bool,
+    pub code_languages: Vec<String>,
+    pub has_error: bool,
+    pub tools_mentioned: Vec<String>,
+    pub word_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -37,4 +45,10 @@ pub struct SearchResult {
     pub timestamp: DateTime<Utc>,
     pub score: f32,
     pub snippet: String,
+    pub technologies: Vec<String>,
+    pub code_languages: Vec<String>,
+    pub tools_mentioned: Vec<String>,
+    pub has_code: bool,
+    pub has_error: bool,
+    pub word_count: usize,
 }

@@ -4,6 +4,9 @@
 
 - Prefer `cargo check` over `cargo build` when just checking for compilation errors - it's much quicker
 - Use `cargo build` only when you need the actual binary
+- **IMPORTANT**: Running `claude-search index` creates massive Tantivy logging output (thousands of lines). Always redirect both stdout and stderr to a file or `/dev/null`. Never read its output directly in the terminal.
+  - Correct: `./target/release/claude-search index >/dev/null 2>&1`
+  - Wrong: `./target/release/claude-search index` (will flood terminal)
 
 ## Pre-commit Checklist
 

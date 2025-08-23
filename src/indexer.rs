@@ -12,6 +12,11 @@ pub struct SearchIndexer {
     timestamp_field: tantivy::schema::Field,
     message_type_field: tantivy::schema::Field,
     model_field: tantivy::schema::Field,
+    technologies_field: tantivy::schema::Field,
+    code_languages_field: tantivy::schema::Field,
+    tools_mentioned_field: tantivy::schema::Field,
+    has_code_field: tantivy::schema::Field,
+    has_error_field: tantivy::schema::Field,
 }
 
 impl SearchIndexer {
@@ -25,6 +30,16 @@ impl SearchIndexer {
         let message_type_field =
             schema_builder.add_text_field("message_type", TEXT | STORED | FAST);
         let model_field = schema_builder.add_text_field("model", TEXT | STORED | FAST);
+
+        // Add new metadata fields
+        let technologies_field =
+            schema_builder.add_text_field("technologies", TEXT | STORED | FAST);
+        let code_languages_field =
+            schema_builder.add_text_field("code_languages", TEXT | STORED | FAST);
+        let tools_mentioned_field =
+            schema_builder.add_text_field("tools_mentioned", TEXT | STORED | FAST);
+        let has_code_field = schema_builder.add_bool_field("has_code", INDEXED | STORED | FAST);
+        let has_error_field = schema_builder.add_bool_field("has_error", INDEXED | STORED | FAST);
 
         let schema = schema_builder.build();
 
@@ -40,6 +55,11 @@ impl SearchIndexer {
             timestamp_field,
             message_type_field,
             model_field,
+            technologies_field,
+            code_languages_field,
+            tools_mentioned_field,
+            has_code_field,
+            has_error_field,
         })
     }
 
@@ -54,6 +74,13 @@ impl SearchIndexer {
         let message_type_field = schema.get_field("message_type")?;
         let model_field = schema.get_field("model")?;
 
+        // Get new metadata fields, with fallbacks for older indexes
+        let technologies_field = schema.get_field("technologies").unwrap_or(content_field);
+        let code_languages_field = schema.get_field("code_languages").unwrap_or(content_field);
+        let tools_mentioned_field = schema.get_field("tools_mentioned").unwrap_or(content_field);
+        let has_code_field = schema.get_field("has_code").unwrap_or(content_field);
+        let has_error_field = schema.get_field("has_error").unwrap_or(content_field);
+
         let writer = index.writer(50_000_000)?;
 
         Ok(Self {
@@ -64,6 +91,11 @@ impl SearchIndexer {
             timestamp_field,
             message_type_field,
             model_field,
+            technologies_field,
+            code_languages_field,
+            tools_mentioned_field,
+            has_code_field,
+            has_error_field,
         })
     }
 
@@ -76,6 +108,11 @@ impl SearchIndexer {
                 self.timestamp_field => tantivy::DateTime::from_timestamp_secs(entry.timestamp.timestamp()),
                 self.message_type_field => format!("{:?}", entry.message_type),
                 self.model_field => entry.model.unwrap_or_else(|| "unknown".to_string()),
+                self.technologies_field => entry.technologies.join(" "),
+                self.code_languages_field => entry.code_languages.join(" "),
+                self.tools_mentioned_field => entry.tools_mentioned.join(" "),
+                self.has_code_field => entry.has_code,
+                self.has_error_field => entry.has_error,
             );
 
             self.writer.add_document(doc)?;
