@@ -12,8 +12,3 @@ Thumbs.db
 
 # Cache
 .cache/
-
-# Local development files
-test_tantivy.rs
-ccusage/
-IMPLEMENTATION_PLAN.md
