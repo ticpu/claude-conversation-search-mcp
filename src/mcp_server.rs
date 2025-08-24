@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 mod cache;
 mod indexer;
@@ -204,6 +204,14 @@ impl McpServer {
                             "description": "Optional project name to filter results",
                             "optional": true
                         },
+                        "exclude_projects": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Optional project names to exclude from results",
+                            "optional": true
+                        },
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results to return (default: 10)",
@@ -268,6 +276,14 @@ impl McpServer {
                     }
                 }),
             },
+            Tool {
+                name: "respawn_server".to_string(),
+                description: "Respawn the MCP server to reload with latest changes".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ];
 
         let response = ListToolsResponse { tools };
@@ -288,6 +304,7 @@ impl McpServer {
             }
             "analyze_conversation_topics" => self.tool_analyze_topics(request.arguments).await?,
             "get_conversation_stats" => self.tool_get_stats(request.arguments).await?,
+            "respawn_server" => self.tool_respawn().await?,
             _ => {
                 return Ok(serde_json::to_value(CallToolResponse {
                     content: vec![ToolResult {
@@ -314,17 +331,40 @@ impl McpServer {
             .get("project")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let exclude_projects: Vec<String> = args
+            .get("exclude_projects")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+            .unwrap_or_default();
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let query = SearchQuery {
             text: query_text,
             project_filter,
             session_filter: None,
-            limit,
+            limit: limit * 3, // Get more results to allow for deduplication
         };
 
         let search_engine = self.search_engine.as_ref().unwrap();
-        let results = search_engine.search(query)?;
+        let all_results = search_engine.search(query)?;
+        
+        // Filter out excluded projects
+        let filtered_results: Vec<_> = all_results.iter().filter(|result| {
+            !exclude_projects.contains(&result.project)
+        }).collect();
+        
+        // Deduplicate by session_id, keeping highest scoring result per session
+        let mut session_best: std::collections::HashMap<String, &crate::models::SearchResult> = std::collections::HashMap::new();
+        for result in &filtered_results {
+            match session_best.get(&result.session_id) {
+                Some(existing) if existing.score >= result.score => {}
+                _ => { session_best.insert(result.session_id.clone(), result); }
+            }
+        }
+        
+        let mut results: Vec<_> = session_best.values().cloned().collect();
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
 
         let mut output = String::new();
         if results.is_empty() {
@@ -341,24 +381,24 @@ impl McpServer {
                     result.score
                 ));
 
-                // Add metadata tags
+                // Add metadata tags (machine-readable, no emojis)
                 let mut tags = Vec::new();
                 if !result.technologies.is_empty() {
-                    tags.push(format!("🔧 {}", result.technologies.join(", ")));
+                    tags.push(format!("tech: {}", result.technologies.join(", ")));
                 }
                 if !result.code_languages.is_empty() {
-                    tags.push(format!("💻 {}", result.code_languages.join(", ")));
+                    tags.push(format!("lang: {}", result.code_languages.join(", ")));
                 }
                 if result.has_code {
-                    tags.push("📝 code".to_string());
+                    tags.push("has_code".to_string());
                 }
                 if result.has_error {
-                    tags.push("🚨 error".to_string());
+                    tags.push("has_error".to_string());
                 }
                 if !result.tools_mentioned.is_empty() && result.tools_mentioned.len() <= 3 {
-                    tags.push(format!("🔨 {}", result.tools_mentioned.join(", ")));
+                    tags.push(format!("tools: {}", result.tools_mentioned.join(", ")));
                 }
-                tags.push(format!("📊 {} words", result.word_count));
+                tags.push(format!("words: {}", result.word_count));
 
                 if !tags.is_empty() {
                     output.push_str(&format!("   {}\n", tags.join(" • ")));
@@ -795,24 +835,48 @@ impl McpServer {
             }
         }
     }
+
+    async fn tool_respawn(&self) -> Result<Value> {
+        // Get the current executable path
+        let current_exe = std::env::current_exe()
+            .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?;
+        
+        // Prepare response
+        let response = CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: "Respawning MCP server...".to_string(),
+            }],
+            is_error: None,
+        };
+        
+        // Schedule respawn after a short delay to allow response to be sent
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            
+            // Replace current process with new instance using exec
+            let args: Vec<String> = std::env::args().collect();
+            let err = exec::execvp(&current_exe, &args);
+            eprintln!("Failed to exec: {}", err);
+        });
+        
+        Ok(serde_json::to_value(response)?)
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging to stderr so it doesn't interfere with JSON-RPC
+    // Only show CRITICAL/ERROR level logs to avoid JSON parsing issues
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter("claude_search=info")
+        .with_env_filter("error")
         .init();
-
-    info!("Claude Search MCP Server starting...");
 
     let mut server = McpServer::new();
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut reader = AsyncBufReader::new(stdin).lines();
-
-    info!("MCP Server ready, listening on stdin/stdout");
 
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() {
@@ -851,6 +915,5 @@ async fn main() -> Result<()> {
         }
     }
 
-    info!("MCP Server shutting down");
     Ok(())
 }

@@ -16,12 +16,18 @@ use std::path::Path;
 use tracing::info;
 #[cfg(feature = "cli")]
 use tracing::warn;
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 #[cfg(feature = "cli")]
 #[derive(Parser)]
 #[command(name = "claude-search")]
 #[command(about = "Search Claude Code conversations")]
 pub struct Cli {
+    /// Verbosity level (-v for WARN, -vv for INFO, -vvv for DEBUG)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+    
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -85,10 +91,30 @@ pub enum CacheAction {
 }
 
 #[cfg(feature = "cli")]
-pub async fn run_cli() -> Result<()> {
-    tracing_subscriber::fmt::init();
+#[cfg(feature = "cli")]
+fn setup_logging(verbose: u8) {
+    let level = match verbose {
+        0 => Level::ERROR,
+        1 => Level::WARN,
+        2 => Level::INFO,
+        _ => Level::DEBUG,
+    };
+    
+    FmtSubscriber::builder()
+        .with_max_level(level)
+        .with_target(false)
+        .with_file(false)
+        .with_line_number(false)
+        .init();
+}
 
+pub async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
+    
+    // Setup logging based on verbosity
+    setup_logging(cli.verbose);
+    
+    let cli = cli;
 
     match cli.command {
         Commands::Index { rebuild } => {
