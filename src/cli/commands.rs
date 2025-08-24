@@ -1,97 +1,49 @@
-use crate::cache::CacheManager;
-use crate::indexer::SearchIndexer;
 use crate::shared;
-#[cfg(feature = "cli")]
-use crate::models::SearchQuery;
-#[cfg(feature = "cli")]
-use crate::search::SearchEngine;
+use crate::shared::{CacheManager, SearchEngine, SearchIndexer, SearchQuery};
 use anyhow::Result;
-#[cfg(feature = "cli")]
-use clap::Parser;
-use clap::Subcommand;
 use glob::glob;
-#[cfg(feature = "cli")]
 use std::collections::HashMap;
 use std::path::Path;
-use tracing::info;
-#[cfg(feature = "cli")]
-use tracing::warn;
 use tracing::Level;
+use tracing::info;
+use tracing::warn;
 use tracing_subscriber::FmtSubscriber;
 
-#[cfg(feature = "cli")]
-#[derive(Parser)]
-#[command(name = "claude-search")]
-#[command(about = "Search Claude Code conversations")]
-pub struct Cli {
-    /// Verbosity level (-v for WARN, -vv for INFO, -vvv for DEBUG)
-    #[arg(short, long, action = clap::ArgAction::Count)]
+pub struct CliArgs {
     pub verbose: u8,
-    
-    #[command(subcommand)]
-    pub command: Commands,
+    pub command: CliCommands,
 }
 
-#[cfg(feature = "cli")]
-#[derive(Subcommand)]
-pub enum Commands {
-    /// Build/update search index
+pub enum CliCommands {
     Index {
-        /// Force full rebuild
-        #[arg(long)]
         rebuild: bool,
     },
-    /// Search conversations (auto-indexes if needed)
     Search {
-        /// Search query
         query: String,
-        /// Filter by project
-        #[arg(long)]
         project: Option<String>,
-        /// Results limit
-        #[arg(long, default_value = "10")]
         limit: usize,
     },
-    /// Show technology topics and their usage across conversations
     Topics {
-        /// Filter by project
-        #[arg(long)]
         project: Option<String>,
-        /// Results limit
-        #[arg(long, default_value = "20")]
         limit: usize,
     },
-    /// Show detailed cache and conversation statistics
     Stats {
-        /// Filter by project
-        #[arg(long)]
         project: Option<String>,
     },
-    /// View specific session conversations
     Session {
-        /// Session ID to view
         session_id: String,
-        /// Show full content (not just snippets)
-        #[arg(long)]
         full: bool,
     },
-    /// Cache management
     Cache {
-        #[command(subcommand)]
         action: CacheAction,
     },
 }
 
-#[derive(Subcommand)]
 pub enum CacheAction {
-    /// Show cache statistics
     Info,
-    /// Clear cache and rebuild
     Clear,
 }
 
-#[cfg(feature = "cli")]
-#[cfg(feature = "cli")]
 fn setup_logging(verbose: u8) {
     let level = match verbose {
         0 => Level::ERROR,
@@ -99,7 +51,7 @@ fn setup_logging(verbose: u8) {
         2 => Level::INFO,
         _ => Level::DEBUG,
     };
-    
+
     FmtSubscriber::builder()
         .with_max_level(level)
         .with_target(false)
@@ -108,20 +60,16 @@ fn setup_logging(verbose: u8) {
         .init();
 }
 
-pub async fn run_cli() -> Result<()> {
-    let cli = Cli::parse();
-    
+pub async fn run_cli(args: CliArgs) -> Result<()> {
     // Setup logging based on verbosity
-    setup_logging(cli.verbose);
-    
-    let cli = cli;
+    setup_logging(args.verbose);
 
-    match cli.command {
-        Commands::Index { rebuild } => {
+    match args.command {
+        CliCommands::Index { rebuild } => {
             let index_path = shared::get_cache_dir()?;
             index_conversations(&index_path, rebuild).await?;
         }
-        Commands::Search {
+        CliCommands::Search {
             query,
             project,
             limit,
@@ -131,22 +79,22 @@ pub async fn run_cli() -> Result<()> {
             shared::auto_index(&index_path).await?;
             search_conversations(&index_path, query, project, limit).await?;
         }
-        Commands::Topics { project, limit } => {
+        CliCommands::Topics { project, limit } => {
             let index_path = shared::get_cache_dir()?;
             shared::auto_index(&index_path).await?;
             show_topics(&index_path, project, limit).await?;
         }
-        Commands::Stats { project } => {
+        CliCommands::Stats { project } => {
             let index_path = shared::get_cache_dir()?;
             shared::auto_index(&index_path).await?;
             show_stats(&index_path, project).await?;
         }
-        Commands::Session { session_id, full } => {
+        CliCommands::Session { session_id, full } => {
             let index_path = shared::get_cache_dir()?;
             shared::auto_index(&index_path).await?;
             view_session(&index_path, session_id, full).await?;
         }
-        Commands::Cache { action } => {
+        CliCommands::Cache { action } => {
             let index_path = shared::get_cache_dir()?;
             match action {
                 CacheAction::Info => show_cache_info(&index_path).await?,
@@ -158,7 +106,6 @@ pub async fn run_cli() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "cli")]
 async fn index_conversations(index_path: &Path, rebuild: bool) -> Result<()> {
     info!("Starting indexing process...");
 
@@ -192,8 +139,6 @@ async fn index_conversations(index_path: &Path, rebuild: bool) -> Result<()> {
     Ok(())
 }
 
-
-#[cfg(feature = "cli")]
 async fn show_cache_info(index_path: &Path) -> Result<()> {
     let cache_manager = CacheManager::new(index_path)?;
     let stats = cache_manager.get_stats();
@@ -229,7 +174,6 @@ async fn show_cache_info(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "cli")]
 async fn clear_cache(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
@@ -237,7 +181,6 @@ async fn clear_cache(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "cli")]
 async fn search_conversations(
     index_path: &Path,
     query_text: String,
@@ -312,8 +255,6 @@ async fn search_conversations(
     Ok(())
 }
 
-
-#[cfg(feature = "cli")]
 async fn show_topics(
     index_path: &Path,
     project_filter: Option<String>,
@@ -429,7 +370,6 @@ async fn show_topics(
     Ok(())
 }
 
-#[cfg(feature = "cli")]
 async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
@@ -532,7 +472,6 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
     Ok(())
 }
 
-#[cfg(feature = "cli")]
 async fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
@@ -643,4 +582,3 @@ async fn view_session(index_path: &Path, session_id: String, show_full: bool) ->
 
     Ok(())
 }
-

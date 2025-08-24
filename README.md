@@ -19,9 +19,10 @@ Claude Code stores all your conversations locally as JSONL files, but there's no
 - **Efficient indexing**: Processes thousands of conversations in seconds
 - **Memory efficient**: Uses memory-mapped indexes via Tantivy
 
-### 🔧 **Dual Interface**
-- **CLI tool**: Simple command-line interface for terminal usage
-- **MCP server**: Integration with Claude Code via Model Context Protocol
+### 🔧 **Unified Interface**
+- **Single binary** with subcommands for both CLI and MCP server functionality
+- **CLI mode**: Simple command-line interface for terminal usage (`claude-conversation-search search ...`)
+- **MCP server mode**: Integration with Claude Code via Model Context Protocol (`claude-conversation-search mcp`)
 - Configurable result limits and project-based filtering
 
 ### 🎯 **Smart Features**
@@ -38,52 +39,46 @@ Claude Code stores all your conversations locally as JSONL files, but there's no
 git clone https://github.com/user/claude-conversation-search
 cd claude-conversation-search
 
-# Build CLI tool only (recommended for command-line usage)
-cargo build --release --bin claude-search --features cli --no-default-features
-cp target/release/claude-search /usr/local/bin/  # or add to PATH
-
-# Or build MCP server for Claude Code integration
-cargo build --release --bin claude-search-mcp --features mcp --no-default-features
-
-# Or build both (default)
+# Build the unified binary
 cargo build --release
+cp target/release/claude-conversation-search /usr/local/bin/  # or add to PATH
 ```
 
-**Note**: This is a multi-binary project with separate CLI and MCP components. Building with specific features avoids dead code warnings.
+**Note**: The project now uses a single binary with subcommands for both CLI and MCP server functionality, eliminating the need for feature flags and multiple binaries.
 
 ### Basic Usage
 
 ```bash
 # Index your conversations (run this first time)
-claude-search index
+claude-conversation-search index
 
 # Search for anything
-claude-search search "kubernetes"
-claude-search search "error handling" 
-claude-search search "rust async"
+claude-conversation-search search "kubernetes"
+claude-conversation-search search "error handling" 
+claude-conversation-search search "rust async"
 
 # Search with project filter
-claude-search search "rust" --project "vault-rs"
+claude-conversation-search search "rust" --project "vault-rs"
 
 # Limit number of results
-claude-search search "function" --limit 20
+claude-conversation-search search "function" --limit 20
 ```
 
 ## CLI Reference
 
-### `claude-search index`
+### `claude-conversation-search index`
 Build or update the search index from your Claude Code conversations.
 
 ```bash
-claude-search index              # Build/update index from ~/.claude/projects/
-claude-search index --rebuild    # Force full rebuild (recreates index)
+claude-conversation-search index              # Build/update index from ~/.claude/projects/
+claude-conversation-search index --rebuild    # Force full rebuild (recreates index)
 ```
 
 **What it does:**
 - Scans `~/.claude/projects/` for `*.jsonl` files
 - Parses conversation entries with timestamps, content, and metadata  
 - Builds full-text search index using Tantivy
-- Index stored at `~/.cache/claude-search/`
+- Index stored at `~/.cache/claude-conversation-search/`
 
 **Expected output:**
 ```
@@ -96,12 +91,12 @@ Processing: /home/user/.claude/projects/other-project/session-id2.jsonl
 Indexing complete: 15 files, 2,847 entries
 ```
 
-### `claude-search search <query>`
+### `claude-conversation-search search <query>`
 Search through your indexed conversations.
 
 ```bash
-claude-search search "rust async functions"
-claude-search search "error" --project "my-project" --limit 5
+claude-conversation-search search "rust async functions"
+claude-conversation-search search "error" --project "my-project" --limit 5
 ```
 
 **Options:**
@@ -126,10 +121,10 @@ Found 3 results:
 ```
 
 **Query features:**
-- **Simple text**: `claude-search search "docker compose"`
-- **Multiple terms**: `claude-search search "rust error handling"`  
-- **Phrase search**: `claude-search search '"exact phrase"'` (wrap in quotes)
-- **Boolean AND**: `claude-search search "rust AND async"` (both terms must appear)
+- **Simple text**: `claude-conversation-search search "docker compose"`
+- **Multiple terms**: `claude-conversation-search search "rust error handling"`  
+- **Phrase search**: `claude-conversation-search search '"exact phrase"'` (wrap in quotes)
+- **Boolean AND**: `claude-conversation-search search "rust AND async"` (both terms must appear)
 
 ## MCP Integration (Claude Code)
 
@@ -137,20 +132,24 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
 
 ### Setup
 
-1. **Build the MCP server**:
+1. **Build the binary** (if not already done):
    ```bash
-   cargo build --release --bin claude-search-mcp --features mcp --no-default-features
+   cargo build --release
    ```
 
-2. **Configure Claude Code** by adding to your MCP settings:
-   ```json
-   {
-     "claude-search": {
-       "command": "/path/to/claude-search-mcp",
-       "args": []
-     }
-   }
+2. **Configure Claude Code** using the MCP CLI:
+   ```bash
+   # Add the MCP server to Claude Code
+   claude mcp add claude-conversation-search /path/to/claude-conversation-search mcp
+   
+   # Alternatively, if installed globally:
+   claude mcp add claude-conversation-search claude-conversation-search mcp
+   
+   # Verify it was added successfully
+   claude mcp list
    ```
+
+   This configures Claude Code to use `claude-conversation-search mcp` as an MCP server named "claude-conversation-search".
 
 3. **Use within Claude Code** - Claude will automatically have access to search your conversations:
    - "Search my previous conversations about Rust async"
@@ -158,48 +157,50 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
    - "Show stats on my coding conversations"
 
 ### MCP Tools Available
-- **search_conversations**: Search through indexed conversations
+- **search_conversations**: Search through indexed conversations with optional project exclusion
 - **get_conversation_context**: Get full context around specific results
 - **analyze_conversation_topics**: Analyze technology usage patterns
 - **get_conversation_stats**: Get detailed statistics about conversations
+- **respawn_server**: Reload the MCP server without restarting Claude Code
+- **analyze_conversation_content**: AI-powered analysis of selected conversations (requires web server config)
 
 ## Examples
 
 ### Finding Past Solutions
 ```bash
 # Find how you solved a specific problem
-claude-search search "docker compose error"
-claude-search search "authentication failed" --project "web-app"
+claude-conversation-search search "docker compose error"
+claude-conversation-search search "authentication failed" --project "web-app"
 
 # Find code snippets
-claude-search search "async fn" --project "rust-backend"
-claude-search search "useEffect" --project "react-frontend"
+claude-conversation-search search "async fn" --project "rust-backend"
+claude-conversation-search search "useEffect" --project "react-frontend"
 ```
 
 ### Exploring Conversations
 ```bash
 # Find long discussions
-claude-search search "help me understand" --limit 50
+claude-conversation-search search "help me understand" --limit 50
 
 # Find tool usage examples
-claude-search search "bash" --limit 20
+claude-conversation-search search "bash" --limit 20
 
 # Search for specific technologies
-claude-search search "kubernetes deployment"
-claude-search search "database migration"
+claude-conversation-search search "kubernetes deployment"
+claude-conversation-search search "database migration"
 ```
 
 ### Common Use Cases
 ```bash
 # Review recent work
-claude-search search "TODO" --limit 30
+claude-conversation-search search "TODO" --limit 30
 
 # Find error solutions
-claude-search search "error" --limit 20
+claude-conversation-search search "error" --limit 20
 
 # Look up specific functions or APIs
-claude-search search "fetch API"
-claude-search search "regex pattern"
+claude-conversation-search search "fetch API"
+claude-conversation-search search "regex pattern"
 ```
 
 ## Configuration
@@ -212,9 +213,30 @@ The tool works out of the box, but you can customize behavior:
 - `RUST_LOG` - Control logging verbosity (`error`, `warn`, `info`, `debug`, `trace`)
 
 ### Cache Location
-- **Linux**: `~/.cache/claude-search/`
-- **macOS**: `~/Library/Caches/claude-search/`  
-- **Windows**: `%LOCALAPPDATA%\claude-search\`
+- **Linux**: `~/.cache/claude-conversation-search/`
+- **macOS**: `~/Library/Caches/claude-conversation-search/`  
+- **Windows**: `%LOCALAPPDATA%\claude-conversation-search\`
+
+### AI Analysis Configuration (Optional)
+
+For AI-powered conversation analysis, create `~/.config/claude-conversation-search-mcp/config.yaml`:
+
+```yaml
+web_server:
+  path: /var/www/html/claude-temp/
+  url: https://yourdomain.com/claude-temp/
+```
+
+**How it works:**
+- The MCP server writes conversation content to the configured local path
+- Uses WebFetch tool to analyze content via the corresponding **publicly accessible** URL
+- **No API key required** - leverages Claude Code's built-in WebFetch capability
+- Temporary files are cleaned up after analysis
+
+**Requirements:**
+- You need a web server with a publicly accessible domain
+- The local path must be writable by the MCP server
+- The URL must correspond to the local path and be web-accessible
 
 ## Performance
 
@@ -240,15 +262,15 @@ The tool works out of the box, but you can customize behavior:
 **"No conversations found"**
 - Check that Claude Code has created files in `~/.claude/projects/`
 - Verify directory permissions
-- Try `claude-search index --rebuild`
+- Try `claude-conversation-search index --rebuild`
 
 **"Index is corrupt"**  
-- Run `claude-search cache clear && claude-search index`
+- Run `claude-conversation-search cache clear && claude-conversation-search index`
 - Check disk space availability
 
 **"Search is slow"**
-- Run `claude-search cache info` to check index size
-- Consider `claude-search index --rebuild` to optimize
+- Run `claude-conversation-search cache info` to check index size
+- Consider `claude-conversation-search index --rebuild` to optimize
 
 **"Permission denied"**
 - Ensure read access to Claude Code directories
@@ -257,9 +279,9 @@ The tool works out of the box, but you can customize behavior:
 ### Getting Help
 
 ```bash
-claude-search --help          # General help
-claude-search search --help   # Search command help
-claude-search index --help    # Index command help
+claude-conversation-search --help          # General help
+claude-conversation-search search --help   # Search command help
+claude-conversation-search index --help    # Index command help
 ```
 
 ## Technical Details
@@ -297,14 +319,14 @@ cargo build
 cargo test
 
 # Run CLI tool
-cargo run --bin claude-search --features cli -- --help
+cargo run -- --help
 
 # Run MCP server (for testing)
-cargo run --bin claude-search-mcp --features mcp
+cargo run -- mcp
 
-# Check for warnings (build each binary individually)
-cargo check --bin claude-search --features cli --no-default-features
-cargo check --bin claude-search-mcp --features mcp --no-default-features
+# Check for warnings and run linting
+cargo check
+cargo clippy --fix --allow-dirty
 ```
 
 ## License

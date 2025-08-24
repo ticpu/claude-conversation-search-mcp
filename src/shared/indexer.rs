@@ -1,4 +1,4 @@
-use crate::models::ConversationEntry;
+use super::models::ConversationEntry;
 use anyhow::Result;
 use std::path::Path;
 use tantivy::schema::{FAST, INDEXED, STORED, SchemaBuilder, TEXT};

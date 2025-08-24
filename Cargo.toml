@@ -1,30 +1,19 @@
 [package]
-name = "claude-search"
+name = "claude-conversation-search"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "claude-search"
-path = "src/main.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "claude-search-mcp"
-path = "src/mcp_server.rs"
-required-features = ["mcp"]
-
 [features]
-default = ["cli", "mcp"]
-cli = ["clap"]
-mcp = []
+default = []
 
 [dependencies]
 tantivy = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"], optional = true }
+clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

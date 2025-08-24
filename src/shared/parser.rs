@@ -1,11 +1,17 @@
-use crate::metadata::MetadataExtractor;
-use crate::models::{ConversationEntry, MessageType};
+use super::metadata::MetadataExtractor;
+use super::models::{ConversationEntry, MessageType};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::Path;
 
 pub struct JsonlParser;
+
+impl Default for JsonlParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl JsonlParser {
     pub fn new() -> Self {
@@ -112,20 +118,21 @@ impl JsonlParser {
 
     fn extract_content(&self, json: &Value) -> Result<String> {
         if let Some(message) = json.get("message")
-            && let Some(content) = message.get("content") {
-                if let Some(text) = content.as_str() {
-                    return Ok(text.to_string());
-                }
-                if content.is_array() {
-                    let mut text_parts = Vec::new();
-                    for part in content.as_array().unwrap() {
-                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                            text_parts.push(text);
-                        }
-                    }
-                    return Ok(text_parts.join(" "));
-                }
+            && let Some(content) = message.get("content")
+        {
+            if let Some(text) = content.as_str() {
+                return Ok(text.to_string());
             }
+            if content.is_array() {
+                let mut text_parts = Vec::new();
+                for part in content.as_array().unwrap() {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        text_parts.push(text);
+                    }
+                }
+                return Ok(text_parts.join(" "));
+            }
+        }
 
         if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
             return Ok(content.to_string());

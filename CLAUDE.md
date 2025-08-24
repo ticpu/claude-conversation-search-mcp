@@ -1,23 +1,40 @@
 # Claude Code Project Instructions
 
+## Project Architecture
+
+**Single Binary with Subcommands**: The project uses a unified architecture:
+- `src/main.rs` - Main entry point with clap subcommand routing
+- `src/cli/` - CLI-specific code (commands.rs, etc.)
+- `src/mcp/` - MCP server and related functionality (server.rs, conversation_aggregator.rs, etc.)
+- `src/shared/` - Shared modules used by both CLI and MCP (cache, search, indexer, models, etc.)
+
+**Command Structure**:
+- `claude-search index` - Build/update search index
+- `claude-search search <query>` - Search conversations  
+- `claude-search topics` - Show technology topics
+- `claude-search stats` - Show conversation statistics
+- `claude-search session <id>` - View specific session
+- `claude-search cache info|clear` - Cache management
+- `claude-search mcp` - Run as MCP server
+
 ## Development Notes
 
 - Prefer `cargo check` over `cargo build` when just checking for compilation errors - it's much quicker
 - Use `cargo build` only when you need the actual binary
-- **Multi-binary project**: To avoid dead code warnings, build each binary with only its features: `cargo check --bin claude-search --features cli --no-default-features` or `cargo check --bin claude-search-mcp --features mcp --no-default-features`
-- **IMPORTANT**: Running `claude-search index` creates massive Tantivy logging output (thousands of lines). Always redirect both stdout and stderr to a file or `/dev/null`. Never read its output directly in the terminal.
-  - Correct: `./target/release/claude-search index >/dev/null 2>&1`
-  - Wrong: `./target/release/claude-search index` (will flood terminal)
+- **Single Binary Architecture**: Uses subcommands (`claude-search mcp`, `claude-search search`, etc.) eliminating dead code warnings and complexity from multiple binaries
+- All modules use standard `crate::shared` imports - no feature flags or path-based imports needed
+
+## Special Notes
+
+- `claude-search index` creates massive Tantivy logging output. Redirect to /dev/null: `claude-search index >/dev/null 2>&1`
+- AI Analysis Feature uses WebFetch approach with config at `~/.config/claude-search-mcp/config.yaml`
 
 ## Pre-commit Checklist
 
-Before any git commit, run these commands in order until there's no output:
-
 1. `cargo test` - Run all tests
-2. `cargo clippy --fix --allow-dirty` - Fix clippy warnings automatically
+2. `cargo clippy --fix --allow-dirty` - Fix clippy warnings automatically  
 3. `cargo fmt` - Format code consistently
 
-**Important:** 
+- All clippy warnings must be resolved before committing.
+- Remove unused code instead of suppressing warnings.
 - Fix all warnings properly - do NOT use underscore prefixes (`_var_name`) to hide unused variables
-- Remove unused code instead of suppressing warnings
-- All clippy warnings must be resolved before committing

@@ -1,5 +1,5 @@
-use crate::cache::CacheManager;
-use crate::indexer::SearchIndexer;
+use super::cache::CacheManager;
+use super::indexer::SearchIndexer;
 use anyhow::Result;
 use dirs::home_dir;
 use glob::glob;

@@ -1,4 +1,4 @@
-use crate::models::{SearchQuery, SearchResult};
+use super::models::{SearchQuery, SearchResult};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
