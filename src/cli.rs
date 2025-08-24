@@ -1,5 +1,6 @@
 use crate::cache::CacheManager;
 use crate::indexer::SearchIndexer;
+use crate::shared;
 #[cfg(feature = "cli")]
 use crate::models::SearchQuery;
 #[cfg(feature = "cli")]
@@ -8,11 +9,10 @@ use anyhow::Result;
 #[cfg(feature = "cli")]
 use clap::Parser;
 use clap::Subcommand;
-use dirs::home_dir;
 use glob::glob;
 #[cfg(feature = "cli")]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing::info;
 #[cfg(feature = "cli")]
 use tracing::warn;
@@ -92,7 +92,7 @@ pub async fn run_cli() -> Result<()> {
 
     match cli.command {
         Commands::Index { rebuild } => {
-            let index_path = get_cache_dir()?;
+            let index_path = shared::get_cache_dir()?;
             index_conversations(&index_path, rebuild).await?;
         }
         Commands::Search {
@@ -100,28 +100,28 @@ pub async fn run_cli() -> Result<()> {
             project,
             limit,
         } => {
-            let index_path = get_cache_dir()?;
+            let index_path = shared::get_cache_dir()?;
             // Auto-index before searching
-            auto_index(&index_path).await?;
+            shared::auto_index(&index_path).await?;
             search_conversations(&index_path, query, project, limit).await?;
         }
         Commands::Topics { project, limit } => {
-            let index_path = get_cache_dir()?;
-            auto_index(&index_path).await?;
+            let index_path = shared::get_cache_dir()?;
+            shared::auto_index(&index_path).await?;
             show_topics(&index_path, project, limit).await?;
         }
         Commands::Stats { project } => {
-            let index_path = get_cache_dir()?;
-            auto_index(&index_path).await?;
+            let index_path = shared::get_cache_dir()?;
+            shared::auto_index(&index_path).await?;
             show_stats(&index_path, project).await?;
         }
         Commands::Session { session_id, full } => {
-            let index_path = get_cache_dir()?;
-            auto_index(&index_path).await?;
+            let index_path = shared::get_cache_dir()?;
+            shared::auto_index(&index_path).await?;
             view_session(&index_path, session_id, full).await?;
         }
         Commands::Cache { action } => {
-            let index_path = get_cache_dir()?;
+            let index_path = shared::get_cache_dir()?;
             match action {
                 CacheAction::Info => show_cache_info(&index_path).await?,
                 CacheAction::Clear => clear_cache(&index_path).await?,
@@ -148,7 +148,7 @@ async fn index_conversations(index_path: &Path, rebuild: bool) -> Result<()> {
         SearchIndexer::new(index_path)?
     };
 
-    let claude_dir = get_claude_dir()?;
+    let claude_dir = shared::get_claude_dir()?;
     let pattern = claude_dir.join("projects/**/*.jsonl");
     let pattern_str = pattern.to_string_lossy();
 
@@ -166,29 +166,6 @@ async fn index_conversations(index_path: &Path, rebuild: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn auto_index(index_path: &Path) -> Result<()> {
-    let mut cache_manager = CacheManager::new(index_path)?;
-
-    let mut indexer = if index_path.join("meta.json").exists() {
-        SearchIndexer::open(index_path)?
-    } else {
-        info!("No index found, creating new one...");
-        SearchIndexer::new(index_path)?
-    };
-
-    let claude_dir = get_claude_dir()?;
-    let pattern = claude_dir.join("projects/**/*.jsonl");
-    let pattern_str = pattern.to_string_lossy();
-
-    let mut all_files = Vec::new();
-    // Silently skip errors during auto-indexing
-    for path in glob(&pattern_str)?.flatten() {
-        all_files.push(path);
-    }
-
-    cache_manager.update_incremental(&mut indexer, all_files)?;
-    Ok(())
-}
 
 #[cfg(feature = "cli")]
 async fn show_cache_info(index_path: &Path) -> Result<()> {
@@ -309,21 +286,6 @@ async fn search_conversations(
     Ok(())
 }
 
-pub fn get_claude_dir() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-
-    let claude_dir = home.join(".claude");
-    if claude_dir.exists() {
-        return Ok(claude_dir);
-    }
-
-    let config_claude_dir = home.join(".config").join("claude");
-    if config_claude_dir.exists() {
-        return Ok(config_claude_dir);
-    }
-
-    Ok(claude_dir)
-}
 
 #[cfg(feature = "cli")]
 async fn show_topics(
@@ -656,8 +618,3 @@ async fn view_session(index_path: &Path, session_id: String, show_full: bool) ->
     Ok(())
 }
 
-pub fn get_cache_dir() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let cache_dir = home.join(".cache").join("claude-search");
-    Ok(cache_dir)
-}

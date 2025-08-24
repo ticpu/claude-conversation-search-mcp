@@ -6,12 +6,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error, info, warn};
 
 mod cache;
-mod cli;
 mod indexer;
 mod metadata;
 mod models;
 mod parser;
 mod search;
+mod shared;
 
 use cache::CacheManager;
 use models::SearchQuery;
@@ -149,10 +149,10 @@ impl McpServer {
 
     async fn ensure_initialized(&mut self) -> Result<()> {
         if self.search_engine.is_none() || self.cache_manager.is_none() {
-            let cache_dir = cli::get_cache_dir()?;
+            let cache_dir = shared::get_cache_dir()?;
 
             // Auto-index if needed
-            cli::auto_index(&cache_dir).await?;
+            shared::auto_index(&cache_dir).await?;
 
             self.search_engine = Some(SearchEngine::new(&cache_dir)?);
             self.cache_manager = Some(CacheManager::new(&cache_dir)?);
@@ -628,7 +628,7 @@ impl McpServer {
             .map(|s| s.to_string());
 
         let cache_manager = self.cache_manager.as_ref().unwrap();
-        let cache_stats = cache_manager.get_stats();
+        let (total_files, total_entries, last_updated) = cache_manager.get_basic_stats();
 
         let query = SearchQuery {
             text: "*".to_string(),
@@ -670,17 +670,17 @@ impl McpServer {
         output.push_str("Cache Information:\n");
         output.push_str(&format!(
             "  📁 Total files indexed: {}\n",
-            cache_stats.total_files
+            total_files
         ));
         output.push_str(&format!(
-            "  💾 Cache size: {:.2} MB\n",
-            cache_stats.cache_size_mb
+            "  💾 Total entries: {}\n",
+            total_entries
         ));
 
-        if let Some(last_updated) = cache_stats.last_updated {
+        if let Some(last_updated_time) = last_updated {
             output.push_str(&format!(
                 "  🕒 Last updated: {}\n",
-                last_updated.format("%Y-%m-%d %H:%M UTC")
+                last_updated_time.format("%Y-%m-%d %H:%M UTC")
             ));
         }
 

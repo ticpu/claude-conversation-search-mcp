@@ -111,8 +111,8 @@ impl JsonlParser {
     }
 
     fn extract_content(&self, json: &Value) -> Result<String> {
-        if let Some(message) = json.get("message") {
-            if let Some(content) = message.get("content") {
+        if let Some(message) = json.get("message")
+            && let Some(content) = message.get("content") {
                 if let Some(text) = content.as_str() {
                     return Ok(text.to_string());
                 }
@@ -126,7 +126,6 @@ impl JsonlParser {
                     return Ok(text_parts.join(" "));
                 }
             }
-        }
 
         if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
             return Ok(content.to_string());

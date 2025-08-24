@@ -167,6 +167,16 @@ impl CacheManager {
         Ok(())
     }
 
+    #[cfg(feature = "mcp")]
+    pub fn get_basic_stats(&self) -> (usize, u64, Option<DateTime<Utc>>) {
+        (
+            self.metadata.indexed_files.len(),
+            self.metadata.total_entries,
+            self.metadata.last_full_scan,
+        )
+    }
+
+    #[cfg(feature = "cli")]
     pub fn get_stats(&self) -> CacheStats {
         CacheStats {
             total_files: self.metadata.indexed_files.len(),
@@ -184,6 +194,7 @@ impl CacheManager {
         Ok(())
     }
 
+    #[cfg(feature = "cli")]
     fn calculate_cache_size_mb(&self) -> f64 {
         if let Ok(entries) = fs::read_dir(&self.cache_dir) {
             let total_bytes: u64 = entries
@@ -197,12 +208,13 @@ impl CacheManager {
         }
     }
 
+    #[cfg(feature = "cli")]
     fn get_project_stats(&self) -> Vec<ProjectStats> {
         let mut projects: HashMap<String, ProjectStats> = HashMap::new();
 
         for (file_path, file_meta) in &self.metadata.indexed_files {
-            if let Some(parent) = file_path.parent() {
-                if let Some(project_name) = parent.file_name().and_then(|n| n.to_str()) {
+            if let Some(parent) = file_path.parent()
+                && let Some(project_name) = parent.file_name().and_then(|n| n.to_str()) {
                     let stats =
                         projects
                             .entry(project_name.to_string())
@@ -219,7 +231,6 @@ impl CacheManager {
                         stats.last_updated = file_meta.indexed_at;
                     }
                 }
-            }
         }
 
         let mut project_list: Vec<ProjectStats> = projects.into_values().collect();
@@ -228,6 +239,7 @@ impl CacheManager {
     }
 }
 
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone)]
 pub struct CacheStats {
     pub total_files: usize,
@@ -237,6 +249,7 @@ pub struct CacheStats {
     pub projects: Vec<ProjectStats>,
 }
 
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone)]
 pub struct ProjectStats {
     pub name: String,

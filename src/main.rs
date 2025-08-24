@@ -5,6 +5,7 @@ mod metadata;
 mod models;
 mod parser;
 mod search;
+mod shared;
 
 use anyhow::Result;
 

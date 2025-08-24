@@ -19,10 +19,10 @@ Claude Code stores all your conversations locally as JSONL files, but there's no
 - **Efficient indexing**: Processes thousands of conversations in seconds
 - **Memory efficient**: Uses memory-mapped indexes via Tantivy
 
-### 🔧 **CLI Interface**
-- Simple command-line tool for terminal usage
-- Configurable result limits
-- Project-based filtering
+### 🔧 **Dual Interface**
+- **CLI tool**: Simple command-line interface for terminal usage
+- **MCP server**: Integration with Claude Code via Model Context Protocol
+- Configurable result limits and project-based filtering
 
 ### 🎯 **Smart Features**
 - **Auto-discovery** of Claude Code directories (`~/.claude/projects/`)
@@ -37,9 +37,19 @@ Claude Code stores all your conversations locally as JSONL files, but there's no
 # From source
 git clone https://github.com/user/claude-conversation-search
 cd claude-conversation-search
-cargo build --release
+
+# Build CLI tool only (recommended for command-line usage)
+cargo build --release --bin claude-search --features cli --no-default-features
 cp target/release/claude-search /usr/local/bin/  # or add to PATH
+
+# Or build MCP server for Claude Code integration
+cargo build --release --bin claude-search-mcp --features mcp --no-default-features
+
+# Or build both (default)
+cargo build --release
 ```
+
+**Note**: This is a multi-binary project with separate CLI and MCP components. Building with specific features avoids dead code warnings.
 
 ### Basic Usage
 
@@ -120,6 +130,38 @@ Found 3 results:
 - **Multiple terms**: `claude-search search "rust error handling"`  
 - **Phrase search**: `claude-search search '"exact phrase"'` (wrap in quotes)
 - **Boolean AND**: `claude-search search "rust AND async"` (both terms must appear)
+
+## MCP Integration (Claude Code)
+
+This tool also provides an MCP (Model Context Protocol) server for seamless integration with Claude Code.
+
+### Setup
+
+1. **Build the MCP server**:
+   ```bash
+   cargo build --release --bin claude-search-mcp --features mcp --no-default-features
+   ```
+
+2. **Configure Claude Code** by adding to your MCP settings:
+   ```json
+   {
+     "claude-search": {
+       "command": "/path/to/claude-search-mcp",
+       "args": []
+     }
+   }
+   ```
+
+3. **Use within Claude Code** - Claude will automatically have access to search your conversations:
+   - "Search my previous conversations about Rust async"
+   - "Find where we discussed error handling"
+   - "Show stats on my coding conversations"
+
+### MCP Tools Available
+- **search_conversations**: Search through indexed conversations
+- **get_conversation_context**: Get full context around specific results
+- **analyze_conversation_topics**: Analyze technology usage patterns
+- **get_conversation_stats**: Get detailed statistics about conversations
 
 ## Examples
 
@@ -247,9 +289,22 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ```bash
 git clone https://github.com/user/claude-conversation-search
 cd claude-conversation-search
+
+# Build for development
 cargo build
+
+# Test (runs all tests)
 cargo test
-cargo run -- --help
+
+# Run CLI tool
+cargo run --bin claude-search --features cli -- --help
+
+# Run MCP server (for testing)
+cargo run --bin claude-search-mcp --features mcp
+
+# Check for warnings (build each binary individually)
+cargo check --bin claude-search --features cli --no-default-features
+cargo check --bin claude-search-mcp --features mcp --no-default-features
 ```
 
 ## License
