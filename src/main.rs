@@ -17,11 +17,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Build/update search index
+    /// Index management
     Index {
-        /// Force full rebuild
-        #[arg(long)]
-        rebuild: bool,
+        #[command(subcommand)]
+        action: Option<IndexAction>,
     },
     /// Search conversations (auto-indexes if needed)
     Search {
@@ -74,6 +73,16 @@ enum CacheAction {
     Clear,
 }
 
+#[derive(Subcommand)]
+enum IndexAction {
+    /// Show index status and statistics (default)
+    Status,
+    /// Force full rebuild of the index
+    Rebuild,
+    /// Clean up deleted entries from index
+    Vacuum,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Set up panic hook to handle broken pipe errors gracefully
@@ -99,7 +108,13 @@ async fn main() -> Result<()> {
             let cli_args = cli::CliArgs {
                 verbose: cli.verbose,
                 command: match command {
-                    Commands::Index { rebuild } => cli::CliCommands::Index { rebuild },
+                    Commands::Index { action } => cli::CliCommands::Index {
+                        action: match action.unwrap_or(IndexAction::Status) {
+                            IndexAction::Status => cli::IndexAction::Status,
+                            IndexAction::Rebuild => cli::IndexAction::Rebuild,
+                            IndexAction::Vacuum => cli::IndexAction::Vacuum,
+                        },
+                    },
                     Commands::Search {
                         query,
                         project,

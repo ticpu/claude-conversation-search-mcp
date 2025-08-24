@@ -183,6 +183,119 @@ impl SearchEngine {
         Ok(results)
     }
 
+    pub fn get_all_documents(
+        &self,
+        project_filter: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let searcher = self.reader.searcher();
+
+        let query: Box<dyn tantivy::query::Query> = if let Some(project_filter) = project_filter {
+            // Filter by project
+            let project_term = Term::from_field_text(self.project_field, &project_filter);
+            Box::new(TermQuery::new(
+                project_term,
+                tantivy::schema::IndexRecordOption::Basic,
+            ))
+        } else {
+            // Match all documents
+            Box::new(tantivy::query::AllQuery)
+        };
+
+        let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit))?;
+
+        let mut results = Vec::new();
+        for (_score, doc_address) in top_docs {
+            let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
+
+            let content = retrieved_doc
+                .get_first(self.content_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let project = retrieved_doc
+                .get_first(self.project_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let session_id = retrieved_doc
+                .get_first(self.session_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let timestamp = retrieved_doc
+                .get_first(self.timestamp_field)
+                .and_then(|v| v.as_datetime())
+                .map(|dt| {
+                    DateTime::<Utc>::from_timestamp(dt.into_timestamp_secs(), 0)
+                        .unwrap_or_else(Utc::now)
+                })
+                .unwrap_or_else(Utc::now);
+
+            let snippet = if content.len() > 100 {
+                format!("{}...", &content[..97])
+            } else {
+                content.clone()
+            };
+
+            // Extract metadata fields (with fallbacks for older indexes)
+            let technologies = self
+                .technologies_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_str())
+                .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
+            let code_languages = self
+                .code_languages_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_str())
+                .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
+            let tools_mentioned = self
+                .tools_mentioned_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_str())
+                .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+                .unwrap_or_default();
+
+            let has_code = self
+                .has_code_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let has_error = self
+                .has_error_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let word_count = content.split_whitespace().count();
+
+            results.push(SearchResult {
+                content,
+                project,
+                session_id,
+                timestamp,
+                score: 1.0, // No relevance score for get_all
+                snippet,
+                technologies,
+                code_languages,
+                tools_mentioned,
+                has_code,
+                has_error,
+                word_count,
+            });
+        }
+
+        Ok(results)
+    }
+
     fn generate_snippet(&self, content: &str, query: &str) -> String {
         let words: Vec<&str> = content.split_whitespace().collect();
         let query_words: Vec<&str> = query.split_whitespace().collect();

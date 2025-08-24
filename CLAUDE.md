@@ -26,8 +26,8 @@
 
 ## Special Notes
 
-- `claude-search index` creates massive Tantivy logging output. Redirect to /dev/null: `claude-search index >/dev/null 2>&1`
 - AI Analysis Feature uses WebFetch approach with config at `~/.config/claude-search-mcp/config.yaml`
+- To test MCP changes: use the `respawn_server` MCP tool available in Claude Code conversations
 
 ## Pre-commit Checklist
 
@@ -38,3 +38,5 @@
 - All clippy warnings must be resolved before committing.
 - Remove unused code instead of suppressing warnings.
 - Fix all warnings properly - do NOT use underscore prefixes (`_var_name`) to hide unused variables
+
+- Try not to use super:: and crate:: all around the file, prefer importing something more specific.

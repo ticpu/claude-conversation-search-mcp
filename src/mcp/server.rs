@@ -238,10 +238,15 @@ impl McpServer {
             },
             Tool {
                 name: "analyze_conversation_topics".to_string(),
-                description: "Analyze technology topics and patterns across conversations".to_string(),
+                description: "Analyze technology topics and patterns from search results. Use query to focus analysis.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to find conversations for analysis (e.g. 'rust error', 'database api'). Defaults to broad search.",
+                            "optional": true
+                        },
                         "project": {
                             "type": "string",
                             "description": "Optional project name to filter analysis",
@@ -249,23 +254,15 @@ impl McpServer {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of topics to return per category (default: 20)",
+                            "description": "Maximum number of projects to show (default: 20)",
                             "optional": true,
                             "default": 20
-                        }
-                    }
-                }),
-            },
-            Tool {
-                name: "get_conversation_stats".to_string(),
-                description: "Get detailed statistics about conversation data and cache".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "project": {
-                            "type": "string",
-                            "description": "Optional project name to filter stats",
-                            "optional": true
+                        },
+                        "search_limit": {
+                            "type": "integer",
+                            "description": "Number of search results to analyze (default: 500)",
+                            "optional": true,
+                            "default": 500
                         }
                     }
                 }),
@@ -319,14 +316,6 @@ impl McpServer {
             "analyze_conversation_topics" => {
                 super::topic_analyzer::handle_analyze_topics(
                     self.search_engine.as_ref(),
-                    request.arguments,
-                )
-                .await?
-            }
-            "get_conversation_stats" => {
-                super::stats_analyzer::handle_get_stats(
-                    self.search_engine.as_ref(),
-                    self.cache_manager.as_ref(),
                     request.arguments,
                 )
                 .await?
@@ -463,9 +452,17 @@ impl McpServer {
     }
 
     async fn tool_respawn(&self) -> Result<Value> {
-        // Get the current executable path
-        let current_exe = std::env::current_exe()
-            .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?;
+        // Try to find the release binary first, fallback to current_exe
+        let current_dir = std::env::current_dir()
+            .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
+
+        let release_path = current_dir.join("target/release/claude-conversation-search");
+        let exe_path = if release_path.exists() {
+            release_path
+        } else {
+            std::env::current_exe()
+                .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?
+        };
 
         // Prepare response
         let response = CallToolResponse {
@@ -482,8 +479,8 @@ impl McpServer {
 
             // Replace current process with new instance using exec
             let args: Vec<String> = std::env::args().collect();
-            let err = exec::execvp(&current_exe, &args);
-            eprintln!("Failed to exec: {}", err);
+            let err = exec::execvp(&exe_path, &args);
+            eprintln!("Failed to exec with {}: {}", exe_path.display(), err);
         });
 
         Ok(serde_json::to_value(response)?)

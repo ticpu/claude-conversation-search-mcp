@@ -1,3 +1,4 @@
+use super::config::get_config;
 use super::models::ConversationEntry;
 use anyhow::Result;
 use std::path::Path;
@@ -45,7 +46,8 @@ impl SearchIndexer {
 
         std::fs::create_dir_all(index_path)?;
         let index = Index::create_in_dir(index_path, schema.clone())?;
-        let writer = index.writer(50_000_000)?; // 50MB heap
+        let config = get_config();
+        let writer = index.writer(config.get_writer_heap_size())?;
 
         Ok(Self {
             writer,
@@ -81,7 +83,8 @@ impl SearchIndexer {
         let has_code_field = schema.get_field("has_code").unwrap_or(content_field);
         let has_error_field = schema.get_field("has_error").unwrap_or(content_field);
 
-        let writer = index.writer(50_000_000)?;
+        let config = get_config();
+        let writer = index.writer(config.get_writer_heap_size())?;
 
         Ok(Self {
             writer,

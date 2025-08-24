@@ -107,26 +107,55 @@ pub async fn handle_get_conversation_context(
         ));
     }
 
-    output.push_str("## Messages\n");
-    output.push_str(&format!("{}\n", "─".repeat(80)));
+    // Filter out empty/short messages and show only meaningful ones
+    let meaningful_results: Vec<_> = sorted_results
+        .iter()
+        .filter(|r| !r.content.trim().is_empty() && r.content.len() > 15)
+        .collect();
 
-    for (i, result) in sorted_results.iter().enumerate() {
-        output.push_str(&format!(
-            "{}. {} | Score: {:.2}\n",
-            i + 1,
-            result.timestamp.format("%H:%M:%S"),
-            result.score
-        ));
+    if meaningful_results.is_empty() {
+        output.push_str("No meaningful messages found in this session.\n");
+        return Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: output,
+            }],
+            is_error: None,
+        })?);
+    }
 
-        if include_content {
-            output.push_str(&format!("{}\n", result.content));
+    output.push_str(&format!(
+        "## Key Messages ({} shown):\n",
+        meaningful_results.len().min(10)
+    ));
+
+    // Show up to 10 most relevant messages
+    for (i, result) in meaningful_results.iter().take(10).enumerate() {
+        let content = if include_content {
+            &result.content
         } else {
-            output.push_str(&format!("{}\n", result.snippet));
-        }
+            &result.snippet
+        };
 
-        if i < sorted_results.len() - 1 {
-            output.push_str(&format!("{}\n", "─".repeat(40)));
-        }
+        let clean_content = if content.len() > 150 {
+            format!("{}...", &content[..147])
+        } else {
+            content.clone()
+        };
+
+        output.push_str(&format!(
+            "{}. [{}] {}\n",
+            i + 1,
+            result.timestamp.format("%H:%M"),
+            clean_content.trim()
+        ));
+    }
+
+    if meaningful_results.len() > 10 {
+        output.push_str(&format!(
+            "\n({} additional messages not shown)\n",
+            meaningful_results.len() - 10
+        ));
     }
 
     if !include_content && sorted_results.len() > 3 {

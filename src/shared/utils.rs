@@ -1,34 +1,38 @@
 use super::cache::CacheManager;
+use super::config::get_config;
 use super::indexer::SearchIndexer;
+use super::lock::ExclusiveIndexAccess;
 use anyhow::Result;
-use dirs::home_dir;
 use glob::glob;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
 pub fn get_claude_dir() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-
-    let claude_dir = home.join(".claude");
-    if claude_dir.exists() {
-        return Ok(claude_dir);
-    }
-
-    let config_claude_dir = home.join(".config").join("claude");
-    if config_claude_dir.exists() {
-        return Ok(config_claude_dir);
-    }
-
-    Ok(claude_dir)
+    get_config().get_claude_dir()
 }
 
 pub fn get_cache_dir() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let cache_dir = home.join(".cache").join("claude-search");
-    Ok(cache_dir)
+    get_config().get_cache_dir()
 }
 
 pub async fn auto_index(index_path: &Path) -> Result<()> {
+    let config = get_config();
+
+    // Skip auto-indexing if disabled in config
+    if !config.index.auto_index_on_startup {
+        return Ok(());
+    }
+
+    // Try to acquire exclusive lock for indexing
+    let _lock = match ExclusiveIndexAccess::acquire() {
+        Ok(lock) => lock,
+        Err(_) => {
+            // Another process is already indexing, skip
+            info!("Skipping auto-index: another process is currently indexing");
+            return Ok(());
+        }
+    };
+
     let mut cache_manager = CacheManager::new(index_path)?;
 
     let mut indexer = if index_path.join("meta.json").exists() {

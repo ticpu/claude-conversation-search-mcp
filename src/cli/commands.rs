@@ -1,12 +1,9 @@
-use crate::shared;
-use crate::shared::{CacheManager, SearchEngine, SearchIndexer, SearchQuery};
+use crate::cli::index;
+use crate::shared::{self, CacheManager, SearchEngine, SearchQuery};
 use anyhow::Result;
-use glob::glob;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::Level;
-use tracing::info;
-use tracing::warn;
 use tracing_subscriber::FmtSubscriber;
 
 pub struct CliArgs {
@@ -16,7 +13,7 @@ pub struct CliArgs {
 
 pub enum CliCommands {
     Index {
-        rebuild: bool,
+        action: IndexAction,
     },
     Search {
         query: String,
@@ -44,6 +41,12 @@ pub enum CacheAction {
     Clear,
 }
 
+pub enum IndexAction {
+    Status,
+    Rebuild,
+    Vacuum,
+}
+
 fn setup_logging(verbose: u8) {
     let level = match verbose {
         0 => Level::ERROR,
@@ -65,37 +68,47 @@ pub async fn run_cli(args: CliArgs) -> Result<()> {
     setup_logging(args.verbose);
 
     match args.command {
-        CliCommands::Index { rebuild } => {
-            let index_path = shared::get_cache_dir()?;
-            index_conversations(&index_path, rebuild).await?;
+        CliCommands::Index { action } => {
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
+            match action {
+                IndexAction::Status => index::show_status(&index_path).await?,
+                IndexAction::Rebuild => index::rebuild(&index_path).await?,
+                IndexAction::Vacuum => index::vacuum(&index_path).await?,
+            }
         }
         CliCommands::Search {
             query,
             project,
             limit,
         } => {
-            let index_path = shared::get_cache_dir()?;
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
             // Auto-index before searching
             shared::auto_index(&index_path).await?;
             search_conversations(&index_path, query, project, limit).await?;
         }
         CliCommands::Topics { project, limit } => {
-            let index_path = shared::get_cache_dir()?;
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path).await?;
             show_topics(&index_path, project, limit).await?;
         }
         CliCommands::Stats { project } => {
-            let index_path = shared::get_cache_dir()?;
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path).await?;
             show_stats(&index_path, project).await?;
         }
         CliCommands::Session { session_id, full } => {
-            let index_path = shared::get_cache_dir()?;
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path).await?;
             view_session(&index_path, session_id, full).await?;
         }
         CliCommands::Cache { action } => {
-            let index_path = shared::get_cache_dir()?;
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
             match action {
                 CacheAction::Info => show_cache_info(&index_path).await?,
                 CacheAction::Clear => clear_cache(&index_path).await?,
@@ -103,39 +116,6 @@ pub async fn run_cli(args: CliArgs) -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-async fn index_conversations(index_path: &Path, rebuild: bool) -> Result<()> {
-    info!("Starting indexing process...");
-
-    let mut cache_manager = CacheManager::new(index_path)?;
-
-    if rebuild {
-        cache_manager.clear_cache()?;
-    }
-
-    let mut indexer = if index_path.join("meta.json").exists() {
-        SearchIndexer::open(index_path)?
-    } else {
-        SearchIndexer::new(index_path)?
-    };
-
-    let claude_dir = shared::get_claude_dir()?;
-    let pattern = claude_dir.join("projects/**/*.jsonl");
-    let pattern_str = pattern.to_string_lossy();
-
-    info!("Scanning for JSONL files in: {}", pattern_str);
-
-    let mut all_files = Vec::new();
-    for entry in glob(&pattern_str)? {
-        match entry {
-            Ok(path) => all_files.push(path),
-            Err(e) => warn!("Failed to access file: {}", e),
-        }
-    }
-
-    cache_manager.update_incremental(&mut indexer, all_files)?;
     Ok(())
 }
 
