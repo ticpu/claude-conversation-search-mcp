@@ -1,4 +1,5 @@
 use anyhow::Result;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -7,7 +8,7 @@ use tracing::{debug, error};
 
 use super::conversation_aggregator;
 use crate::shared::{
-    CacheManager, SearchEngine, SearchQuery, SearchResult, auto_index, get_cache_dir,
+    CacheManager, SearchEngine, SearchQuery, SearchResult, auto_index, get_cache_dir, get_config,
 };
 
 // MCP Protocol Structures
@@ -203,7 +204,15 @@ impl McpServer {
                             "items": {
                                 "type": "string"
                             },
-                            "description": "Optional project names to exclude from results",
+                            "description": "Optional exact project names to exclude from results",
+                            "optional": true
+                        },
+                        "exclude_patterns": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Optional regex patterns to exclude projects by path/name. Examples: [\".*test.*\"] excludes anything with 'test', [\"^backup-.*\"] excludes projects starting with 'backup-', [\".*temp.*\", \".*old.*\"] excludes multiple patterns. Patterns match against both project name and full path.",
                             "optional": true
                         },
                         "limit": {
@@ -211,6 +220,11 @@ impl McpServer {
                             "description": "Maximum number of results to return (default: 10)",
                             "optional": true,
                             "default": 10
+                        },
+                        "debug": {
+                            "type": "string",
+                            "description": "Set to 'true' to enable debug output",
+                            "optional": true
                         }
                     },
                     "required": ["query"]
@@ -347,6 +361,13 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?
             .to_string();
 
+        // Check if debug mode is enabled
+        let debug_mode = args
+            .get("debug")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "true")
+            .unwrap_or(false);
+
         let project_filter = args
             .get("project")
             .and_then(|v| v.as_str())
@@ -361,6 +382,48 @@ impl McpServer {
                     .collect()
             })
             .unwrap_or_default();
+        
+        let exclude_patterns: Vec<String> = args
+            .get("exclude_patterns")
+            .map(|v| {
+                // Handle both array and string representations
+                if let Some(arr) = v.as_array() {
+                    // Direct array
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                } else if let Some(s) = v.as_str() {
+                    // JSON string representation - parse it
+                    match serde_json::from_str::<Vec<String>>(s) {
+                        Ok(patterns) => patterns,
+                        Err(_) => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
+        
+        // Merge runtime exclusion patterns with configured ones
+        let config = get_config();
+        let mut all_exclude_patterns = config.search.exclude_patterns.clone();
+        all_exclude_patterns.extend(exclude_patterns.clone());
+        
+        // Compile regex patterns for exclusion
+        let exclude_regexes: Vec<Regex> = all_exclude_patterns
+            .iter()
+            .filter_map(|pattern| {
+                match Regex::new(pattern) {
+                    Ok(regex) => Some(regex),
+                    Err(e) => {
+                        tracing::warn!("Invalid regex pattern '{}': {}", pattern, e);
+                        None
+                    }
+                }
+            })
+            .collect();
+        
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let query = SearchQuery {
@@ -373,10 +436,24 @@ impl McpServer {
         let search_engine = self.search_engine.as_ref().unwrap();
         let all_results = search_engine.search(query)?;
 
-        // Filter out excluded projects
+        // Filter out excluded projects (both exact names and regex patterns)
         let filtered_results: Vec<_> = all_results
             .iter()
-            .filter(|result| !exclude_projects.contains(&result.project))
+            .filter(|result| {
+                // Check exact project name exclusions
+                if exclude_projects.contains(&result.project) {
+                    return false;
+                }
+                
+                // Check regex pattern exclusions (against both project name and full path)
+                for regex in &exclude_regexes {
+                    if regex.is_match(&result.project) || regex.is_match(&result.project_path) {
+                        return false;
+                    }
+                }
+                
+                true
+            })
             .collect();
 
         // Deduplicate by session_id, keeping highest scoring result per session
@@ -400,6 +477,32 @@ impl McpServer {
         results.truncate(limit);
 
         let mut output = String::new();
+        
+        // Show debug information if requested
+        if debug_mode {
+            output.push_str("=== DEBUG MODE ===\n");
+            output.push_str(&format!("Raw arguments: {:?}\n", args));
+            output.push_str(&format!("Parsed exclude_projects: {:?}\n", exclude_projects));
+            output.push_str(&format!("Parsed exclude_patterns: {:?}\n", exclude_patterns));
+            output.push_str(&format!("Config exclude_patterns: {:?}\n", config.search.exclude_patterns));
+            output.push_str(&format!("All exclude_patterns: {:?}\n", all_exclude_patterns));
+            output.push_str(&format!("Compiled {} regex patterns\n", exclude_regexes.len()));
+            output.push_str(&format!("Results: {} -> {} -> {}\n", all_results.len(), filtered_results.len(), results.len()));
+            output.push_str("==================\n\n");
+        }
+        
+        // Show active exclusion filters (only if filters are active and not in debug mode)
+        if !debug_mode && (!exclude_projects.is_empty() || !all_exclude_patterns.is_empty()) {
+            let mut filter_info = Vec::new();
+            if !exclude_projects.is_empty() {
+                filter_info.push(format!("{} projects", exclude_projects.len()));
+            }
+            if !all_exclude_patterns.is_empty() {
+                filter_info.push(format!("{} patterns", all_exclude_patterns.len()));
+            }
+            output.push_str(&format!("Excluding: {}\n\n", filter_info.join(", ")));
+        }
+        
         if results.is_empty() {
             output.push_str("No results found.\n");
         } else {
@@ -413,6 +516,11 @@ impl McpServer {
                     result.timestamp.format("%Y-%m-%d %H:%M"),
                     result.score
                 ));
+
+                // Show full project path if different from project name
+                if result.project_path != result.project && result.project_path != "unknown" {
+                    output.push_str(&format!("   Path: {}\n", result.project_path));
+                }
 
                 // Add metadata tags (machine-readable, no emojis)
                 let mut tags = Vec::new();

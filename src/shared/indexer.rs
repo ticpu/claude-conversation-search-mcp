@@ -18,6 +18,7 @@ pub struct SearchIndexer {
     tools_mentioned_field: tantivy::schema::Field,
     has_code_field: tantivy::schema::Field,
     has_error_field: tantivy::schema::Field,
+    cwd_field: tantivy::schema::Field,
 }
 
 impl SearchIndexer {
@@ -41,6 +42,7 @@ impl SearchIndexer {
             schema_builder.add_text_field("tools_mentioned", TEXT | STORED | FAST);
         let has_code_field = schema_builder.add_bool_field("has_code", INDEXED | STORED | FAST);
         let has_error_field = schema_builder.add_bool_field("has_error", INDEXED | STORED | FAST);
+        let cwd_field = schema_builder.add_text_field("cwd", TEXT | STORED | FAST);
 
         let schema = schema_builder.build();
 
@@ -62,6 +64,7 @@ impl SearchIndexer {
             tools_mentioned_field,
             has_code_field,
             has_error_field,
+            cwd_field,
         })
     }
 
@@ -82,6 +85,7 @@ impl SearchIndexer {
         let tools_mentioned_field = schema.get_field("tools_mentioned").unwrap_or(content_field);
         let has_code_field = schema.get_field("has_code").unwrap_or(content_field);
         let has_error_field = schema.get_field("has_error").unwrap_or(content_field);
+        let cwd_field = schema.get_field("cwd").unwrap_or(content_field);
 
         let config = get_config();
         let writer = index.writer(config.get_writer_heap_size())?;
@@ -99,6 +103,7 @@ impl SearchIndexer {
             tools_mentioned_field,
             has_code_field,
             has_error_field,
+            cwd_field,
         })
     }
 
@@ -116,6 +121,7 @@ impl SearchIndexer {
                 self.tools_mentioned_field => entry.tools_mentioned.join(" "),
                 self.has_code_field => entry.has_code,
                 self.has_error_field => entry.has_error,
+                self.cwd_field => entry.cwd.unwrap_or_else(|| "unknown".to_string()),
             );
 
             self.writer.add_document(doc)?;

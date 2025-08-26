@@ -29,6 +29,23 @@
 - AI Analysis Feature uses WebFetch approach with config at `~/.config/claude-search-mcp/config.yaml`
 - To test MCP changes: use the `respawn_server` MCP tool available in Claude Code conversations
 
+## Debugging MCP Tools
+
+Since MCP servers communicate via JSON-RPC over stdio, traditional debugging methods (println!, logging) interfere with the protocol. Instead:
+
+**Use the debug parameter**: All search tools support a `debug: true` parameter that shows:
+- Raw JSON arguments received
+- Parameter parsing results  
+- Filtering logic details
+- Result counts at each stage
+
+Example usage:
+```
+mcp__claude-conversation-search__search_conversations(query="test", exclude_patterns=[".*temp.*"], debug=true)
+```
+
+This outputs detailed debugging information directly in the search results, allowing you to troubleshoot parameter parsing and filtering logic.
+
 ## Pre-commit Checklist
 
 1. `cargo test` - Run all tests

@@ -42,6 +42,7 @@ pub struct SearchQuery {
 pub struct SearchResult {
     pub content: String,
     pub project: String,
+    pub project_path: String,
     pub session_id: String,
     pub timestamp: DateTime<Utc>,
     pub score: f32,

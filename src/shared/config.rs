@@ -82,6 +82,20 @@ impl Default for LimitsConfig {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchConfig {
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            exclude_patterns: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     pub web_server: Option<WebServerConfig>,
@@ -91,6 +105,8 @@ pub struct Config {
     pub locking: LockingConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub search: SearchConfig,
 }
 
 impl Config {

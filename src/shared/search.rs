@@ -19,6 +19,7 @@ pub struct SearchEngine {
     tools_mentioned_field: Option<Field>,
     has_code_field: Option<Field>,
     has_error_field: Option<Field>,
+    cwd_field: Option<Field>,
 }
 
 impl SearchEngine {
@@ -41,6 +42,7 @@ impl SearchEngine {
         let tools_mentioned_field = schema.get_field("tools_mentioned").ok();
         let has_code_field = schema.get_field("has_code").ok();
         let has_error_field = schema.get_field("has_error").ok();
+        let cwd_field = schema.get_field("cwd").ok();
 
         Ok(Self {
             index,
@@ -54,6 +56,7 @@ impl SearchEngine {
             tools_mentioned_field,
             has_code_field,
             has_error_field,
+            cwd_field,
         })
     }
 
@@ -111,6 +114,16 @@ impl SearchEngine {
                 .unwrap_or("")
                 .to_string();
 
+            let project_path = if let Some(cwd_field) = self.cwd_field {
+                retrieved_doc
+                    .get_first(cwd_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&project)
+                    .to_string()
+            } else {
+                project.clone()
+            };
+
             let session_id = retrieved_doc
                 .get_first(self.session_field)
                 .and_then(|v| v.as_str())
@@ -167,6 +180,7 @@ impl SearchEngine {
             results.push(SearchResult {
                 content,
                 project,
+                project_path,
                 session_id,
                 timestamp,
                 score,
@@ -219,6 +233,16 @@ impl SearchEngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+
+            let project_path = if let Some(cwd_field) = self.cwd_field {
+                retrieved_doc
+                    .get_first(cwd_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&project)
+                    .to_string()
+            } else {
+                project.clone()
+            };
 
             let session_id = retrieved_doc
                 .get_first(self.session_field)
@@ -280,6 +304,7 @@ impl SearchEngine {
             results.push(SearchResult {
                 content,
                 project,
+                project_path,
                 session_id,
                 timestamp,
                 score: 1.0, // No relevance score for get_all
