@@ -82,18 +82,10 @@ impl Default for LimitsConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct SearchConfig {
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
-}
-
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            exclude_patterns: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

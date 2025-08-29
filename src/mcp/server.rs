@@ -382,7 +382,7 @@ impl McpServer {
                     .collect()
             })
             .unwrap_or_default();
-        
+
         let exclude_patterns: Vec<String> = args
             .get("exclude_patterns")
             .map(|v| {
@@ -395,35 +395,30 @@ impl McpServer {
                         .collect()
                 } else if let Some(s) = v.as_str() {
                     // JSON string representation - parse it
-                    match serde_json::from_str::<Vec<String>>(s) {
-                        Ok(patterns) => patterns,
-                        Err(_) => Vec::new(),
-                    }
+                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
                 } else {
                     Vec::new()
                 }
             })
             .unwrap_or_default();
-        
+
         // Merge runtime exclusion patterns with configured ones
         let config = get_config();
         let mut all_exclude_patterns = config.search.exclude_patterns.clone();
         all_exclude_patterns.extend(exclude_patterns.clone());
-        
+
         // Compile regex patterns for exclusion
         let exclude_regexes: Vec<Regex> = all_exclude_patterns
             .iter()
-            .filter_map(|pattern| {
-                match Regex::new(pattern) {
-                    Ok(regex) => Some(regex),
-                    Err(e) => {
-                        tracing::warn!("Invalid regex pattern '{}': {}", pattern, e);
-                        None
-                    }
+            .filter_map(|pattern| match Regex::new(pattern) {
+                Ok(regex) => Some(regex),
+                Err(e) => {
+                    tracing::warn!("Invalid regex pattern '{}': {}", pattern, e);
+                    None
                 }
             })
             .collect();
-        
+
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let query = SearchQuery {
@@ -444,14 +439,14 @@ impl McpServer {
                 if exclude_projects.contains(&result.project) {
                     return false;
                 }
-                
+
                 // Check regex pattern exclusions (against both project name and full path)
                 for regex in &exclude_regexes {
                     if regex.is_match(&result.project) || regex.is_match(&result.project_path) {
                         return false;
                     }
                 }
-                
+
                 true
             })
             .collect();
@@ -477,20 +472,40 @@ impl McpServer {
         results.truncate(limit);
 
         let mut output = String::new();
-        
+
         // Show debug information if requested
         if debug_mode {
             output.push_str("=== DEBUG MODE ===\n");
             output.push_str(&format!("Raw arguments: {:?}\n", args));
-            output.push_str(&format!("Parsed exclude_projects: {:?}\n", exclude_projects));
-            output.push_str(&format!("Parsed exclude_patterns: {:?}\n", exclude_patterns));
-            output.push_str(&format!("Config exclude_patterns: {:?}\n", config.search.exclude_patterns));
-            output.push_str(&format!("All exclude_patterns: {:?}\n", all_exclude_patterns));
-            output.push_str(&format!("Compiled {} regex patterns\n", exclude_regexes.len()));
-            output.push_str(&format!("Results: {} -> {} -> {}\n", all_results.len(), filtered_results.len(), results.len()));
+            output.push_str(&format!(
+                "Parsed exclude_projects: {:?}\n",
+                exclude_projects
+            ));
+            output.push_str(&format!(
+                "Parsed exclude_patterns: {:?}\n",
+                exclude_patterns
+            ));
+            output.push_str(&format!(
+                "Config exclude_patterns: {:?}\n",
+                config.search.exclude_patterns
+            ));
+            output.push_str(&format!(
+                "All exclude_patterns: {:?}\n",
+                all_exclude_patterns
+            ));
+            output.push_str(&format!(
+                "Compiled {} regex patterns\n",
+                exclude_regexes.len()
+            ));
+            output.push_str(&format!(
+                "Results: {} -> {} -> {}\n",
+                all_results.len(),
+                filtered_results.len(),
+                results.len()
+            ));
             output.push_str("==================\n\n");
         }
-        
+
         // Show active exclusion filters (only if filters are active and not in debug mode)
         if !debug_mode && (!exclude_projects.is_empty() || !all_exclude_patterns.is_empty()) {
             let mut filter_info = Vec::new();
@@ -502,7 +517,7 @@ impl McpServer {
             }
             output.push_str(&format!("Excluding: {}\n\n", filter_info.join(", ")));
         }
-        
+
         if results.is_empty() {
             output.push_str("No results found.\n");
         } else {

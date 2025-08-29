@@ -178,15 +178,23 @@ pub async fn handle_analyze_conversation_content(
                 ));
                 conversation_content.push_str(&format!("**Messages**: {}\n\n", results.len()));
 
-                // Add all message content
-                for (msg_idx, result) in results.iter().enumerate() {
+                // Add all message content, skipping empty messages entirely
+                let mut section_counter = 1;
+
+                for result in results.iter() {
+                    if result.content.trim().is_empty() {
+                        // Just skip empty messages completely - they're tool-only interactions
+                        continue;
+                    }
+
                     conversation_content.push_str(&format!(
                         "§{} {}\n",
-                        msg_idx + 1,
+                        section_counter,
                         result.timestamp.format("%H:%M:%S")
                     ));
                     conversation_content.push_str(&result.content);
-                    conversation_content.push_str("\n\n");
+                    conversation_content.push('\n');
+                    section_counter += 1;
                 }
 
                 // Truncate if conversation is too large
