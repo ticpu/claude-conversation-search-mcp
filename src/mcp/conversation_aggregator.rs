@@ -161,8 +161,12 @@ pub async fn handle_analyze_conversation_content(
                     continue;
                 }
 
-                // Sort by timestamp to get chronological order
-                results.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                // Sort by timestamp first, then by sequence number to guarantee JSONL order
+                results.sort_by(|a, b| {
+                    a.timestamp
+                        .cmp(&b.timestamp)
+                        .then_with(|| a.sequence_num.cmp(&b.sequence_num))
+                });
 
                 let mut conversation_content = String::new();
                 conversation_content.push_str(&format!(
@@ -176,7 +180,13 @@ pub async fn handle_analyze_conversation_content(
                     results[0].timestamp.format("%Y-%m-%d %H:%M"),
                     results.last().unwrap().timestamp.format("%Y-%m-%d %H:%M")
                 ));
-                conversation_content.push_str(&format!("**Messages**: {}\n\n", results.len()));
+                // Count non-empty messages for accurate reporting
+                let non_empty_count = results
+                    .iter()
+                    .filter(|result| !result.content.trim().is_empty())
+                    .count();
+
+                conversation_content.push_str(&format!("**Messages**: {}\n\n", non_empty_count));
 
                 // Add all message content, skipping empty messages entirely
                 let mut section_counter = 1;

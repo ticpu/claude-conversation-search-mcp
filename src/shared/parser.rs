@@ -1,5 +1,6 @@
 use super::metadata::MetadataExtractor;
 use super::models::{ConversationEntry, MessageType};
+use super::utils::extract_content_from_json;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -24,6 +25,7 @@ impl JsonlParser {
 
         let project_name = self.extract_project_name(path);
 
+        let mut sequence_counter = 0;
         for (line_num, line) in content.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
@@ -31,8 +33,9 @@ impl JsonlParser {
 
             match serde_json::from_str::<Value>(line) {
                 Ok(json) => {
-                    if let Ok(entry) = self.parse_entry(json, &project_name) {
+                    if let Ok(entry) = self.parse_entry(json, &project_name, sequence_counter) {
                         entries.push(entry);
+                        sequence_counter += 1;
                     }
                 }
                 Err(e) => {
@@ -44,7 +47,12 @@ impl JsonlParser {
         Ok(entries)
     }
 
-    fn parse_entry(&self, json: Value, fallback_project_name: &str) -> Result<ConversationEntry> {
+    fn parse_entry(
+        &self,
+        json: Value,
+        fallback_project_name: &str,
+        sequence_num: usize,
+    ) -> Result<ConversationEntry> {
         let session_id = json
             .get("sessionId")
             .and_then(|v| v.as_str())
@@ -75,7 +83,7 @@ impl JsonlParser {
             })
             .unwrap_or(MessageType::System);
 
-        let content = self.extract_content(&json)?;
+        let content = extract_content_from_json(&json);
 
         let model = json
             .get("model")
@@ -95,7 +103,7 @@ impl JsonlParser {
         };
 
         // Extract metadata from content
-        let (technologies, tools_mentioned, code_languages, has_code, has_error, word_count) =
+        let (technologies, tools_mentioned, code_languages, has_code, has_error) =
             MetadataExtractor::extract_all_metadata(&content);
 
         Ok(ConversationEntry {
@@ -107,38 +115,13 @@ impl JsonlParser {
             content,
             model,
             cwd,
+            sequence_num,
             technologies,
             has_code,
             code_languages,
             has_error,
             tools_mentioned,
-            word_count,
         })
-    }
-
-    fn extract_content(&self, json: &Value) -> Result<String> {
-        if let Some(message) = json.get("message")
-            && let Some(content) = message.get("content")
-        {
-            if let Some(text) = content.as_str() {
-                return Ok(text.to_string());
-            }
-            if content.is_array() {
-                let mut text_parts = Vec::new();
-                for part in content.as_array().unwrap() {
-                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                        text_parts.push(text);
-                    }
-                }
-                return Ok(text_parts.join(" "));
-            }
-        }
-
-        if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
-            return Ok(content.to_string());
-        }
-
-        Ok(String::new())
     }
 
     fn extract_project_name(&self, path: &Path) -> String {

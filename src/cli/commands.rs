@@ -222,7 +222,7 @@ async fn search_conversations(
             tags.push(format!("🔨 {}", result.tools_mentioned.join(", ")));
         }
 
-        tags.push(format!("📊 {} words", result.word_count));
+        tags.push(format!("💬 {} interactions", result.interaction_count));
 
         if !tags.is_empty() {
             println!("   {}", tags.join(" • "));
@@ -372,7 +372,7 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
 
     let mut code_conversations = 0;
     let mut error_conversations = 0;
-    let mut total_words = 0;
+    let mut total_interactions = 0;
     let mut session_counts = HashMap::new();
 
     for result in &results {
@@ -382,7 +382,7 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
         if result.has_error {
             error_conversations += 1;
         }
-        total_words += result.word_count;
+        total_interactions += result.interaction_count;
 
         session_counts
             .entry(result.session_id.clone())
@@ -423,10 +423,10 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
         (error_conversations as f64 / results.len() as f64) * 100.0
     );
     println!(
-        "  📊 Total words: {} (avg: {} per conversation)",
-        total_words,
+        "  💬 Total interactions: {} (avg: {} per conversation)",
+        total_interactions,
         if !results.is_empty() {
-            total_words / results.len()
+            total_interactions / results.len()
         } else {
             0
         }

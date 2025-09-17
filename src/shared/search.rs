@@ -1,6 +1,9 @@
+use super::config::get_config;
 use super::models::{SearchQuery, SearchResult};
+use super::utils::extract_content_from_json;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
@@ -20,6 +23,8 @@ pub struct SearchEngine {
     has_code_field: Option<Field>,
     has_error_field: Option<Field>,
     cwd_field: Option<Field>,
+    sequence_num_field: Option<Field>,
+    interaction_counts: HashMap<String, usize>,
 }
 
 impl SearchEngine {
@@ -43,8 +48,9 @@ impl SearchEngine {
         let has_code_field = schema.get_field("has_code").ok();
         let has_error_field = schema.get_field("has_error").ok();
         let cwd_field = schema.get_field("cwd").ok();
+        let sequence_num_field = schema.get_field("sequence_num").ok();
 
-        Ok(Self {
+        let mut search_engine = Self {
             index,
             reader,
             content_field,
@@ -57,7 +63,12 @@ impl SearchEngine {
             has_code_field,
             has_error_field,
             cwd_field,
-        })
+            sequence_num_field,
+            interaction_counts: HashMap::new(),
+        };
+
+        search_engine.populate_interaction_counts()?;
+        Ok(search_engine)
     }
 
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
@@ -134,8 +145,9 @@ impl SearchEngine {
                 .get_first(self.timestamp_field)
                 .and_then(|v| v.as_datetime())
                 .map(|dt| {
-                    DateTime::<Utc>::from_timestamp(dt.into_timestamp_secs(), 0)
-                        .unwrap_or_else(Utc::now)
+                    // Convert from tantivy::DateTime to chrono::DateTime<Utc>
+                    let timestamp_millis = dt.into_timestamp_millis();
+                    DateTime::from_timestamp_millis(timestamp_millis).unwrap_or_else(Utc::now)
                 })
                 .unwrap_or_else(Utc::now);
 
@@ -175,7 +187,13 @@ impl SearchEngine {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let word_count = content.split_whitespace().count();
+            let interaction_count = self.get_interaction_count(&session_id);
+
+            let sequence_num = self
+                .sequence_num_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
 
             results.push(SearchResult {
                 content,
@@ -190,7 +208,8 @@ impl SearchEngine {
                 tools_mentioned,
                 has_code,
                 has_error,
-                word_count,
+                interaction_count,
+                sequence_num,
             });
         }
 
@@ -254,8 +273,9 @@ impl SearchEngine {
                 .get_first(self.timestamp_field)
                 .and_then(|v| v.as_datetime())
                 .map(|dt| {
-                    DateTime::<Utc>::from_timestamp(dt.into_timestamp_secs(), 0)
-                        .unwrap_or_else(Utc::now)
+                    // Convert from tantivy::DateTime to chrono::DateTime<Utc>
+                    let timestamp_millis = dt.into_timestamp_millis();
+                    DateTime::from_timestamp_millis(timestamp_millis).unwrap_or_else(Utc::now)
                 })
                 .unwrap_or_else(Utc::now);
 
@@ -299,7 +319,13 @@ impl SearchEngine {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let word_count = content.split_whitespace().count();
+            let interaction_count = self.get_interaction_count(&session_id);
+
+            let sequence_num = self
+                .sequence_num_field
+                .and_then(|field| retrieved_doc.get_first(field))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
 
             results.push(SearchResult {
                 content,
@@ -314,7 +340,8 @@ impl SearchEngine {
                 tools_mentioned,
                 has_code,
                 has_error,
-                word_count,
+                interaction_count,
+                sequence_num,
             });
         }
 
@@ -362,5 +389,49 @@ impl SearchEngine {
         }
 
         snippet
+    }
+
+    fn populate_interaction_counts(&mut self) -> Result<()> {
+        let config = get_config();
+        let claude_dir = config.get_claude_dir()?;
+        let pattern = claude_dir.join("projects/**/*.jsonl");
+        let pattern_str = pattern.to_string_lossy();
+
+        for entry in glob::glob(&pattern_str)? {
+            let file_path = entry?;
+            if let Ok(content) = std::fs::read_to_string(&file_path) {
+                let mut session_counts: HashMap<String, usize> = HashMap::new();
+
+                for line in content.lines() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
+                        && let Some(session_id) = json.get("sessionId").and_then(|v| v.as_str())
+                    {
+                        // Only count messages that would appear in exports (non-empty content)
+                        let content = extract_content_from_json(&json);
+                        if !content.trim().is_empty() {
+                            *session_counts.entry(session_id.to_string()).or_insert(0) += 1;
+                        }
+                    }
+                }
+
+                // Merge session counts from this file into the main map
+                for (session_id, count) in session_counts {
+                    *self.interaction_counts.entry(session_id).or_insert(0) += count;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_interaction_count(&self, session_id: &str) -> usize {
+        self.interaction_counts
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
     }
 }

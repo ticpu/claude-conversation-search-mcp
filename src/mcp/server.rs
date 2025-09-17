@@ -554,7 +554,7 @@ impl McpServer {
                 if !result.tools_mentioned.is_empty() && result.tools_mentioned.len() <= 3 {
                     tags.push(format!("tools: {}", result.tools_mentioned.join(", ")));
                 }
-                tags.push(format!("words: {}", result.word_count));
+                tags.push(format!("interactions: {}", result.interaction_count));
 
                 if !tags.is_empty() {
                     output.push_str(&format!("   {}\n", tags.join(" • ")));

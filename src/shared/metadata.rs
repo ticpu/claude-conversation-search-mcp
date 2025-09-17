@@ -243,21 +243,18 @@ impl MetadataExtractor {
 
     pub fn extract_all_metadata(
         content: &str,
-    ) -> (Vec<String>, Vec<String>, Vec<String>, bool, bool, usize) {
+    ) -> (Vec<String>, Vec<String>, Vec<String>, bool, bool) {
         let technologies = Self::extract_technologies(content);
         let tools_mentioned = Self::extract_tools_mentioned(content);
         let code_languages = Self::extract_code_languages(content);
         let has_code = Self::has_code_blocks(content);
         let has_error = Self::has_error_mentions(content);
-        let word_count = Self::count_words(content);
-
         (
             technologies,
             tools_mentioned,
             code_languages,
             has_code,
             has_error,
-            word_count,
         )
     }
 }
