@@ -612,16 +612,14 @@ impl McpServer {
             }
             output.push_str("No results found.\n");
         } else {
-            output.push_str(&format!(
-                "Found {} results (-C {}):\n\n",
-                filtered.len(),
-                context_size
-            ));
             for (i, result) in filtered.iter().enumerate() {
                 output.push_str(&result.format_compact_with_options(i, &display_opts));
                 if i < filtered.len() - 1 {
                     output.push('\n');
                 }
+            }
+            if filtered.len() == limit {
+                output.push_str(&format!("\n+more: limit={}\n", limit));
             }
         }
 
