@@ -3,7 +3,7 @@ use super::models::ConversationEntry;
 use anyhow::Result;
 use std::path::Path;
 use tantivy::schema::{FAST, Field, INDEXED, STORED, Schema, SchemaBuilder, TEXT};
-use tantivy::{Index, IndexWriter, doc};
+use tantivy::{Index, IndexWriter, Term, doc};
 
 /// Current schema version - increment when schema changes to trigger rebuild
 pub const SCHEMA_VERSION: u32 = 2;
@@ -153,6 +153,13 @@ impl SearchIndexer {
         let writer = index.writer(config.get_writer_heap_size())?;
 
         Ok(Self { writer, fields })
+    }
+
+    /// Delete all documents for a session before re-indexing
+    pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
+        let term = Term::from_field_text(self.fields.session_field, session_id);
+        self.writer.delete_term(term);
+        Ok(())
     }
 
     pub fn index_conversations(&mut self, entries: Vec<ConversationEntry>) -> Result<()> {

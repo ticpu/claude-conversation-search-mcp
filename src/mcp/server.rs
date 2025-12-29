@@ -462,6 +462,19 @@ impl McpServer {
         }
 
         if filtered.is_empty() {
+            if stale_count > 0 || new_count > 0 {
+                // No results but index is stale - return error prompting reindex
+                return Ok(serde_json::to_value(CallToolResponse {
+                    content: vec![ToolResult {
+                        result_type: "text".to_string(),
+                        text: format!(
+                            "No results found. Index is stale ({} modified, {} new files). Call reindex tool and retry search.",
+                            stale_count, new_count
+                        ),
+                    }],
+                    is_error: Some(true),
+                })?);
+            }
             output.push_str("No results found.\n");
         } else {
             output.push_str(&format!(
@@ -475,13 +488,6 @@ impl McpServer {
                     output.push('\n');
                 }
             }
-        }
-
-        if stale_count > 0 || new_count > 0 {
-            output.push_str(&format!(
-                "\nIndex: {} stale, {} new files. Use reindex if results incomplete.\n",
-                stale_count, new_count
-            ));
         }
 
         Ok(serde_json::to_value(CallToolResponse {

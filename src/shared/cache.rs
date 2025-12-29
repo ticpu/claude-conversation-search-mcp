@@ -102,6 +102,10 @@ impl CacheManager {
                     total_entries += entry_count;
 
                     if entry_count > 0 {
+                        // Delete old documents for this session before re-indexing
+                        if let Some(first) = entries.first() {
+                            indexer.delete_session(&first.session_id)?;
+                        }
                         indexer.index_conversations(entries)?;
                         info!("  Indexed {} entries", entry_count);
                     }
