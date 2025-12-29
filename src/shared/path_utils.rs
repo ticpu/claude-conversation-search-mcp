@@ -12,17 +12,20 @@ pub fn home_to_tilde(path: &str) -> String {
     if path.is_empty() || path == "unknown" {
         return path.to_string();
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    if home.is_empty() {
+    let Some(home) = dirs::home_dir() else {
+        return path.to_string();
+    };
+    let home_str = home.to_string_lossy();
+    if home_str.is_empty() {
         path.to_string()
     } else {
-        path.replace(&home, "~")
+        path.replace(home_str.as_ref(), "~")
     }
 }
 
 /// Convert path to Claude's project directory name format (slashes and dots become dashes)
 pub fn project_dir_name(path: &str) -> String {
-    path.replace(['/', '.'], "-")
+    path.replace(['/', '\\', '.'], "-")
 }
 
 /// Construct path to a session's JSONL file

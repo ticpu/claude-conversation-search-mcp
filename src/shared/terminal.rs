@@ -20,7 +20,8 @@ pub fn supports_hyperlinks() -> bool {
     })
 }
 
-/// Query terminal for capabilities using DA1
+/// Query terminal for capabilities using DA1 (Unix only)
+#[cfg(unix)]
 fn query_terminal_da1() -> bool {
     use std::io::{Read, Write};
 
@@ -68,6 +69,12 @@ fn query_terminal_da1() -> bool {
     let _ = nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &orig_termios);
 
     result.unwrap_or(false)
+}
+
+/// Windows: terminal hyperlink detection not supported
+#[cfg(windows)]
+fn query_terminal_da1() -> bool {
+    false
 }
 
 /// Create OSC 8 hyperlink if terminal supports it, otherwise plain text

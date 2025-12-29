@@ -129,8 +129,8 @@ impl Config {
             return Ok(cache_dir.clone());
         }
 
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
-        Ok(home.join(".cache").join("claude-conversation-search"))
+        let cache = dirs::cache_dir().ok_or_else(|| anyhow!("Could not find cache directory"))?;
+        Ok(cache.join("claude-conversation-search"))
     }
 
     pub fn get_claude_dir(&self) -> Result<PathBuf> {

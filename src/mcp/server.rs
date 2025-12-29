@@ -266,14 +266,6 @@ impl McpServer {
                 }),
             },
             Tool {
-                name: "respawn_server".to_string(),
-                description: "Respawn the MCP server to reload with latest changes".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            },
-            Tool {
                 name: "reindex".to_string(),
                 description: "Update index for stale/new files. Use when search results seem incomplete or index warning shown.".to_string(),
                 input_schema: serde_json::json!({
@@ -359,6 +351,14 @@ impl McpServer {
                     "required": ["ids"]
                 }),
             },
+            Tool {
+                name: "respawn_server".to_string(),
+                description: "Respawn the MCP server to reload with latest changes".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ];
 
         let response = ListToolsResponse { tools };
@@ -439,7 +439,7 @@ impl McpServer {
         // Detect current session early to exclude from stale check
         let current_session_file: Option<std::path::PathBuf> =
             std::env::current_dir().ok().and_then(|cwd| {
-                let cwd_str = cwd.to_string_lossy().replace(['/', '.'], "-");
+                let cwd_str = cwd.to_string_lossy().replace(['/', '\\', '.'], "-");
                 let sess_pattern = claude_dir.join("projects").join(&cwd_str).join("*.jsonl");
                 glob::glob(&sess_pattern.to_string_lossy())
                     .ok()?
@@ -840,6 +840,7 @@ Task(
         })?)
     }
 
+    #[cfg(unix)]
     async fn tool_respawn(&self) -> Result<Value> {
         // Try to find the release binary first, fallback to current_exe
         let current_dir = std::env::current_dir()
@@ -873,6 +874,17 @@ Task(
         });
 
         Ok(serde_json::to_value(response)?)
+    }
+
+    #[cfg(windows)]
+    async fn tool_respawn(&self) -> Result<Value> {
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: "respawn_server is not supported on Windows".to_string(),
+            }],
+            is_error: Some(true),
+        })?)
     }
 
     async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {

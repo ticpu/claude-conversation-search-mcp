@@ -3,11 +3,44 @@ use super::models::{ContentBlock, ConversationEntry, MessageType, RawJsonlMessag
 use super::utils::truncate_content;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use std::io::BufReader;
 use std::path::Path;
 use tracing::warn;
 
 /// Maximum chars to keep from tool_result content (noise reduction)
 const TOOL_RESULT_MAX_CHARS: usize = 500;
+
+/// Read text file, skipping UTF-8 BOM if present
+fn read_text_file(path: &Path) -> Result<String> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut file = BufReader::new(File::open(path)?);
+    let mut first3 = [0u8; 3];
+
+    // Check for UTF-8 BOM (EF BB BF)
+    match file.read_exact(&mut first3) {
+        Ok(()) if first3 == [0xEF, 0xBB, 0xBF] => {
+            // BOM found, skip it
+        }
+        Ok(()) => {
+            // No BOM, include these bytes
+            let mut content = String::from_utf8(first3.to_vec())?;
+            file.read_to_string(&mut content)?;
+            return Ok(content);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            // File shorter than 3 bytes
+            return Ok(String::from_utf8(first3[..].to_vec())?);
+        }
+        Err(e) => return Err(e.into()),
+    }
+
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
+}
+
 /// Maximum chars to keep from tool_use input preview
 const TOOL_USE_INPUT_MAX_CHARS: usize = 200;
 
@@ -16,7 +49,7 @@ pub struct JsonlParser;
 
 impl JsonlParser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<ConversationEntry>> {
-        let content = std::fs::read_to_string(path)?;
+        let content = read_text_file(path)?;
         let mut entries = Vec::new();
         let project_name = self.extract_project_name(path);
 

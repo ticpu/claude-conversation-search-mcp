@@ -649,9 +649,14 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
         conversation.push_str(&format!("{}: {}\n", r.role_display(), content));
     }
 
-    // Create jail directory in XDG_RUNTIME_DIR
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    let jail_dir = std::path::PathBuf::from(&runtime_dir).join("claude-summary-jail");
+    // Create jail directory in temp dir (XDG_RUNTIME_DIR on Unix, %TEMP% on Windows)
+    #[cfg(unix)]
+    let temp_dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    #[cfg(windows)]
+    let temp_dir = std::env::temp_dir();
+    let jail_dir = temp_dir.join("claude-summary-jail");
     std::fs::create_dir_all(&jail_dir)?;
 
     let prompt = format!(
