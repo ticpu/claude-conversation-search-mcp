@@ -245,7 +245,8 @@ fn search_conversations(
         return Ok(());
     }
 
-    let search_engine = SearchEngine::new(index_path)?;
+    let cache = CacheManager::new(index_path)?;
+    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
 
     let query = SearchQuery {
         text: query_text,
@@ -282,7 +283,8 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
         return Ok(());
     }
 
-    let search_engine = SearchEngine::new(index_path)?;
+    let cache = CacheManager::new(index_path)?;
+    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
 
     // Get all conversations to analyze topics
     let query = SearchQuery {
@@ -398,7 +400,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     let cache_manager = CacheManager::new(index_path)?;
     let cache_stats = cache_manager.get_stats();
-    let search_engine = SearchEngine::new(index_path)?;
+    let search_engine = SearchEngine::new(index_path, cache_manager.get_session_counts().clone())?;
 
     // Get conversation stats
     let query = SearchQuery {
@@ -501,7 +503,8 @@ fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Resul
         return Ok(());
     }
 
-    let search_engine = SearchEngine::new(index_path)?;
+    let cache = CacheManager::new(index_path)?;
+    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
     let mut results = search_engine.get_session_messages(&session_id)?;
 
     if results.is_empty() {

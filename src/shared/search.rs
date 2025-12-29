@@ -1,4 +1,3 @@
-use super::config::get_config;
 use super::models::{SearchQuery, SearchResult, SortOrder};
 use super::path_utils::{session_jsonl_path, short_uuid};
 use super::terminal::file_hyperlink;
@@ -40,7 +39,7 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    pub fn new(index_path: &Path) -> Result<Self> {
+    pub fn new(index_path: &Path, session_counts: HashMap<String, usize>) -> Result<Self> {
         let index = Index::open_in_dir(index_path)?;
         let reader = index
             .reader_builder()
@@ -65,7 +64,7 @@ impl SearchEngine {
         let is_sidechain_field = schema.get_field("is_sidechain")?;
         let agent_id_field = schema.get_field("agent_id")?;
 
-        let mut search_engine = Self {
+        Ok(Self {
             index,
             reader,
             uuid_field,
@@ -84,11 +83,8 @@ impl SearchEngine {
             sequence_num_field,
             is_sidechain_field,
             agent_id_field,
-            interaction_counts: HashMap::new(),
-        };
-
-        search_engine.populate_interaction_counts()?;
-        Ok(search_engine)
+            interaction_counts: session_counts,
+        })
     }
 
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
@@ -507,42 +503,6 @@ impl SearchEngine {
         }
 
         snippet
-    }
-
-    fn populate_interaction_counts(&mut self) -> Result<()> {
-        let config = get_config();
-        let claude_dir = config.get_claude_dir()?;
-        let pattern = claude_dir.join("projects/**/*.jsonl");
-        let pattern_str = pattern.to_string_lossy();
-
-        for entry in glob::glob(&pattern_str)? {
-            let file_path = entry?;
-            if let Ok(content) = std::fs::read_to_string(&file_path) {
-                let mut session_counts: HashMap<String, usize> = HashMap::new();
-
-                for line in content.lines() {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
-                        && let Some(session_id) = json.get("sessionId").and_then(|v| v.as_str())
-                    {
-                        let msg_type = json.get("type").and_then(|v| v.as_str());
-                        // Only count user/assistant messages
-                        if matches!(msg_type, Some("user") | Some("assistant")) {
-                            *session_counts.entry(session_id.to_string()).or_insert(0) += 1;
-                        }
-                    }
-                }
-
-                for (session_id, count) in session_counts {
-                    *self.interaction_counts.entry(session_id).or_insert(0) += count;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     fn get_interaction_count(&self, session_id: &str) -> usize {

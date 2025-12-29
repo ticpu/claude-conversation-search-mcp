@@ -130,36 +130,25 @@ pub struct ToolResult {
 }
 
 pub struct McpServer {
-    search_engine: Option<SearchEngine>,
-    cache_manager: Option<CacheManager>,
-}
-
-impl Default for McpServer {
-    fn default() -> Self {
-        Self::new()
-    }
+    search_engine: SearchEngine,
+    cache_dir: std::path::PathBuf,
 }
 
 impl McpServer {
-    pub fn new() -> Self {
-        Self {
-            search_engine: None,
-            cache_manager: None,
-        }
-    }
+    pub fn new() -> Result<Self> {
+        let cache_dir = get_cache_dir()?;
 
-    async fn ensure_initialized(&mut self) -> Result<()> {
-        if self.search_engine.is_none() || self.cache_manager.is_none() {
-            let cache_dir = get_cache_dir()?;
+        // Auto-index if needed
+        auto_index(&cache_dir)?;
 
-            // Auto-index if needed
-            auto_index(&cache_dir)?;
+        let cache = CacheManager::new(&cache_dir)?;
+        let counts = cache.get_session_counts().clone();
+        let search_engine = SearchEngine::new(&cache_dir, counts)?;
 
-            self.search_engine = Some(SearchEngine::new(&cache_dir)?);
-            self.cache_manager = Some(CacheManager::new(&cache_dir)?);
-        }
-
-        Ok(())
+        Ok(Self {
+            search_engine,
+            cache_dir,
+        })
     }
 
     async fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
@@ -380,8 +369,6 @@ impl McpServer {
         let request: CallToolRequest = serde_json::from_value(params)?;
         debug!("Handling tool call: {}", request.name);
 
-        self.ensure_initialized().await?;
-
         let result = match request.name.as_str() {
             "search_conversations" => self.tool_search_conversations(request.arguments).await?,
             "respawn_server" => self.tool_respawn().await?,
@@ -569,7 +556,7 @@ impl McpServer {
             before,
         };
 
-        let search_engine = self.search_engine.as_ref().unwrap();
+        let search_engine = &self.search_engine;
         let results_with_context =
             search_engine.search_with_context(query, context_before, context_after)?;
 
@@ -668,7 +655,7 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
-        let search_engine = self.search_engine.as_ref().unwrap();
+        let search_engine = &self.search_engine;
         let mut messages = search_engine.get_session_messages(session_id)?;
 
         if messages.is_empty() {
@@ -770,7 +757,7 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
         // Get session stats for size estimation
-        let search_engine = self.search_engine.as_ref().unwrap();
+        let search_engine = &self.search_engine;
         let messages = search_engine.get_session_messages(session_id)?;
         let msg_count = messages.len();
         let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
@@ -820,7 +807,7 @@ Task(
             })?);
         }
 
-        let search_engine = self.search_engine.as_ref().unwrap();
+        let search_engine = &self.search_engine;
         let messages = search_engine.get_messages_by_uuid(&ids)?;
 
         if messages.is_empty() {
@@ -891,26 +878,27 @@ Task(
     async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let full_rebuild = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
-        let index_path = get_config().get_cache_dir()?;
         let all_files = discover_jsonl_files()?;
 
         let result = if full_rebuild {
             // Full rebuild - clear and recreate
-            if index_path.exists() {
-                std::fs::remove_dir_all(&index_path)?;
+            if self.cache_dir.exists() {
+                std::fs::remove_dir_all(&self.cache_dir)?;
             }
-            let mut indexer = crate::shared::SearchIndexer::new(&index_path)?;
-            let mut cache = crate::shared::CacheManager::new(&index_path)?;
+            let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
+            let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             cache.update_incremental(&mut indexer, all_files)?;
-            self.search_engine = Some(crate::shared::SearchEngine::new(&index_path)?);
+            let counts = cache.get_session_counts().clone();
+            self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
             "Full rebuild complete".to_string()
         } else {
             // Incremental update
-            let mut indexer = crate::shared::SearchIndexer::open(&index_path)?;
-            let mut cache = crate::shared::CacheManager::new(&index_path)?;
+            let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
+            let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let (stale, new) = cache.quick_health_check(&all_files);
             cache.update_incremental(&mut indexer, all_files)?;
-            self.search_engine = Some(crate::shared::SearchEngine::new(&index_path)?);
+            let counts = cache.get_session_counts().clone();
+            self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
             format!(
                 "Incremental update: {} stale + {} new files reindexed",
                 stale, new
@@ -965,7 +953,7 @@ pub async fn run_mcp_server() -> Result<()> {
         .with_env_filter("error")
         .init();
 
-    let mut server = McpServer::new();
+    let mut server = McpServer::new()?;
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut reader = AsyncBufReader::new(stdin).lines();

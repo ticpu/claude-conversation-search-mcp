@@ -15,6 +15,9 @@ pub struct CacheMetadata {
     pub last_full_scan: Option<DateTime<Utc>>,
     pub index_version: u32,
     pub total_entries: u64,
+    /// Cached message counts per session (user + assistant messages only)
+    #[serde(default)]
+    pub session_counts: HashMap<String, usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -69,6 +72,7 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
+        use super::models::MessageType;
         let parser = JsonlParser;
         let mut files_processed = 0;
         let mut total_entries = 0;
@@ -99,7 +103,24 @@ impl CacheManager {
                         // Delete old documents for this session before re-indexing
                         if let Some(first) = entries.first() {
                             indexer.delete_session(&first.session_id)?;
+                            // Clear old session count before recount
+                            self.metadata.session_counts.remove(&first.session_id);
                         }
+
+                        // Count user/assistant messages per session
+                        for entry in &entries {
+                            if matches!(
+                                entry.message_type,
+                                MessageType::User | MessageType::Assistant
+                            ) {
+                                *self
+                                    .metadata
+                                    .session_counts
+                                    .entry(entry.session_id.clone())
+                                    .or_insert(0) += 1;
+                            }
+                        }
+
                         indexer.index_conversations(entries)?;
                         info!("  Indexed {} entries", entry_count);
                     }
@@ -162,6 +183,11 @@ impl CacheManager {
             self.metadata.total_entries,
             self.metadata.last_full_scan,
         )
+    }
+
+    /// Get cached session interaction counts
+    pub fn get_session_counts(&self) -> &HashMap<String, usize> {
+        &self.metadata.session_counts
     }
 
     pub fn get_stats(&self) -> CacheStats {
