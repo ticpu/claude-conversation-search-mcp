@@ -45,6 +45,9 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: claude-conversation-search-windows-x86_64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: claude-conversation-search-macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code

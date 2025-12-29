@@ -86,7 +86,7 @@ pub fn hyperlink(url: &str, text: &str) -> String {
     }
 }
 
-/// Create file:// hyperlink
+/// Create file:/// hyperlink (RFC 8089)
 pub fn file_hyperlink(path: &str, text: &str) -> String {
-    hyperlink(&format!("file://{}", path), text)
+    hyperlink(&format!("file:///{}", path), text)
 }
