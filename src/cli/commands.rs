@@ -24,9 +24,15 @@ pub enum CliCommands {
         /// Results limit
         #[arg(long, default_value = "10")]
         limit: usize,
-        /// Context lines (messages before/after match, like grep -C)
-        #[arg(short = 'C', long, default_value = "2")]
+        /// Context lines before and after match (like grep -C)
+        #[arg(short = 'C', default_value = "2")]
         context: usize,
+        /// Context lines before match (like grep -B)
+        #[arg(short = 'B')]
+        before: Option<usize>,
+        /// Context lines after match (like grep -A)
+        #[arg(short = 'A')]
+        after: Option<usize>,
     },
     /// Show technology topics and their usage across conversations
     Topics {
@@ -50,6 +56,11 @@ pub enum CliCommands {
         /// Show full content (not just snippets)
         #[arg(long)]
         full: bool,
+    },
+    /// Summarize a session using Claude (runs in jailed empty dir)
+    Summary {
+        /// Session ID to summarize
+        session_id: String,
     },
     /// Cache management
     Cache {
@@ -120,12 +131,16 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             project,
             limit,
             context,
+            before,
+            after,
         } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             // Auto-index before searching
             shared::auto_index(&index_path)?;
-            search_conversations(&index_path, query, project, limit, context)?;
+            let ctx_before = before.unwrap_or(context);
+            let ctx_after = after.unwrap_or(context);
+            search_conversations(&index_path, query, project, limit, ctx_before, ctx_after)?;
         }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
@@ -144,6 +159,12 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             view_session(&index_path, session_id, full)?;
+        }
+        CliCommands::Summary { session_id } => {
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
+            shared::auto_index(&index_path)?;
+            summarize_session(&index_path, session_id)?;
         }
         CliCommands::Cache { action } => {
             let config = shared::get_config();
@@ -238,7 +259,8 @@ fn search_conversations(
     query_text: String,
     project_filter: Option<String>,
     limit: usize,
-    context: usize,
+    context_before: usize,
+    context_after: usize,
 ) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
@@ -258,14 +280,19 @@ fn search_conversations(
         before: None,
     };
 
-    let results = search_engine.search_with_context(query, context, context)?;
+    let results = search_engine.search_with_context(query, context_before, context_after)?;
 
     if results.is_empty() {
         println!("No results found.");
         return Ok(());
     }
 
-    println!("Found {} results (-C {}):\n", results.len(), context);
+    let ctx_display = if context_before == context_after {
+        format!("-C {}", context_before)
+    } else {
+        format!("-B {} -A {}", context_before, context_after)
+    };
+    println!("Found {} results ({}):\n", results.len(), ctx_display);
 
     for (i, result) in results.iter().enumerate() {
         print!("{}", result.format_compact(i));
@@ -291,7 +318,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
         text: "*".to_string(), // Match everything
         project_filter: project_filter.clone(),
         session_filter: None,
-        limit: 1000, // Large limit to get comprehensive topic analysis
+        limit: 100_000,
         sort_by: SortOrder::default(),
         after: None,
         before: None,
@@ -588,6 +615,73 @@ fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Resul
 
     if !show_full && results.iter().any(|r| r.content.chars().count() > 200) {
         println!("\nUse --full for complete content");
+    }
+
+    Ok(())
+}
+
+fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    if !index_path.exists() {
+        println!("Index not found. Please run 'claude-search index' first.");
+        return Ok(());
+    }
+
+    let cache = CacheManager::new(index_path)?;
+    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
+    let mut results = search_engine.get_session_messages(&session_id)?;
+
+    if results.is_empty() {
+        println!("No messages found for session: {session_id}");
+        return Ok(());
+    }
+
+    // Sort and filter displayable
+    results.sort_by_key(|r| r.sequence_num);
+    let results: Vec<_> = results.into_iter().filter(|r| r.is_displayable()).collect();
+
+    // Build conversation text
+    let mut conversation = String::new();
+    for r in &results {
+        let content: String = r.content.split_whitespace().collect::<Vec<_>>().join(" ");
+        conversation.push_str(&format!("{}: {}\n", r.role_display(), content));
+    }
+
+    // Create jail directory in XDG_RUNTIME_DIR
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let jail_dir = std::path::PathBuf::from(&runtime_dir).join("claude-summary-jail");
+    std::fs::create_dir_all(&jail_dir)?;
+
+    let prompt = format!(
+        "Summarize this conversation concisely. Include: topic, key decisions, outcome.\n\n{}",
+        conversation
+    );
+
+    // Run claude --print in jailed directory with no tools, using haiku for cost
+    let mut child = Command::new("claude")
+        .args([
+            "--print",
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--model",
+            "haiku",
+        ])
+        .current_dir(&jail_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes())?;
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("claude exited with status: {}", status);
     }
 
     Ok(())

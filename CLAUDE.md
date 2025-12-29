@@ -50,6 +50,13 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 
 **Prefix matching for session IDs**: `get_session_messages` accepts short session IDs (first 8 chars) for convenience.
 
+## CLI/MCP Feature Parity
+
+CLI and MCP must share the same output formatting code in `src/shared/`. The only difference: MCP assumes non-TTY (no terminal hyperlinks). When adding features:
+- `-A`, `-B`, `-C` context switches must exist in both
+- Limits and filters should have equivalent options
+- New formatting goes in shared module, not duplicated
+
 ## MCP Tool Schema Conventions
 
 - Don't repeat default values in descriptions when `"default": N` is set in schema

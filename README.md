@@ -1,8 +1,12 @@
 # Claude Code Conversation Search
 
-**The only tool that lets Claude search its own conversation history.**
+**CLI + MCP tool for searching Claude Code conversation history.**
 
-Other tools (claude-history-explorer, claude-code-history-viewer, etc.) are *viewers* - you browse your history manually. This tool is an **MCP server** that gives Claude direct access to search past conversations, enabling it to recall previous solutions, patterns, and context without you having to find and paste them.
+A single binary that works two ways:
+- **CLI**: Search your conversations from the terminal (`claude-conversation-search search "rust async"`)
+- **MCP Server**: Lets Claude search its own history during sessions (the only tool that does this!)
+
+Other tools (claude-history-explorer, claude-code-history-viewer, etc.) are *viewers* - you browse manually. This tool indexes everything with Tantivy/BM25 and gives both you AND Claude direct search access.
 
 ![Screenshot](docs/screenshot.png)
 
