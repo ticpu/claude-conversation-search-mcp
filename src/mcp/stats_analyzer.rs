@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tracing::debug;
 
 use super::server::{CallToolResponse, ToolResult};
-use crate::shared::{CacheManager, SearchEngine, SearchQuery};
+use crate::shared::{CacheManager, SearchEngine, SearchQuery, SortOrder};
 
 pub async fn handle_get_stats(
     search_engine: Option<&SearchEngine>,
@@ -38,6 +38,9 @@ pub async fn handle_get_stats(
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 1000, // Get a large sample for stats
+        sort_by: SortOrder::default(),
+        after: None,
+        before: None,
     };
 
     let search_engine =

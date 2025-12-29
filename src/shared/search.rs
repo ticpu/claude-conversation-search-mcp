@@ -1,6 +1,7 @@
 use super::config::get_config;
-use super::models::{SearchQuery, SearchResult};
+use super::models::{SearchQuery, SearchResult, SortOrder};
 use super::terminal::file_hyperlink;
+use super::utils::{count_jsonl_lines, get_session_jsonl_path};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -128,6 +129,19 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
+
+            // Apply date range filters
+            if let Some(after) = query.after
+                && result.timestamp < after
+            {
+                continue;
+            }
+            if let Some(before) = query.before
+                && result.timestamp > before
+            {
+                continue;
+            }
+
             results.push(result);
         }
 
@@ -141,6 +155,9 @@ impl SearchEngine {
         context_before: usize,
         context_after: usize,
     ) -> Result<Vec<SearchResultWithContext>> {
+        // Save sort order before consuming query
+        let sort_by = query.sort_by.clone();
+
         // First, get the matching messages
         let matches = self.search(query)?;
 
@@ -148,7 +165,12 @@ impl SearchEngine {
 
         for match_result in matches {
             let session_messages = self.get_session_messages(&match_result.session_id)?;
-            let total_session_messages = session_messages.len();
+
+            // Get actual line count from JSONL file (fallback to index count if file not found)
+            let total_session_messages =
+                get_session_jsonl_path(&match_result.project_path, &match_result.session_id)
+                    .and_then(|p| count_jsonl_lines(&p))
+                    .unwrap_or(session_messages.len());
 
             // If we can't get session messages, still return the match with just itself as context
             if session_messages.is_empty() {
@@ -213,6 +235,27 @@ impl SearchEngine {
                     match_index: 0,
                     total_session_messages,
                 });
+            }
+        }
+
+        // Apply sorting based on sort_by
+        match sort_by {
+            SortOrder::DateDesc => {
+                results_with_context.sort_by(|a, b| {
+                    b.matched_message
+                        .timestamp
+                        .cmp(&a.matched_message.timestamp)
+                });
+            }
+            SortOrder::DateAsc => {
+                results_with_context.sort_by(|a, b| {
+                    a.matched_message
+                        .timestamp
+                        .cmp(&b.matched_message.timestamp)
+                });
+            }
+            SortOrder::Relevance => {
+                // Already sorted by BM25 score from Tantivy
             }
         }
 
@@ -572,14 +615,15 @@ impl SearchResultWithContext {
         let path_link = file_hyperlink(&project_path_full, &project_path_display);
         let session_link = file_hyperlink(&jsonl_path_str, short_session);
 
-        // Header: N. 📁 path 🗒️ session (M msgs) 💬 msg_uuid
+        // Header: N. 📁 path 🗒️ session (M msgs) 💬 msg_uuid 📅 timestamp
         output.push_str(&format!(
-            "{}. 📁 {} 🗒️ {} ({} msgs) 💬 {}\n",
+            "{}. 📁 {} 🗒️ {} ({} msgs) 💬 {} 📅 {}\n",
             index + 1,
             path_link,
             session_link,
             self.total_session_messages,
             short_msg,
+            self.matched_message.timestamp.format("%Y-%m-%d %H:%M"),
         ));
 
         // Tags line if any metadata present

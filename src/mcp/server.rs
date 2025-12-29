@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error};
 
 use crate::shared::{
-    CacheManager, SearchEngine, SearchQuery, auto_index, get_cache_dir, get_config,
+    CacheManager, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir, get_config,
 };
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
@@ -165,7 +165,7 @@ impl McpServer {
         let tools = vec![
             Tool {
                 name: "search_conversations".to_string(),
-                description: "Search through Claude Code conversation history with grep -C style context".to_string(),
+                description: "Search conversation history using Tantivy full-text search (BM25). Use exact terms for function names (`_fix_ssh_agent`), natural language for concepts (`ssh agent fix`). Supports field syntax: `session_id:abc`, `project:name`.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -201,6 +201,23 @@ impl McpServer {
                             "description": "Maximum results (default: 10)",
                             "optional": true,
                             "default": 10
+                        },
+                        "sort_by": {
+                            "type": "string",
+                            "enum": ["relevance", "date_desc", "date_asc"],
+                            "description": "Sort order: relevance (default), date_desc, date_asc",
+                            "optional": true,
+                            "default": "relevance"
+                        },
+                        "after": {
+                            "type": "string",
+                            "description": "Only results after this date (ISO 8601, e.g. 2025-12-01)",
+                            "optional": true
+                        },
+                        "before": {
+                            "type": "string",
+                            "description": "Only results before this date (ISO 8601)",
+                            "optional": true
                         },
                         "debug": {
                             "type": "string",
@@ -366,11 +383,36 @@ impl McpServer {
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
+        let sort_by = match args
+            .get("sort_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("relevance")
+        {
+            "date_desc" => SortOrder::DateDesc,
+            "date_asc" => SortOrder::DateAsc,
+            _ => SortOrder::Relevance,
+        };
+
+        let after = args
+            .get("after")
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
+        let before = args
+            .get("before")
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+
         let query = SearchQuery {
             text: query_text,
             project_filter,
             session_filter: None,
             limit: limit * 3,
+            sort_by,
+            after,
+            before,
         };
 
         let search_engine = self.search_engine.as_ref().unwrap();

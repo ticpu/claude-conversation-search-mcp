@@ -1,5 +1,5 @@
 use crate::cli::index;
-use crate::shared::{self, CacheManager, SearchEngine, SearchQuery};
+use crate::shared::{self, CacheManager, SearchEngine, SearchQuery, SortOrder};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -218,6 +218,9 @@ async fn search_conversations(
         project_filter,
         session_filter: None,
         limit,
+        sort_by: SortOrder::default(),
+        after: None,
+        before: None,
     };
 
     let results = search_engine.search_with_context(query, context, context)?;
@@ -257,6 +260,9 @@ async fn show_topics(
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 1000, // Large limit to get comprehensive topic analysis
+        sort_by: SortOrder::default(),
+        after: None,
+        before: None,
     };
 
     let results = search_engine.search(query)?;
@@ -370,6 +376,9 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 2000,
+        sort_by: SortOrder::default(),
+        after: None,
+        before: None,
     };
 
     let results = search_engine.search(query)?;

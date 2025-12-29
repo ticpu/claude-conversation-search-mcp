@@ -5,6 +5,8 @@ use super::lock::ExclusiveIndexAccess;
 use anyhow::Result;
 use glob::glob;
 use serde_json::Value;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -14,6 +16,25 @@ pub fn get_claude_dir() -> Result<PathBuf> {
 
 pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
+}
+
+/// Construct path to a session's JSONL file
+pub fn get_session_jsonl_path(project_path: &str, session_id: &str) -> Option<PathBuf> {
+    let claude_dir = get_claude_dir().ok()?;
+    // Claude uses format: -home-user-path-to-project (slashes and dots become dashes)
+    let project_dir_name = project_path.replace(['/', '.'], "-");
+    Some(
+        claude_dir
+            .join("projects")
+            .join(project_dir_name)
+            .join(format!("{}.jsonl", session_id)),
+    )
+}
+
+/// Count lines in a JSONL file (returns None if file doesn't exist or can't be read)
+pub fn count_jsonl_lines(path: &Path) -> Option<usize> {
+    let file = File::open(path).ok()?;
+    Some(BufReader::new(file).lines().count())
 }
 
 pub async fn auto_index(index_path: &Path) -> Result<()> {

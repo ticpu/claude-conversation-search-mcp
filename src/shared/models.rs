@@ -73,12 +73,23 @@ pub enum MessageType {
     System,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum SortOrder {
+    #[default]
+    Relevance,
+    DateDesc,
+    DateAsc,
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
     pub text: String,
     pub project_filter: Option<String>,
     pub session_filter: Option<String>,
     pub limit: usize,
+    pub sort_by: SortOrder,
+    pub after: Option<DateTime<Utc>>,
+    pub before: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
