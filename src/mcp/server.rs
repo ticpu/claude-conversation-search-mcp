@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +14,19 @@ use crate::shared::{
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
 const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
+
+/// Parse date string: YYYY-MM-DD (as start of day UTC) or full ISO 8601
+fn parse_date(s: &str) -> Result<DateTime<Utc>, String> {
+    // Try full ISO 8601 first
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    // Try YYYY-MM-DD
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap()));
+    }
+    Err(format!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s))
+}
 
 // MCP Protocol Structures
 #[derive(Debug, Serialize, Deserialize)]
@@ -166,75 +180,73 @@ impl McpServer {
         let tools = vec![
             Tool {
                 name: "search_conversations".to_string(),
-                description: "Search conversation history using Tantivy full-text search (BM25). Use exact terms for function names (`_fix_ssh_agent`), natural language for concepts (`ssh agent fix`). Supports field syntax: `session_id:abc`, `project:name`.".to_string(),
+                description: "Search conversation history (Tantivy/BM25). Exact terms for functions (`_fix_ssh_agent`), natural language for concepts. Workflow: search → get_messages(ids)/truncate_length:0 for full text → summarize_session for AI summary.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query text. Can use field syntax like 'session_id:abc' or 'project:name'"
+                            "description": "Search query. Field syntax: 'session_id:abc', 'project:name'"
                         },
                         "project": {
                             "type": "string",
-                            "description": "Optional project name to filter results",
+                            "description": "Filter by project name",
                             "optional": true
                         },
                         "context": {
                             "type": "integer",
-                            "description": "Number of messages before/after match to show (like grep -C). Default: 2",
+                            "description": "Messages before/after match (grep -C style)",
                             "optional": true,
                             "default": 2
                         },
                         "exclude_projects": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Exact project names to exclude",
+                            "description": "Project names to exclude",
                             "optional": true
                         },
                         "exclude_patterns": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Regex patterns to exclude projects by path/name",
+                            "description": "Regex patterns to exclude",
                             "optional": true
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum results (default: 10)",
+                            "description": "Max results",
                             "optional": true,
                             "default": 10
                         },
                         "sort_by": {
                             "type": "string",
                             "enum": ["relevance", "date_desc", "date_asc"],
-                            "description": "Sort order: relevance (default), date_desc, date_asc",
                             "optional": true,
                             "default": "relevance"
                         },
                         "after": {
                             "type": "string",
-                            "description": "Only results after this date (ISO 8601, e.g. 2025-12-01)",
+                            "description": "Results after date (YYYY-MM-DD or ISO 8601)",
                             "optional": true
                         },
                         "before": {
                             "type": "string",
-                            "description": "Only results before this date (ISO 8601)",
+                            "description": "Results before date (YYYY-MM-DD or ISO 8601)",
                             "optional": true
                         },
                         "include": {
                             "type": "array",
                             "items": { "type": "string", "enum": ["thinking", "tools", "current_session"] },
-                            "description": "Include filtered content: thinking (AI reasoning), tools (tool calls), current_session (don't exclude current session). Default: none (all filtered)",
+                            "description": "Include: thinking, tools, current_session",
                             "optional": true
                         },
-                        "max_line_length": {
+                        "truncate_length": {
                             "type": "integer",
-                            "description": "Max characters per context line. 0 = unlimited",
+                            "description": "Chars shown per message around match. 0 = full content",
                             "optional": true,
                             "default": 300
                         },
                         "debug": {
-                            "type": "string",
-                            "description": "Set to 'true' for debug output",
+                            "type": "boolean",
                             "optional": true
                         }
                     },
@@ -449,17 +461,39 @@ impl McpServer {
             _ => SortOrder::Relevance,
         };
 
-        let after = args
-            .get("after")
-            .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let after = if let Some(s) = args.get("after").and_then(|v| v.as_str()) {
+            match parse_date(s) {
+                Ok(dt) => Some(dt),
+                Err(e) => {
+                    return Ok(serde_json::to_value(CallToolResponse {
+                        content: vec![ToolResult {
+                            result_type: "text".to_string(),
+                            text: e,
+                        }],
+                        is_error: Some(true),
+                    })?);
+                }
+            }
+        } else {
+            None
+        };
 
-        let before = args
-            .get("before")
-            .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let before = if let Some(s) = args.get("before").and_then(|v| v.as_str()) {
+            match parse_date(s) {
+                Ok(dt) => Some(dt),
+                Err(e) => {
+                    return Ok(serde_json::to_value(CallToolResponse {
+                        content: vec![ToolResult {
+                            result_type: "text".to_string(),
+                            text: e,
+                        }],
+                        is_error: Some(true),
+                    })?);
+                }
+            }
+        } else {
+            None
+        };
 
         // Parse include parameter
         let include: Vec<String> = args
@@ -473,15 +507,15 @@ impl McpServer {
             })
             .unwrap_or_default();
 
-        let max_line_length = args
-            .get("max_line_length")
+        let truncate_length = args
+            .get("truncate_length")
             .and_then(|v| v.as_u64())
             .unwrap_or(300) as usize;
 
         let display_opts = DisplayOptions {
             include_thinking: include.contains(&"thinking".to_string()),
             include_tools: include.contains(&"tools".to_string()),
-            max_line_length,
+            truncate_length,
         };
 
         let include_current_session = include.contains(&"current_session".to_string());

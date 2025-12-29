@@ -605,8 +605,8 @@ pub struct SearchResultWithContext {
 pub struct DisplayOptions {
     pub include_thinking: bool,
     pub include_tools: bool,
-    /// Max characters per context line (0 = unlimited)
-    pub max_line_length: usize,
+    /// Characters shown per message around match (0 = full content)
+    pub truncate_length: usize,
 }
 
 impl Default for DisplayOptions {
@@ -614,7 +614,7 @@ impl Default for DisplayOptions {
         Self {
             include_thinking: false,
             include_tools: false,
-            max_line_length: 300,
+            truncate_length: 300,
         }
     }
 }
@@ -794,10 +794,10 @@ impl SearchResultWithContext {
             };
 
             let prefix = if i == self.match_index { "»  " } else { "   " };
-            let content = if opts.max_line_length == 0 {
+            let content = if opts.truncate_length == 0 {
                 msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
             } else {
-                truncate_content(&msg.content, opts.max_line_length)
+                truncate_content(&msg.content, opts.truncate_length)
             };
 
             output.push_str(&format!("{}{}: {}\n", prefix, role, content));
