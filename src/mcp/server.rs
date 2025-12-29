@@ -7,7 +7,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error};
 
 use crate::shared::{
-    CacheManager, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir, get_config,
+    CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir,
+    get_config,
 };
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
@@ -219,6 +220,12 @@ impl McpServer {
                             "description": "Only results before this date (ISO 8601)",
                             "optional": true
                         },
+                        "include": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["thinking", "tools", "current_session"] },
+                            "description": "Include filtered content: thinking (AI reasoning), tools (tool calls), current_session (don't exclude current session). Default: none (all filtered)",
+                            "optional": true
+                        },
                         "debug": {
                             "type": "string",
                             "description": "Set to 'true' for debug output",
@@ -370,8 +377,35 @@ impl McpServer {
         let claude_dir = config.get_claude_dir()?;
         let pattern = claude_dir.join("projects/**/*.jsonl");
         let all_files: Vec<_> = glob::glob(&pattern.to_string_lossy())?.flatten().collect();
+
+        // Detect current session early to exclude from stale check
+        let current_session_file: Option<std::path::PathBuf> =
+            std::env::current_dir().ok().and_then(|cwd| {
+                let cwd_str = cwd.to_string_lossy().replace(['/', '.'], "-");
+                let sess_pattern = claude_dir.join("projects").join(&cwd_str).join("*.jsonl");
+                glob::glob(&sess_pattern.to_string_lossy())
+                    .ok()?
+                    .flatten()
+                    .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
+            });
+
+        // Exclude current session from stale check (it's always being written to)
+        let current_session_name = current_session_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str());
+
+        let files_for_stale_check: Vec<_> = all_files
+            .iter()
+            .filter(|f| {
+                let name = f.file_name().and_then(|n| n.to_str());
+                name != current_session_name
+            })
+            .cloned()
+            .collect();
+
         let cache = CacheManager::new(&config.get_cache_dir()?)?;
-        let (stale_count, new_count) = cache.quick_health_check(&all_files);
+        let (stale_count, new_count) = cache.quick_health_check(&files_for_stale_check);
 
         let mut all_exclude_patterns = config.search.exclude_patterns.clone();
         all_exclude_patterns.extend(exclude_patterns.clone());
@@ -405,6 +439,36 @@ impl McpServer {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
 
+        // Parse include parameter
+        let include: Vec<String> = args
+            .get("include")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let display_opts = DisplayOptions {
+            include_thinking: include.contains(&"thinking".to_string()),
+            include_tools: include.contains(&"tools".to_string()),
+        };
+
+        let include_current_session = include.contains(&"current_session".to_string());
+
+        // Get current session ID from file detected earlier
+        let current_session_id: Option<String> = if !include_current_session {
+            current_session_file.as_ref().and_then(|p| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            })
+        } else {
+            None
+        };
+
         let query = SearchQuery {
             text: query_text,
             project_filter,
@@ -426,6 +490,15 @@ impl McpServer {
             .filter(|r| {
                 let proj = &r.matched_message.project;
                 let path = &r.matched_message.project_path;
+                let session = &r.matched_message.session_id;
+
+                // Exclude current session unless explicitly included
+                if let Some(ref current) = current_session_id
+                    && session == current
+                {
+                    return false;
+                }
+
                 if exclude_projects.contains(proj) {
                     return false;
                 }
@@ -435,7 +508,7 @@ impl McpServer {
                     }
                 }
                 // Deduplicate by session
-                session_seen.insert(r.matched_message.session_id.clone())
+                session_seen.insert(session.clone())
             })
             .take(limit)
             .collect();
@@ -483,7 +556,7 @@ impl McpServer {
                 context_size
             ));
             for (i, result) in filtered.iter().enumerate() {
-                output.push_str(&result.format_compact(i));
+                output.push_str(&result.format_compact_with_options(i, &display_opts));
                 if i < filtered.len() - 1 {
                     output.push('\n');
                 }

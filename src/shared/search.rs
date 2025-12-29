@@ -564,6 +564,39 @@ pub struct SearchResultWithContext {
     pub total_session_messages: usize,
 }
 
+/// Options for what to include in search result display
+#[derive(Debug, Clone, Default)]
+pub struct DisplayOptions {
+    pub include_thinking: bool,
+    pub include_tools: bool,
+}
+
+/// Filter content based on display options
+fn filter_content(s: &str, opts: &DisplayOptions) -> Option<String> {
+    // Check if content should be hidden
+    if !opts.include_thinking && s.starts_with("[thinking]") {
+        return None;
+    }
+    if !opts.include_tools
+        && (s.starts_with('[') && s.contains(']') && !s.starts_with("[result]"))
+        && !s.starts_with("[thinking]")
+    {
+        // Looks like a tool call [ToolName] {...}
+        if let Some(bracket_end) = s.find(']') {
+            let prefix = &s[1..bracket_end];
+            // Tool names are typically CamelCase or contain underscores/colons
+            if prefix
+                .chars()
+                .any(|c| c.is_uppercase() || c == '_' || c == ':')
+                && !prefix.contains(' ')
+            {
+                return None;
+            }
+        }
+    }
+    Some(s.to_string())
+}
+
 /// Safely truncate string at UTF-8 character boundary
 fn truncate_content(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
@@ -638,7 +671,73 @@ impl SearchResultWithContext {
         }
 
         // Context messages with » marker for match
+        let opts = DisplayOptions::default(); // Default: hide thinking/tools
+        self.format_context_messages(&mut output, &opts);
+
+        output
+    }
+
+    /// Format with display options
+    pub fn format_compact_with_options(&self, index: usize, opts: &DisplayOptions) -> String {
+        let mut output = String::new();
+        let config = get_config();
+        let claude_dir = config.get_claude_dir().unwrap_or_default();
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        let project_path_full = if !self.matched_message.project_path.is_empty()
+            && self.matched_message.project_path != "unknown"
+        {
+            self.matched_message.project_path.clone()
+        } else {
+            format!("{}/{}", home, self.matched_message.project)
+        };
+        let project_path_display = project_path_full.replace(&home, "~");
+
+        let session_id = &self.matched_message.session_id;
+        let project_dir_name = project_path_full.replace(['/', '.'], "-");
+        let jsonl_path = claude_dir
+            .join("projects")
+            .join(&project_dir_name)
+            .join(format!("{}.jsonl", session_id));
+        let jsonl_path_str = jsonl_path.to_string_lossy();
+
+        let short_session = &session_id[..8.min(session_id.len())];
+        let short_msg = &self.matched_message.uuid[..8.min(self.matched_message.uuid.len())];
+
+        let path_link = file_hyperlink(&project_path_full, &project_path_display);
+        let session_link = file_hyperlink(&jsonl_path_str, short_session);
+
+        output.push_str(&format!(
+            "{}. 📁 {} 🗒️ {} ({} msgs) 💬 {} 📅 {}\n",
+            index + 1,
+            path_link,
+            session_link,
+            self.total_session_messages,
+            short_msg,
+            self.matched_message.timestamp.format("%Y-%m-%d %H:%M"),
+        ));
+
+        let mut tags = Vec::new();
+        tags.extend(self.matched_message.technologies.iter().take(3).cloned());
+        tags.extend(self.matched_message.code_languages.iter().take(2).cloned());
+        if self.matched_message.has_error {
+            tags.push("error".to_string());
+        }
+        if !tags.is_empty() {
+            output.push_str(&format!("🎟️{}\n", tags.join(",")));
+        }
+
+        self.format_context_messages(&mut output, opts);
+        output
+    }
+
+    fn format_context_messages(&self, output: &mut String, opts: &DisplayOptions) {
         for (i, msg) in self.context_messages.iter().enumerate() {
+            // Filter content based on options
+            if filter_content(&msg.content, opts).is_none() {
+                continue;
+            }
+
             let role = match msg.message_type.as_str() {
                 "User" => "User",
                 "Assistant" => "AI",
@@ -651,8 +750,6 @@ impl SearchResultWithContext {
 
             output.push_str(&format!("{}{}: {}\n", prefix, role, content));
         }
-
-        output
     }
 
     /// Format with more detail for verbose output

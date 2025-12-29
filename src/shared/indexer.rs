@@ -157,7 +157,10 @@ impl SearchIndexer {
 
     /// Delete all documents for a session before re-indexing
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
-        let term = Term::from_field_text(self.fields.session_field, session_id);
+        // TEXT field tokenizes at hyphens, so use first segment for deletion
+        // UUID first segments are unique enough to avoid false matches
+        let first_segment = session_id.split('-').next().unwrap_or(session_id);
+        let term = Term::from_field_text(self.fields.session_field, first_segment);
         self.writer.delete_term(term);
         Ok(())
     }
