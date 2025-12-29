@@ -1,5 +1,6 @@
-use super::metadata::MetadataExtractor;
+use super::metadata;
 use super::models::{ContentBlock, ConversationEntry, MessageType, RawJsonlMessage};
+use super::utils::truncate_content;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
@@ -10,29 +11,10 @@ const TOOL_RESULT_MAX_CHARS: usize = 500;
 /// Maximum chars to keep from tool_use input preview
 const TOOL_USE_INPUT_MAX_CHARS: usize = 200;
 
-/// Safely truncate a string at a character boundary
-fn truncate_utf8(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_chars - 1).collect();
-        format!("{}…", truncated)
-    }
-}
-
+#[derive(Default)]
 pub struct JsonlParser;
 
-impl Default for JsonlParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl JsonlParser {
-    pub fn new() -> Self {
-        Self
-    }
-
     pub fn parse_file(&self, path: &Path) -> Result<Vec<ConversationEntry>> {
         let content = std::fs::read_to_string(path)?;
         let mut entries = Vec::new();
@@ -131,7 +113,7 @@ impl JsonlParser {
 
         // Extract metadata from content
         let (technologies, tools_mentioned, code_languages, has_code, content_has_error) =
-            MetadataExtractor::extract_all_metadata(&content);
+            metadata::extract_all_metadata(&content);
 
         // Merge tools from content blocks with metadata extraction
         let mut all_tools = tools_mentioned;
@@ -245,7 +227,7 @@ impl JsonlParser {
                 let name = block.get("name")?.as_str()?.to_string();
                 let input = block.get("input");
                 let input_preview = input
-                    .map(|v| truncate_utf8(&v.to_string(), TOOL_USE_INPUT_MAX_CHARS))
+                    .map(|v| truncate_content(&v.to_string(), TOOL_USE_INPUT_MAX_CHARS, false))
                     .unwrap_or_default();
                 Some(ContentBlock::ToolUse {
                     name,
@@ -274,7 +256,7 @@ impl JsonlParser {
                             None
                         }
                     })
-                    .map(|s| truncate_utf8(&s, TOOL_RESULT_MAX_CHARS))
+                    .map(|s| truncate_content(&s, TOOL_RESULT_MAX_CHARS, false))
                     .unwrap_or_default();
                 Some(ContentBlock::ToolResult {
                     content_preview,
@@ -329,7 +311,7 @@ mod tests {
     fn test_parse_user_message() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{"role":"user","content":"Hello world"}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser::new();
+        let parser = JsonlParser;
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         assert_eq!(entry.uuid, "abc123");
@@ -341,7 +323,7 @@ mod tests {
     fn test_skip_file_history_snapshot() {
         let json = r#"{"type":"file-history-snapshot","messageId":"xyz"}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser::new();
+        let parser = JsonlParser;
         let entry = parser.parse_raw_message(raw, "test", 0, &None);
 
         assert!(entry.is_none());
@@ -351,7 +333,7 @@ mod tests {
     fn test_parse_assistant_with_text_block() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Here is my response"}]}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser::new();
+        let parser = JsonlParser;
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         assert_eq!(entry.content, "Here is my response");
@@ -362,7 +344,7 @@ mod tests {
     fn test_parse_thinking_block() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser::new();
+        let parser = JsonlParser;
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         assert!(entry.content.contains("[thinking]"));
@@ -377,7 +359,7 @@ mod tests {
             long_content
         );
         let raw: RawJsonlMessage = serde_json::from_str(&json).unwrap();
-        let parser = JsonlParser::new();
+        let parser = JsonlParser;
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         // Should be truncated to ~500 chars + "[result] " prefix + "…"

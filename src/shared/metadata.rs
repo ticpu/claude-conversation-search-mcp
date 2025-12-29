@@ -190,73 +190,52 @@ static ERROR_PATTERNS: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
-pub struct MetadataExtractor;
-
-impl MetadataExtractor {
-    pub fn extract_technologies(content: &str) -> Vec<String> {
-        let mut technologies = HashSet::new();
-
-        for (tech, pattern) in TECHNOLOGY_PATTERNS.iter() {
-            if pattern.is_match(content) {
-                technologies.insert(tech.to_string());
-            }
+pub fn extract_technologies(content: &str) -> Vec<String> {
+    let mut technologies = HashSet::new();
+    for (tech, pattern) in TECHNOLOGY_PATTERNS.iter() {
+        if pattern.is_match(content) {
+            technologies.insert(tech.to_string());
         }
-
-        technologies.into_iter().collect()
     }
+    technologies.into_iter().collect()
+}
 
-    pub fn extract_tools_mentioned(content: &str) -> Vec<String> {
-        let mut tools = HashSet::new();
-
-        for (tool, pattern) in TOOL_PATTERNS.iter() {
-            if pattern.is_match(content) {
-                tools.insert(tool.to_string());
-            }
+pub fn extract_tools_mentioned(content: &str) -> Vec<String> {
+    let mut tools = HashSet::new();
+    for (tool, pattern) in TOOL_PATTERNS.iter() {
+        if pattern.is_match(content) {
+            tools.insert(tool.to_string());
         }
-
-        tools.into_iter().collect()
     }
+    tools.into_iter().collect()
+}
 
-    pub fn extract_code_languages(content: &str) -> Vec<String> {
-        let mut languages = HashSet::new();
-
-        for (lang, pattern) in LANGUAGE_PATTERNS.iter() {
-            if pattern.is_match(content) {
-                languages.insert(lang.to_string());
-            }
+pub fn extract_code_languages(content: &str) -> Vec<String> {
+    let mut languages = HashSet::new();
+    for (lang, pattern) in LANGUAGE_PATTERNS.iter() {
+        if pattern.is_match(content) {
+            languages.insert(lang.to_string());
         }
-
-        languages.into_iter().collect()
     }
+    languages.into_iter().collect()
+}
 
-    pub fn has_code_blocks(content: &str) -> bool {
-        CODE_BLOCK_PATTERN.is_match(content)
-    }
+pub fn has_code_blocks(content: &str) -> bool {
+    CODE_BLOCK_PATTERN.is_match(content)
+}
 
-    pub fn has_error_mentions(content: &str) -> bool {
-        ERROR_PATTERNS.is_match(content)
-    }
+pub fn has_error_mentions(content: &str) -> bool {
+    ERROR_PATTERNS.is_match(content)
+}
 
-    pub fn count_words(content: &str) -> usize {
-        content.split_whitespace().count()
-    }
-
-    pub fn extract_all_metadata(
-        content: &str,
-    ) -> (Vec<String>, Vec<String>, Vec<String>, bool, bool) {
-        let technologies = Self::extract_technologies(content);
-        let tools_mentioned = Self::extract_tools_mentioned(content);
-        let code_languages = Self::extract_code_languages(content);
-        let has_code = Self::has_code_blocks(content);
-        let has_error = Self::has_error_mentions(content);
-        (
-            technologies,
-            tools_mentioned,
-            code_languages,
-            has_code,
-            has_error,
-        )
-    }
+pub fn extract_all_metadata(content: &str) -> (Vec<String>, Vec<String>, Vec<String>, bool, bool) {
+    (
+        extract_technologies(content),
+        extract_tools_mentioned(content),
+        extract_code_languages(content),
+        has_code_blocks(content),
+        has_error_mentions(content),
+    )
 }
 
 #[cfg(test)]
@@ -266,7 +245,7 @@ mod tests {
     #[test]
     fn test_technology_extraction() {
         let content = "I'm working on a Rust project with Cargo and need to use Docker containers";
-        let techs = MetadataExtractor::extract_technologies(content);
+        let techs = extract_technologies(content);
         assert!(techs.contains(&"rust".to_string()));
         assert!(techs.contains(&"docker".to_string()));
     }
@@ -276,8 +255,8 @@ mod tests {
         let content_with_code = "Here's some code:\n```rust\nfn main() {}\n```";
         let content_without_code = "This is just plain text";
 
-        assert!(MetadataExtractor::has_code_blocks(content_with_code));
-        assert!(!MetadataExtractor::has_code_blocks(content_without_code));
+        assert!(has_code_blocks(content_with_code));
+        assert!(!has_code_blocks(content_without_code));
     }
 
     #[test]
@@ -285,7 +264,7 @@ mod tests {
         let content_with_error = "I'm getting an error when running this";
         let content_normal = "Everything is working fine";
 
-        assert!(MetadataExtractor::has_error_mentions(content_with_error));
-        assert!(!MetadataExtractor::has_error_mentions(content_normal));
+        assert!(has_error_mentions(content_with_error));
+        assert!(!has_error_mentions(content_normal));
     }
 }

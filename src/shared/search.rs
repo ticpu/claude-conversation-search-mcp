@@ -1,7 +1,8 @@
 use super::config::get_config;
 use super::models::{SearchQuery, SearchResult, SortOrder};
+use super::path_utils::{session_jsonl_path, short_uuid};
 use super::terminal::file_hyperlink;
-use super::utils::{count_jsonl_lines, get_session_jsonl_path};
+use super::utils::{count_jsonl_lines, truncate_content};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -106,15 +107,13 @@ impl SearchEngine {
 
         if let Some(project_filter) = query.project_filter {
             let project_term = Term::from_field_text(self.project_field, &project_filter);
-            let project_query =
-                TermQuery::new(project_term, tantivy::schema::IndexRecordOption::Basic);
+            let project_query = TermQuery::new(project_term, IndexRecordOption::Basic);
             final_query_parts.push((Occur::Must, Box::new(project_query)));
         }
 
         if let Some(session_filter) = query.session_filter {
             let session_term = Term::from_field_text(self.session_field, &session_filter);
-            let session_query =
-                TermQuery::new(session_term, tantivy::schema::IndexRecordOption::Basic);
+            let session_query = TermQuery::new(session_term, IndexRecordOption::Basic);
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
@@ -168,7 +167,7 @@ impl SearchEngine {
 
             // Get actual line count from JSONL file (fallback to index count if file not found)
             let total_session_messages =
-                get_session_jsonl_path(&match_result.project_path, &match_result.session_id)
+                session_jsonl_path(&match_result.project_path, &match_result.session_id)
                     .and_then(|p| count_jsonl_lines(&p))
                     .unwrap_or(session_messages.len());
 
@@ -393,7 +392,7 @@ impl SearchEngine {
             .to_string();
 
         let snippet = if query_text.is_empty() {
-            self.truncate_content(&content, 150)
+            truncate_content(&content, 150, false)
         } else {
             self.generate_snippet(&content, query_text)
         };
@@ -465,15 +464,6 @@ impl SearchEngine {
             agent_id,
             message_type,
         })
-    }
-
-    fn truncate_content(&self, content: &str, max_chars: usize) -> String {
-        if content.chars().count() <= max_chars {
-            content.to_string()
-        } else {
-            let truncated: String = content.chars().take(max_chars - 1).collect();
-            format!("{}…", truncated)
-        }
     }
 
     fn generate_snippet(&self, content: &str, query: &str) -> String {
@@ -571,10 +561,7 @@ impl SearchEngine {
 
         let query: Box<dyn tantivy::query::Query> = if let Some(project_filter) = project_filter {
             let project_term = Term::from_field_text(self.project_field, &project_filter);
-            Box::new(TermQuery::new(
-                project_term,
-                tantivy::schema::IndexRecordOption::Basic,
-            ))
+            Box::new(TermQuery::new(project_term, IndexRecordOption::Basic))
         } else {
             Box::new(tantivy::query::AllQuery)
         };
@@ -645,18 +632,6 @@ fn filter_content(s: &str, opts: &DisplayOptions) -> Option<String> {
     Some(s.to_string())
 }
 
-/// Safely truncate string at UTF-8 character boundary
-fn truncate_content(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        // Collapse whitespace for dense output
-        s.split_whitespace().collect::<Vec<_>>().join(" ")
-    } else {
-        let truncated: String = s.chars().take(max_chars - 1).collect();
-        let collapsed = truncated.split_whitespace().collect::<Vec<_>>().join(" ");
-        format!("{}…", collapsed)
-    }
-}
-
 impl SearchResultWithContext {
     /// Format as grep -C style output - compact and dense
     /// Format: N. 📁 ~/path 🗒️ session (M msgs) 💬 msg_uuid
@@ -664,79 +639,22 @@ impl SearchResultWithContext {
     ///         »  AI: matched content...
     ///            User: content...
     pub fn format_compact(&self, index: usize) -> String {
-        let mut output = String::new();
-        let config = get_config();
-        let claude_dir = config.get_claude_dir().unwrap_or_default();
-
-        // Get project path for display and file operations
-        let project_path_full = &self.matched_message.project_path;
-        let project_path_display = self.matched_message.project_path_display();
-
-        // Build JSONL file path for session hyperlink
-        // Claude uses format: -home-user-path-to-project (slashes and dots become dashes)
-        let session_id = &self.matched_message.session_id;
-        let project_dir_name = project_path_full.replace(['/', '.'], "-");
-        let jsonl_path = claude_dir
-            .join("projects")
-            .join(&project_dir_name)
-            .join(format!("{}.jsonl", session_id));
-        let jsonl_path_str = jsonl_path.to_string_lossy();
-
-        let short_session = &session_id[..8.min(session_id.len())];
-        let short_msg = &self.matched_message.uuid[..8.min(self.matched_message.uuid.len())];
-
-        // Create hyperlinks
-        let path_link = file_hyperlink(project_path_full, &project_path_display);
-        let session_link = file_hyperlink(&jsonl_path_str, short_session);
-
-        // Header: N. 📁 path 🗒️ session (M msgs) 💬 msg_uuid 📅 timestamp
-        output.push_str(&format!(
-            "{}. 📁 {} 🗒️ {} ({} msgs) 💬 {} 📅 {}\n",
-            index + 1,
-            path_link,
-            session_link,
-            self.total_session_messages,
-            short_msg,
-            self.matched_message.timestamp.format("%Y-%m-%d %H:%M"),
-        ));
-
-        // Tags line if any metadata present
-        let mut tags = Vec::new();
-        tags.extend(self.matched_message.technologies.iter().take(3).cloned());
-        tags.extend(self.matched_message.code_languages.iter().take(2).cloned());
-        if self.matched_message.has_error {
-            tags.push("error".to_string());
-        }
-        if !tags.is_empty() {
-            output.push_str(&format!("🎟️{}\n", tags.join(",")));
-        }
-
-        // Context messages with » marker for match
-        let opts = DisplayOptions::default(); // Default: hide thinking/tools
-        self.format_context_messages(&mut output, &opts);
-
-        output
+        self.format_compact_with_options(index, &DisplayOptions::default())
     }
 
     /// Format with display options
     pub fn format_compact_with_options(&self, index: usize, opts: &DisplayOptions) -> String {
         let mut output = String::new();
-        let config = get_config();
-        let claude_dir = config.get_claude_dir().unwrap_or_default();
 
         let project_path_full = &self.matched_message.project_path;
         let project_path_display = self.matched_message.project_path_display();
-
         let session_id = &self.matched_message.session_id;
-        let project_dir_name = project_path_full.replace(['/', '.'], "-");
-        let jsonl_path = claude_dir
-            .join("projects")
-            .join(&project_dir_name)
-            .join(format!("{}.jsonl", session_id));
+
+        let jsonl_path = session_jsonl_path(project_path_full, session_id).unwrap_or_default();
         let jsonl_path_str = jsonl_path.to_string_lossy();
 
-        let short_session = &session_id[..8.min(session_id.len())];
-        let short_msg = &self.matched_message.uuid[..8.min(self.matched_message.uuid.len())];
+        let short_session = short_uuid(session_id);
+        let short_msg = short_uuid(&self.matched_message.uuid);
 
         let path_link = file_hyperlink(project_path_full, &project_path_display);
         let session_link = file_hyperlink(&jsonl_path_str, short_session);
@@ -772,21 +690,14 @@ impl SearchResultWithContext {
                 continue;
             }
 
-            let role = match msg.message_type.as_str() {
-                "User" => "User",
-                "Assistant" => "AI",
-                "Summary" => "Sum",
-                _ => "?",
-            };
-
             let prefix = if i == self.match_index { "»  " } else { "   " };
             let content = if opts.truncate_length == 0 {
                 msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
             } else {
-                truncate_content(&msg.content, opts.truncate_length)
+                truncate_content(&msg.content, opts.truncate_length, true)
             };
 
-            output.push_str(&format!("{}{}: {}\n", prefix, role, content));
+            output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
         }
     }
 
@@ -799,13 +710,13 @@ impl SearchResultWithContext {
             index + 1,
             self.matched_message.project,
             self.matched_message.timestamp.format("%Y-%m-%d %H:%M"),
-            &self.matched_message.session_id[..12.min(self.matched_message.session_id.len())],
+            short_uuid(&self.matched_message.session_id),
             self.matched_message.score,
         ));
         output.push_str(&format!(
             "   {} msgs in session | uuid: {}\n",
             self.total_session_messages,
-            &self.matched_message.uuid[..12.min(self.matched_message.uuid.len())],
+            short_uuid(&self.matched_message.uuid),
         ));
 
         // Metadata tags on one line
@@ -828,17 +739,9 @@ impl SearchResultWithContext {
 
         // Context messages
         for (i, msg) in self.context_messages.iter().enumerate() {
-            let role = match msg.message_type.as_str() {
-                "User" => "User",
-                "Assistant" => "AI",
-                "Summary" => "Sum",
-                _ => "?",
-            };
-
             let prefix = if i == self.match_index { ">> " } else { "   " };
-            let content = truncate_content(&msg.content, 500);
-
-            output.push_str(&format!("{}{}: {}\n", prefix, role, content));
+            let content = truncate_content(&msg.content, 500, true);
+            output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
         }
 
         output

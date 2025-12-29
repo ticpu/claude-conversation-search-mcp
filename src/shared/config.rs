@@ -174,10 +174,3 @@ static CONFIG: OnceCell<Config> = OnceCell::new();
 pub fn get_config() -> &'static Config {
     CONFIG.get_or_init(|| Config::load().unwrap_or_default())
 }
-
-pub fn reload_config() -> Result<()> {
-    // We can't update OnceCell after initialization, so this just validates
-    // that the config file is still readable. For actual reloading, the
-    // application would need to restart.
-    Config::load().map(|_| ())
-}

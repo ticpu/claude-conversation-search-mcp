@@ -8,12 +8,25 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error};
 
 use crate::shared::{
-    CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir,
-    get_config,
+    CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index,
+    discover_jsonl_files, get_cache_dir, get_config, short_uuid,
 };
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
 const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
+
+/// Extract Vec<String> from JSON array value
+fn json_strings(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// Parse date string: YYYY-MM-DD (as start of day UTC) or full ISO 8601
 fn parse_date(s: &str) -> Result<DateTime<Utc>, String> {
@@ -140,7 +153,7 @@ impl McpServer {
             let cache_dir = get_cache_dir()?;
 
             // Auto-index if needed
-            auto_index(&cache_dir).await?;
+            auto_index(&cache_dir)?;
 
             self.search_engine = Some(SearchEngine::new(&cache_dir)?);
             self.cache_manager = Some(CacheManager::new(&cache_dir)?);
@@ -414,16 +427,7 @@ impl McpServer {
         let context_before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
         let context_after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
 
-        let exclude_projects: Vec<String> = args
-            .get("exclude_projects")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let exclude_projects = json_strings(args.get("exclude_projects"));
 
         let exclude_patterns: Vec<String> = args
             .get("exclude_patterns")
@@ -443,8 +447,7 @@ impl McpServer {
 
         let config = get_config();
         let claude_dir = config.get_claude_dir()?;
-        let pattern = claude_dir.join("projects/**/*.jsonl");
-        let all_files: Vec<_> = glob::glob(&pattern.to_string_lossy())?.flatten().collect();
+        let all_files = discover_jsonl_files()?;
 
         // Detect current session early to exclude from stale check
         let current_session_file: Option<std::path::PathBuf> =
@@ -530,16 +533,7 @@ impl McpServer {
         };
 
         // Parse include parameter
-        let include: Vec<String> = args
-            .get("include")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let include = json_strings(args.get("include"));
 
         let truncate_length = args
             .get("truncate_length")
@@ -699,7 +693,7 @@ impl McpServer {
             .first()
             .map(|m| m.project_path_display())
             .unwrap_or_default();
-        let short_session = &session_id[..8.min(session_id.len())];
+        let short_session = short_uuid(session_id);
 
         // Determine pagination: center_on mode vs offset/limit mode
         let center_on = args.get("center_on").and_then(|v| v.as_str());
@@ -744,12 +738,7 @@ impl McpServer {
         for (i, msg) in page_messages.iter().enumerate() {
             let idx = start + i;
             let time = msg.timestamp.format("%H:%M");
-            let msg_type = match msg.message_type.as_str() {
-                "assistant" => "AI",
-                "user" => "User",
-                "summary" => "Sum",
-                other => other,
-            };
+            let msg_type = msg.role_display();
             // Mark centered message with »
             let marker = if center_idx == Some(idx) { "»" } else { " " };
             // Collapse whitespace but keep full content
@@ -819,16 +808,7 @@ Task(
 
     async fn tool_get_messages(&self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
-        let ids: Vec<String> = args
-            .get("ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let ids = json_strings(args.get("ids"));
 
         if ids.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {
@@ -911,11 +891,8 @@ Task(
     async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let full_rebuild = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
-        let config = crate::shared::get_config();
-        let index_path = config.get_cache_dir()?;
-        let claude_dir = config.get_claude_dir()?;
-        let pattern = claude_dir.join("projects/**/*.jsonl");
-        let all_files: Vec<_> = glob::glob(&pattern.to_string_lossy())?.flatten().collect();
+        let index_path = get_config().get_cache_dir()?;
+        let all_files = discover_jsonl_files()?;
 
         let result = if full_rebuild {
             // Full rebuild - clear and recreate

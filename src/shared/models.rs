@@ -73,6 +73,18 @@ pub enum MessageType {
     System,
 }
 
+impl MessageType {
+    /// Short display name for output (User, AI, Sum, Sys)
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            MessageType::User => "User",
+            MessageType::Assistant => "AI",
+            MessageType::Summary => "Sum",
+            MessageType::System => "Sys",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum SortOrder {
     #[default]
@@ -131,14 +143,16 @@ impl SearchResult {
 
     /// Get project path with ~ for home directory
     pub fn project_path_display(&self) -> String {
-        if self.project_path.is_empty() || self.project_path == "unknown" {
-            return "unknown".to_string();
-        }
-        let home = std::env::var("HOME").unwrap_or_default();
-        if home.is_empty() {
-            self.project_path.clone()
-        } else {
-            self.project_path.replace(&home, "~")
+        super::path_utils::home_to_tilde(&self.project_path)
+    }
+
+    /// Short display name for message type (User, AI, Sum, Sys)
+    pub fn role_display(&self) -> &'static str {
+        match self.message_type.as_str() {
+            "User" => "User",
+            "Assistant" => "AI",
+            "Summary" => "Sum",
+            _ => "?",
         }
     }
 }

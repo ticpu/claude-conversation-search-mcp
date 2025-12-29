@@ -1,57 +1,91 @@
 use crate::cli::index;
 use crate::shared::{self, CacheManager, SearchEngine, SearchQuery, SortOrder};
 use anyhow::Result;
+use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-pub struct CliArgs {
-    pub verbose: u8,
-    pub command: CliCommands,
-}
-
+#[derive(Subcommand)]
 pub enum CliCommands {
+    /// Index management
     Index {
-        action: IndexAction,
+        #[command(subcommand)]
+        action: Option<IndexAction>,
     },
+    /// Search conversations (auto-indexes if needed)
     Search {
+        /// Search query
         query: String,
+        /// Filter by project
+        #[arg(long)]
         project: Option<String>,
+        /// Results limit
+        #[arg(long, default_value = "10")]
         limit: usize,
+        /// Context lines (messages before/after match, like grep -C)
+        #[arg(short = 'C', long, default_value = "2")]
         context: usize,
     },
+    /// Show technology topics and their usage across conversations
     Topics {
+        /// Filter by project
+        #[arg(long)]
         project: Option<String>,
+        /// Results limit
+        #[arg(long, default_value = "20")]
         limit: usize,
     },
+    /// Show detailed cache and conversation statistics
     Stats {
+        /// Filter by project
+        #[arg(long)]
         project: Option<String>,
     },
+    /// View specific session conversations
     Session {
+        /// Session ID to view
         session_id: String,
+        /// Show full content (not just snippets)
+        #[arg(long)]
         full: bool,
     },
+    /// Cache management
     Cache {
+        #[command(subcommand)]
         action: CacheAction,
     },
+    /// Run as MCP server
+    Mcp,
+    /// Register with Claude MCP
     Install {
+        /// Use project scope instead of user scope
+        #[arg(long)]
         project: bool,
     },
 }
 
+#[derive(Subcommand)]
 pub enum CacheAction {
+    /// Show cache statistics
     Info,
+    /// Clear cache and rebuild
     Clear,
 }
 
+#[derive(Subcommand, Default)]
 pub enum IndexAction {
+    /// Show index status and statistics (default)
+    #[default]
     Status,
+    /// Force full rebuild of the index
     Rebuild,
+    /// Clean up deleted entries from index
     Vacuum,
 }
 
-fn setup_logging(verbose: u8) {
+pub fn setup_logging(verbose: u8) {
     let level = match verbose {
         0 => Level::ERROR,
         1 => Level::WARN,
@@ -67,20 +101,20 @@ fn setup_logging(verbose: u8) {
         .init();
 }
 
-pub async fn run_cli(args: CliArgs) -> Result<()> {
-    // Setup logging based on verbosity
-    setup_logging(args.verbose);
+pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
+    setup_logging(verbose);
 
-    match args.command {
+    match command {
         CliCommands::Index { action } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
-            match action {
-                IndexAction::Status => index::show_status(&index_path).await?,
-                IndexAction::Rebuild => index::rebuild(&index_path).await?,
-                IndexAction::Vacuum => index::vacuum(&index_path).await?,
+            match action.unwrap_or_default() {
+                IndexAction::Status => index::show_status(&index_path)?,
+                IndexAction::Rebuild => index::rebuild(&index_path)?,
+                IndexAction::Vacuum => index::vacuum(&index_path)?,
             }
         }
+        CliCommands::Mcp => unreachable!("MCP handled in main"),
         CliCommands::Search {
             query,
             project,
@@ -90,42 +124,42 @@ pub async fn run_cli(args: CliArgs) -> Result<()> {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             // Auto-index before searching
-            shared::auto_index(&index_path).await?;
-            search_conversations(&index_path, query, project, limit, context).await?;
+            shared::auto_index(&index_path)?;
+            search_conversations(&index_path, query, project, limit, context)?;
         }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
-            shared::auto_index(&index_path).await?;
-            show_topics(&index_path, project, limit).await?;
+            shared::auto_index(&index_path)?;
+            show_topics(&index_path, project, limit)?;
         }
         CliCommands::Stats { project } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
-            shared::auto_index(&index_path).await?;
-            show_stats(&index_path, project).await?;
+            shared::auto_index(&index_path)?;
+            show_stats(&index_path, project)?;
         }
         CliCommands::Session { session_id, full } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
-            shared::auto_index(&index_path).await?;
-            view_session(&index_path, session_id, full).await?;
+            shared::auto_index(&index_path)?;
+            view_session(&index_path, session_id, full)?;
         }
         CliCommands::Cache { action } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             match action {
-                CacheAction::Info => show_cache_info(&index_path).await?,
-                CacheAction::Clear => clear_cache(&index_path).await?,
+                CacheAction::Info => show_cache_info(&index_path)?,
+                CacheAction::Clear => clear_cache(&index_path)?,
             }
         }
-        CliCommands::Install { project } => install(project).await?,
+        CliCommands::Install { project } => install(project)?,
     }
 
     Ok(())
 }
 
-async fn install(project_scope: bool) -> Result<()> {
+fn install(project_scope: bool) -> Result<()> {
     use std::process::Command;
 
     let exe = std::env::current_exe()?;
@@ -157,7 +191,7 @@ async fn install(project_scope: bool) -> Result<()> {
     Ok(())
 }
 
-async fn show_cache_info(index_path: &Path) -> Result<()> {
+fn show_cache_info(index_path: &Path) -> Result<()> {
     let cache_manager = CacheManager::new(index_path)?;
     let stats = cache_manager.get_stats();
 
@@ -192,14 +226,14 @@ async fn show_cache_info(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn clear_cache(index_path: &Path) -> Result<()> {
+fn clear_cache(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
     println!("Cache cleared successfully. Run 'claude-search index' to rebuild.");
     Ok(())
 }
 
-async fn search_conversations(
+fn search_conversations(
     index_path: &Path,
     query_text: String,
     project_filter: Option<String>,
@@ -242,11 +276,7 @@ async fn search_conversations(
     Ok(())
 }
 
-async fn show_topics(
-    index_path: &Path,
-    project_filter: Option<String>,
-    limit: usize,
-) -> Result<()> {
+fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
         return Ok(());
@@ -360,7 +390,7 @@ async fn show_topics(
     Ok(())
 }
 
-async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
+fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
         return Ok(());
@@ -465,7 +495,7 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
     Ok(())
 }
 
-async fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Result<()> {
+fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
         return Ok(());
@@ -483,16 +513,8 @@ async fn view_session(index_path: &Path, session_id: String, show_full: bool) ->
     // Sort by timestamp for chronological display
     results.sort_by_key(|r| r.timestamp);
 
-    // Get project path, replace $HOME with ~
-    let home = std::env::var("HOME").unwrap_or_default();
-    let project_path =
-        if !results[0].project_path.is_empty() && results[0].project_path != "unknown" {
-            results[0].project_path.replace(&home, "~")
-        } else {
-            format!("~/{}", results[0].project)
-        };
-
-    let short_session = &session_id[..8.min(session_id.len())];
+    let project_path = results[0].project_path_display();
+    let short_session = shared::short_uuid(&session_id);
     let time_range = format!(
         "{} - {}",
         results[0].timestamp.format("%Y-%m-%d %H:%M"),
@@ -544,12 +566,6 @@ async fn view_session(index_path: &Path, session_id: String, show_full: bool) ->
     // Messages in dense format, skip non-displayable messages
     let max_content = if show_full { 2000 } else { 200 };
     for result in results.iter().filter(|r| r.is_displayable()) {
-        let role = match result.message_type.as_str() {
-            "User" => "User",
-            "Assistant" => "AI",
-            "Summary" => "Sum",
-            _ => "?",
-        };
         let time = result.timestamp.format("%H:%M:%S");
         let content: String = result.content.chars().take(max_content).collect();
         let content = content.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -558,7 +574,13 @@ async fn view_session(index_path: &Path, session_id: String, show_full: bool) ->
         } else {
             ""
         };
-        println!("[{}] {}: {}{}", time, role, content, ellipsis);
+        println!(
+            "[{}] {}: {}{}",
+            time,
+            result.role_display(),
+            content,
+            ellipsis
+        );
     }
 
     if !show_full && results.iter().any(|r| r.content.chars().count() > 200) {

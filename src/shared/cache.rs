@@ -1,5 +1,6 @@
 use super::indexer::SearchIndexer;
 use super::parser::JsonlParser;
+use super::utils::file_mtime;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,8 @@ pub struct CacheMetadata {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileMetadata {
-    pub hash: String,
+    #[serde(alias = "hash")]
+    pub size_hex: String,
     pub size: u64,
     pub modified: DateTime<Utc>,
     pub indexed_at: DateTime<Utc>,
@@ -50,16 +52,8 @@ impl CacheManager {
     }
 
     pub fn needs_indexing(&self, file_path: &Path) -> Result<bool> {
-        let file_metadata = fs::metadata(file_path)?;
-        let file_size = file_metadata.len();
-        let file_modified = DateTime::from_timestamp(
-            file_metadata
-                .modified()?
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs() as i64,
-            0,
-        )
-        .unwrap_or_else(Utc::now);
+        let file_size = fs::metadata(file_path)?.len();
+        let file_modified = file_mtime(file_path)?;
 
         match self.metadata.indexed_files.get(file_path) {
             Some(cached) => {
@@ -75,7 +69,7 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        let parser = JsonlParser::new();
+        let parser = JsonlParser;
         let mut files_processed = 0;
         let mut total_entries = 0;
 
@@ -111,19 +105,11 @@ impl CacheManager {
                     }
 
                     // Update cache metadata
-                    let file_metadata = fs::metadata(&file_path)?;
-                    let file_size = file_metadata.len();
-                    let file_modified = DateTime::from_timestamp(
-                        file_metadata
-                            .modified()?
-                            .duration_since(std::time::UNIX_EPOCH)?
-                            .as_secs() as i64,
-                        0,
-                    )
-                    .unwrap_or_else(Utc::now);
+                    let file_size = fs::metadata(&file_path)?.len();
+                    let file_modified = file_mtime(&file_path)?;
 
                     let cached_metadata = FileMetadata {
-                        hash: format!("{file_size:x}"), // Use simple hash for tracking
+                        size_hex: format!("{file_size:x}"),
                         size: file_size,
                         modified: file_modified,
                         indexed_at: Utc::now(),
@@ -282,14 +268,9 @@ impl CacheManager {
         let mut stale = 0;
         let mut new_files = 0;
         for (path, meta) in &self.metadata.indexed_files {
-            if let Ok(file_meta) = fs::metadata(path) {
-                let mtime = file_meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                if file_meta.len() != meta.size || mtime != meta.modified.timestamp() {
+            if let Ok(current_mtime) = file_mtime(path) {
+                let current_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                if current_size != meta.size || current_mtime != meta.modified {
                     stale += 1;
                 }
             }
@@ -312,24 +293,10 @@ impl CacheManager {
         for (cached_path, cached_meta) in &self.metadata.indexed_files {
             if !cached_path.exists() {
                 missing_files.push(cached_path.clone());
-            } else {
-                // Check if file has been modified
-                if let Ok(file_meta) = fs::metadata(cached_path) {
-                    let current_size = file_meta.len();
-                    let current_mtime = DateTime::from_timestamp(
-                        file_meta
-                            .modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0),
-                        0,
-                    )
-                    .unwrap_or_else(Utc::now);
-
-                    if current_size != cached_meta.size || current_mtime != cached_meta.modified {
-                        stale_files.push(cached_path.clone());
-                    }
+            } else if let Ok(current_mtime) = file_mtime(cached_path) {
+                let current_size = fs::metadata(cached_path).map(|m| m.len()).unwrap_or(0);
+                if current_size != cached_meta.size || current_mtime != cached_meta.modified {
+                    stale_files.push(cached_path.clone());
                 }
             }
         }

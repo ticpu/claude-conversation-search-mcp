@@ -1,10 +1,11 @@
-use crate::shared::{self, CacheManager, ExclusiveIndexAccess, SearchIndexer, SharedIndexAccess};
+use crate::shared::{
+    CacheManager, ExclusiveIndexAccess, SearchIndexer, SharedIndexAccess, discover_jsonl_files,
+};
 use anyhow::Result;
-use glob::glob;
 use std::path::Path;
 use tracing::info;
 
-pub async fn show_status(index_path: &Path) -> Result<()> {
+pub fn show_status(index_path: &Path) -> Result<()> {
     println!("Index Status");
     println!("============");
 
@@ -64,7 +65,7 @@ pub async fn show_status(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn rebuild(index_path: &Path) -> Result<()> {
+pub fn rebuild(index_path: &Path) -> Result<()> {
     info!("Starting index rebuild...");
 
     // Acquire exclusive lock
@@ -73,20 +74,8 @@ pub async fn rebuild(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
 
-    let config = shared::get_config();
     let mut indexer = SearchIndexer::new(index_path)?;
-
-    let claude_dir = config.get_claude_dir()?;
-    let pattern = claude_dir.join("projects/**/*.jsonl");
-    let pattern_str = pattern.to_string_lossy();
-
-    let mut all_files = Vec::new();
-    for path in glob(&pattern_str)? {
-        match path {
-            Ok(p) => all_files.push(p),
-            Err(e) => info!("Glob error: {}", e),
-        }
-    }
+    let all_files = discover_jsonl_files()?;
 
     info!("Found {} files to process", all_files.len());
     cache_manager.update_incremental(&mut indexer, all_files)?;
@@ -95,7 +84,7 @@ pub async fn rebuild(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn vacuum(index_path: &Path) -> Result<()> {
+pub fn vacuum(index_path: &Path) -> Result<()> {
     info!("Starting index vacuum operation...");
 
     // Acquire exclusive lock
@@ -110,7 +99,7 @@ pub async fn vacuum(index_path: &Path) -> Result<()> {
     // built-in vacuum. In the future, we could implement a more sophisticated
     // approach that only removes deleted entries.
     println!("Vacuuming index by rebuilding...");
-    rebuild(index_path).await?;
+    rebuild(index_path)?;
 
     println!("Index vacuum completed.");
     Ok(())

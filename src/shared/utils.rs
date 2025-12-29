@@ -3,9 +3,9 @@ use super::config::get_config;
 use super::indexer::SearchIndexer;
 use super::lock::ExclusiveIndexAccess;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use glob::glob;
-use serde_json::Value;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -18,17 +18,38 @@ pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
 }
 
-/// Construct path to a session's JSONL file
-pub fn get_session_jsonl_path(project_path: &str, session_id: &str) -> Option<PathBuf> {
-    let claude_dir = get_claude_dir().ok()?;
-    // Claude uses format: -home-user-path-to-project (slashes and dots become dashes)
-    let project_dir_name = project_path.replace(['/', '.'], "-");
-    Some(
-        claude_dir
-            .join("projects")
-            .join(project_dir_name)
-            .join(format!("{}.jsonl", session_id)),
-    )
+/// Discover all JSONL files in Claude projects directory
+pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
+    let claude_dir = get_claude_dir()?;
+    let pattern = claude_dir.join("projects/**/*.jsonl");
+    let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?.flatten().collect();
+    Ok(files)
+}
+
+/// Get file modification time as DateTime<Utc>
+pub fn file_mtime(path: &Path) -> Result<DateTime<Utc>> {
+    let metadata = fs::metadata(path)?;
+    let mtime = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    Ok(DateTime::from_timestamp(mtime, 0).unwrap_or_else(Utc::now))
+}
+
+/// Truncate string at UTF-8 character boundary, optionally collapsing whitespace
+pub fn truncate_content(s: &str, max_chars: usize, collapse_whitespace: bool) -> String {
+    let processed = if collapse_whitespace {
+        s.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        s.to_string()
+    };
+
+    if processed.chars().count() <= max_chars {
+        processed
+    } else {
+        let truncated: String = processed.chars().take(max_chars - 1).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Count lines in a JSONL file (returns None if file doesn't exist or can't be read)
@@ -37,7 +58,7 @@ pub fn count_jsonl_lines(path: &Path) -> Option<usize> {
     Some(BufReader::new(file).lines().count())
 }
 
-pub async fn auto_index(index_path: &Path) -> Result<()> {
+pub fn auto_index(index_path: &Path) -> Result<()> {
     let config = get_config();
 
     // Skip auto-indexing if disabled in config
@@ -94,154 +115,7 @@ pub async fn auto_index(index_path: &Path) -> Result<()> {
         SearchIndexer::new(index_path)?
     };
 
-    let claude_dir = get_claude_dir()?;
-    let pattern = claude_dir.join("projects/**/*.jsonl");
-    let pattern_str = pattern.to_string_lossy();
-
-    let mut all_files = Vec::new();
-    // Silently skip errors during auto-indexing
-    for path in glob(&pattern_str)?.flatten() {
-        all_files.push(path);
-    }
-
+    let all_files = discover_jsonl_files()?;
     cache_manager.update_incremental(&mut indexer, all_files)?;
     Ok(())
-}
-
-/// Extract content from a Claude JSONL message entry
-/// Handles both simple string content and complex array structures
-pub fn extract_content_from_json(json: &Value) -> String {
-    // Try message.content first (standard Claude format)
-    if let Some(message) = json.get("message")
-        && let Some(content) = message.get("content")
-    {
-        if let Some(text) = content.as_str() {
-            return text.to_string();
-        }
-        if content.is_array() {
-            let mut text_parts = Vec::new();
-            for part in content.as_array().unwrap() {
-                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                    text_parts.push(text);
-                }
-            }
-            return text_parts.join(" ");
-        }
-    }
-
-    // Fallback to direct content field
-    if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
-        return content.to_string();
-    }
-
-    String::new()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_extract_simple_string_content() {
-        let json = json!({
-            "message": {
-                "content": "Hello world"
-            }
-        });
-
-        assert_eq!(extract_content_from_json(&json), "Hello world");
-    }
-
-    #[test]
-    fn test_extract_array_content() {
-        let json = json!({
-            "message": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Please analyze this codebase"
-                    },
-                    {
-                        "type": "text",
-                        "text": "and create documentation"
-                    }
-                ]
-            }
-        });
-
-        assert_eq!(
-            extract_content_from_json(&json),
-            "Please analyze this codebase and create documentation"
-        );
-    }
-
-    #[test]
-    fn test_extract_complex_claude_format() {
-        // Real Claude JSONL format from our problematic case
-        let json = json!({
-            "parentUuid": "4fae46dd-e514-4b7c-b173-7dd4ddee1cf3",
-            "sessionId": "4af624da-58de-404f-92c9-bc582b288da6",
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Please analyze this codebase and create a CLAUDE.md file"
-                    }
-                ]
-            },
-            "timestamp": "2025-08-28T20:08:33.947Z"
-        });
-
-        let result = extract_content_from_json(&json);
-        assert_eq!(
-            result,
-            "Please analyze this codebase and create a CLAUDE.md file"
-        );
-        assert!(!result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_direct_content_fallback() {
-        let json = json!({
-            "content": "Direct content field"
-        });
-
-        assert_eq!(extract_content_from_json(&json), "Direct content field");
-    }
-
-    #[test]
-    fn test_extract_empty_content() {
-        let json = json!({
-            "some_other_field": "value"
-        });
-
-        assert_eq!(extract_content_from_json(&json), "");
-    }
-
-    #[test]
-    fn test_extract_array_with_mixed_types() {
-        let json = json!({
-            "message": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "First part"
-                    },
-                    {
-                        "type": "image",
-                        "url": "http://example.com/image.png"
-                    },
-                    {
-                        "type": "text",
-                        "text": "Second part"
-                    }
-                ]
-            }
-        });
-
-        assert_eq!(extract_content_from_json(&json), "First part Second part");
-    }
 }

@@ -1,7 +1,7 @@
 use claude_conversation_search::{cli, mcp};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "claude-conversation-search")]
@@ -12,84 +12,7 @@ struct Cli {
     verbose: u8,
 
     #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Index management
-    Index {
-        #[command(subcommand)]
-        action: Option<IndexAction>,
-    },
-    /// Search conversations (auto-indexes if needed)
-    Search {
-        /// Search query
-        query: String,
-        /// Filter by project
-        #[arg(long)]
-        project: Option<String>,
-        /// Results limit
-        #[arg(long, default_value = "10")]
-        limit: usize,
-        /// Context lines (messages before/after match, like grep -C)
-        #[arg(short = 'C', long, default_value = "2")]
-        context: usize,
-    },
-    /// Show technology topics and their usage across conversations
-    Topics {
-        /// Filter by project
-        #[arg(long)]
-        project: Option<String>,
-        /// Results limit
-        #[arg(long, default_value = "20")]
-        limit: usize,
-    },
-    /// Show detailed cache and conversation statistics
-    Stats {
-        /// Filter by project
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// View specific session conversations
-    Session {
-        /// Session ID to view
-        session_id: String,
-        /// Show full content (not just snippets)
-        #[arg(long)]
-        full: bool,
-    },
-    /// Cache management
-    Cache {
-        #[command(subcommand)]
-        action: CacheAction,
-    },
-    /// Run as MCP server
-    Mcp,
-    /// Register with Claude MCP
-    Install {
-        /// Use project scope instead of user scope
-        #[arg(long)]
-        project: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum CacheAction {
-    /// Show cache statistics
-    Info,
-    /// Clear cache and rebuild
-    Clear,
-}
-
-#[derive(Subcommand)]
-enum IndexAction {
-    /// Show index status and statistics (default)
-    Status,
-    /// Force full rebuild of the index
-    Rebuild,
-    /// Clean up deleted entries from index
-    Vacuum,
+    command: Option<cli::CliCommands>,
 }
 
 #[tokio::main]
@@ -105,54 +28,13 @@ async fn main() -> Result<()> {
         default_panic(panic_info);
     }));
 
-    let cli = Cli::parse();
+    let args = Cli::parse();
 
-    match cli.command {
-        Some(Commands::Mcp) | None => {
+    match args.command {
+        Some(cli::CliCommands::Mcp) | None => {
             // Default to MCP server mode when no subcommand provided
             mcp::run_mcp_server().await
         }
-        Some(command) => {
-            // Pass CLI args to the CLI handler
-            let cli_args = cli::CliArgs {
-                verbose: cli.verbose,
-                command: match command {
-                    Commands::Index { action } => cli::CliCommands::Index {
-                        action: match action.unwrap_or(IndexAction::Status) {
-                            IndexAction::Status => cli::IndexAction::Status,
-                            IndexAction::Rebuild => cli::IndexAction::Rebuild,
-                            IndexAction::Vacuum => cli::IndexAction::Vacuum,
-                        },
-                    },
-                    Commands::Search {
-                        query,
-                        project,
-                        limit,
-                        context,
-                    } => cli::CliCommands::Search {
-                        query,
-                        project,
-                        limit,
-                        context,
-                    },
-                    Commands::Topics { project, limit } => {
-                        cli::CliCommands::Topics { project, limit }
-                    }
-                    Commands::Stats { project } => cli::CliCommands::Stats { project },
-                    Commands::Session { session_id, full } => {
-                        cli::CliCommands::Session { session_id, full }
-                    }
-                    Commands::Cache { action } => cli::CliCommands::Cache {
-                        action: match action {
-                            CacheAction::Info => cli::CacheAction::Info,
-                            CacheAction::Clear => cli::CacheAction::Clear,
-                        },
-                    },
-                    Commands::Mcp => unreachable!(), // Already handled above
-                    Commands::Install { project } => cli::CliCommands::Install { project },
-                },
-            };
-            cli::run_cli(cli_args).await
-        }
+        Some(command) => cli::run_cli(args.verbose, command),
     }
 }
