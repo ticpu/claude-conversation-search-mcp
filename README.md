@@ -4,15 +4,31 @@
 
 Other tools (claude-history-explorer, claude-code-history-viewer, etc.) are *viewers* - you browse your history manually. This tool is an **MCP server** that gives Claude direct access to search past conversations, enabling it to recall previous solutions, patterns, and context without you having to find and paste them.
 
+![Screenshot](docs/screenshot.png)
+
+*Claude searching its own history to understand why a function was added, then jumping to the exact message with `center_on` and `-B/-A` context.*
+
+## Perfect For Heavy Claude Code Users
+
+If you work across **dozens of projects**, you know the pain:
+- "I solved this exact problem last month... but which project?"
+- "What was that regex pattern I used for parsing logs?"
+- "How did I configure that Docker setup?"
+
+This tool indexes **all your conversations across all projects** and lets Claude search them instantly. No more digging through folders or re-explaining context.
+
+> **Warning**: Claude Code auto-deletes old conversations! Check `~/.claude/settings.json` for `cleanupPeriodDays` - this deletes conversations older than N days (0 = immediate deletion!). Set it to `999999999` to keep your history.
+
 ## Why This Tool?
 
 | Feature | This Tool | Other Tools |
 |---------|-----------|-------------|
 | Claude can search its own history | ✓ MCP integration | ✗ Manual browsing only |
+| Cross-project search | ✓ All projects indexed | ✗ Per-project only |
 | Full-text search | ✓ Tantivy/BM25 | Some have regex |
+| Jump to specific message | ✓ `center_on` + `-B/-A` context | ✗ |
 | Smart content filtering | ✓ Skips tool_result noise | ✗ Index everything |
 | Passive staleness detection | ✓ Warns when index outdated | ✗ |
-| CLI + MCP in one binary | ✓ | N/A |
 
 ## Overview
 
@@ -177,11 +193,12 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
    - "Show stats on my coding conversations"
 
 ### MCP Tools Available
-- **search_conversations**: grep-C style search with context. Shows 🎟️ tags (technologies, languages, errors).
-- **get_session_messages**: Paginated full session content for quick lookups.
+- **search_conversations**: Full-text search with `-C`/`-B`/`-A` context (grep-style). Shows timestamps, session IDs, 🎟️ tags.
+- **get_session_messages**: Paginated session content. Use `center_on` + `-B`/`-A` to jump to a specific message.
+- **get_messages**: Fetch full content of specific messages by UUID (from 💬 in search results).
 - **summarize_session**: Returns Task instructions for haiku-powered summarization of large sessions.
-- **reindex**: Update index for stale/new files (use when search results seem incomplete).
-- **respawn_server**: Reload MCP server without restarting Claude Code.
+- **reindex**: Update index when results seem incomplete.
+- **respawn_server**: Reload MCP server after rebuilding.
 
 ## Examples
 
