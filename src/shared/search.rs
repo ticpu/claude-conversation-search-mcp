@@ -300,6 +300,42 @@ impl SearchEngine {
         Ok(results)
     }
 
+    /// Get specific messages by their UUIDs
+    pub fn get_messages_by_uuid(&self, uuids: &[String]) -> Result<Vec<SearchResult>> {
+        let searcher = self.reader.searcher();
+        let mut results = Vec::new();
+
+        for uuid in uuids {
+            // UUID is stored as TEXT, tokenized at hyphens
+            let segments: Vec<_> = uuid.split('-').collect();
+            let segment_queries: Vec<_> = segments
+                .iter()
+                .map(|seg| {
+                    let term = Term::from_field_text(self.uuid_field, seg);
+                    (
+                        Occur::Must,
+                        Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                            as Box<dyn tantivy::query::Query>,
+                    )
+                })
+                .collect();
+            let query = BooleanQuery::new(segment_queries);
+
+            let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+
+            for (score, doc_address) in top_docs {
+                let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
+                // Exact match or prefix match
+                if result.uuid == *uuid || result.uuid.starts_with(uuid) {
+                    results.push(result);
+                    break;
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     fn doc_to_result(
         &self,
         doc: &TantivyDocument,
@@ -565,10 +601,22 @@ pub struct SearchResultWithContext {
 }
 
 /// Options for what to include in search result display
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DisplayOptions {
     pub include_thinking: bool,
     pub include_tools: bool,
+    /// Max characters per context line (0 = unlimited)
+    pub max_line_length: usize,
+}
+
+impl Default for DisplayOptions {
+    fn default() -> Self {
+        Self {
+            include_thinking: false,
+            include_tools: false,
+            max_line_length: 300,
+        }
+    }
 }
 
 /// Filter content based on display options
@@ -746,7 +794,11 @@ impl SearchResultWithContext {
             };
 
             let prefix = if i == self.match_index { "»  " } else { "   " };
-            let content = truncate_content(&msg.content, 300);
+            let content = if opts.max_line_length == 0 {
+                msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
+            } else {
+                truncate_content(&msg.content, opts.max_line_length)
+            };
 
             output.push_str(&format!("{}{}: {}\n", prefix, role, content));
         }

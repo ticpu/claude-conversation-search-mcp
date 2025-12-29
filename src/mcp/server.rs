@@ -226,6 +226,12 @@ impl McpServer {
                             "description": "Include filtered content: thinking (AI reasoning), tools (tool calls), current_session (don't exclude current session). Default: none (all filtered)",
                             "optional": true
                         },
+                        "max_line_length": {
+                            "type": "integer",
+                            "description": "Max characters per context line. 0 = unlimited",
+                            "optional": true,
+                            "default": 300
+                        },
                         "debug": {
                             "type": "string",
                             "description": "Set to 'true' for debug output",
@@ -293,6 +299,21 @@ impl McpServer {
                     "required": ["session_id"]
                 }),
             },
+            Tool {
+                name: "get_messages".to_string(),
+                description: "Get full content of specific messages by UUID. Use after search to read complete message text.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Message UUIDs (from 💬 in search results)"
+                        }
+                    },
+                    "required": ["ids"]
+                }),
+            },
         ];
 
         let response = ListToolsResponse { tools };
@@ -311,6 +332,7 @@ impl McpServer {
             "reindex" => self.tool_reindex(request.arguments).await?,
             "get_session_messages" => self.tool_get_session_messages(request.arguments).await?,
             "summarize_session" => self.tool_summarize_session(request.arguments).await?,
+            "get_messages" => self.tool_get_messages(request.arguments).await?,
             _ => {
                 return Ok(serde_json::to_value(CallToolResponse {
                     content: vec![ToolResult {
@@ -451,9 +473,15 @@ impl McpServer {
             })
             .unwrap_or_default();
 
+        let max_line_length = args
+            .get("max_line_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300) as usize;
+
         let display_opts = DisplayOptions {
             include_thinking: include.contains(&"thinking".to_string()),
             include_tools: include.contains(&"tools".to_string()),
+            max_line_length,
         };
 
         let include_current_session = include.contains(&"current_session".to_string());
@@ -687,6 +715,62 @@ Task(
 4. Return a concise summary: topic, key decisions, outcome"
 )"#
         );
+
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: output,
+            }],
+            is_error: None,
+        })?)
+    }
+
+    async fn tool_get_messages(&self, args: Option<Value>) -> Result<Value> {
+        let args = args.unwrap_or_default();
+        let ids: Vec<String> = args
+            .get("ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if ids.is_empty() {
+            return Ok(serde_json::to_value(CallToolResponse {
+                content: vec![ToolResult {
+                    result_type: "text".to_string(),
+                    text: "No message IDs provided".to_string(),
+                }],
+                is_error: Some(true),
+            })?);
+        }
+
+        let search_engine = self.search_engine.as_ref().unwrap();
+        let messages = search_engine.get_messages_by_uuid(&ids)?;
+
+        if messages.is_empty() {
+            return Ok(serde_json::to_value(CallToolResponse {
+                content: vec![ToolResult {
+                    result_type: "text".to_string(),
+                    text: "No messages found for provided IDs".to_string(),
+                }],
+                is_error: None,
+            })?);
+        }
+
+        let mut output = String::new();
+        for msg in &messages {
+            output.push_str(&format!(
+                "💬 {} 📅 {} [{}]\n{}\n\n",
+                &msg.uuid[..8.min(msg.uuid.len())],
+                msg.timestamp.format("%Y-%m-%d %H:%M"),
+                msg.message_type,
+                msg.content
+            ));
+        }
 
         Ok(serde_json::to_value(CallToolResponse {
             content: vec![ToolResult {
