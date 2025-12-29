@@ -48,11 +48,8 @@ pub async fn handle_get_stats(
     let results = search_engine.search(query)?;
 
     if results.is_empty() {
-        let msg = if project_filter.is_some() {
-            format!(
-                "No conversations found for project: {}",
-                project_filter.unwrap()
-            )
+        let msg = if let Some(ref proj) = project_filter {
+            format!("No conversations found for project: {}", proj)
         } else {
             "No conversations found in index".to_string()
         };

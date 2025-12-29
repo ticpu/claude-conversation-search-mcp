@@ -70,3 +70,14 @@ MCP servers communicate via JSON-RPC over stdio. Use `debug: true` parameter on 
 3. `cargo fmt`
 
 All warnings must be resolved. Remove unused code instead of suppressing.
+
+## Release Process
+
+1. Update version in `Cargo.toml`
+2. Run `cargo clippy -- -D warnings` (CI uses `-D warnings`)
+3. Commit: `git commit -m "bump: Version X.Y.Z"`
+4. Push and wait for CI: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
+5. Tag: `git tag -as vX.Y.Z` (annotated + signed)
+6. Push tag: `git push --tags`
+
+Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.
