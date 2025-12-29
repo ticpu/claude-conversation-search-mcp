@@ -668,16 +668,9 @@ impl SearchResultWithContext {
         let config = get_config();
         let claude_dir = config.get_claude_dir().unwrap_or_default();
 
-        // Get full project path, replace $HOME with ~
-        let home = std::env::var("HOME").unwrap_or_default();
-        let project_path_full = if !self.matched_message.project_path.is_empty()
-            && self.matched_message.project_path != "unknown"
-        {
-            self.matched_message.project_path.clone()
-        } else {
-            format!("{}/{}", home, self.matched_message.project)
-        };
-        let project_path_display = project_path_full.replace(&home, "~");
+        // Get project path for display and file operations
+        let project_path_full = &self.matched_message.project_path;
+        let project_path_display = self.matched_message.project_path_display();
 
         // Build JSONL file path for session hyperlink
         // Claude uses format: -home-user-path-to-project (slashes and dots become dashes)
@@ -693,7 +686,7 @@ impl SearchResultWithContext {
         let short_msg = &self.matched_message.uuid[..8.min(self.matched_message.uuid.len())];
 
         // Create hyperlinks
-        let path_link = file_hyperlink(&project_path_full, &project_path_display);
+        let path_link = file_hyperlink(project_path_full, &project_path_display);
         let session_link = file_hyperlink(&jsonl_path_str, short_session);
 
         // Header: N. 📁 path 🗒️ session (M msgs) 💬 msg_uuid 📅 timestamp
@@ -731,15 +724,8 @@ impl SearchResultWithContext {
         let config = get_config();
         let claude_dir = config.get_claude_dir().unwrap_or_default();
 
-        let home = std::env::var("HOME").unwrap_or_default();
-        let project_path_full = if !self.matched_message.project_path.is_empty()
-            && self.matched_message.project_path != "unknown"
-        {
-            self.matched_message.project_path.clone()
-        } else {
-            format!("{}/{}", home, self.matched_message.project)
-        };
-        let project_path_display = project_path_full.replace(&home, "~");
+        let project_path_full = &self.matched_message.project_path;
+        let project_path_display = self.matched_message.project_path_display();
 
         let session_id = &self.matched_message.session_id;
         let project_dir_name = project_path_full.replace(['/', '.'], "-");
@@ -752,7 +738,7 @@ impl SearchResultWithContext {
         let short_session = &session_id[..8.min(session_id.len())];
         let short_msg = &self.matched_message.uuid[..8.min(self.matched_message.uuid.len())];
 
-        let path_link = file_hyperlink(&project_path_full, &project_path_display);
+        let path_link = file_hyperlink(project_path_full, &project_path_display);
         let session_link = file_hyperlink(&jsonl_path_str, short_session);
 
         output.push_str(&format!(

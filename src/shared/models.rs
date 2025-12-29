@@ -128,4 +128,17 @@ impl SearchResult {
         }
         true
     }
+
+    /// Get project path with ~ for home directory
+    pub fn project_path_display(&self) -> String {
+        if self.project_path.is_empty() || self.project_path == "unknown" {
+            return "unknown".to_string();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            self.project_path.clone()
+        } else {
+            self.project_path.replace(&home, "~")
+        }
+    }
 }

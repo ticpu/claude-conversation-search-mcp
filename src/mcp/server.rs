@@ -697,7 +697,7 @@ impl McpServer {
         let total = messages.len();
         let project = messages
             .first()
-            .map(|m| m.project_path.clone())
+            .map(|m| m.project_path_display())
             .unwrap_or_default();
         let short_session = &session_id[..8.min(session_id.len())];
 
