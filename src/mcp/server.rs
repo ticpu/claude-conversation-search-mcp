@@ -193,11 +193,21 @@ impl McpServer {
                             "description": "Filter by project name",
                             "optional": true
                         },
-                        "context": {
+                        "-C": {
                             "type": "integer",
-                            "description": "Messages before/after match (grep -C style)",
+                            "description": "Messages before and after match (like grep -C)",
                             "optional": true,
                             "default": 2
+                        },
+                        "-B": {
+                            "type": "integer",
+                            "description": "Messages before match (like grep -B)",
+                            "optional": true
+                        },
+                        "-A": {
+                            "type": "integer",
+                            "description": "Messages after match (like grep -A)",
+                            "optional": true
                         },
                         "exclude_projects": {
                             "type": "array",
@@ -273,7 +283,7 @@ impl McpServer {
             },
             Tool {
                 name: "get_session_messages".to_string(),
-                description: "Paginate session messages. For full summary, start by using summarize_session to setup a task.".to_string(),
+                description: "Paginate session messages. Use offset/limit for sequential reading, or center_on with -B/-A/-C to jump to a specific message.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -283,15 +293,36 @@ impl McpServer {
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "Starting message index (default: 0)",
+                            "description": "Starting message index",
                             "optional": true,
                             "default": 0
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Messages per page (default: 50)",
+                            "description": "Messages per page",
                             "optional": true,
                             "default": 50
+                        },
+                        "center_on": {
+                            "type": "string",
+                            "description": "Message UUID to center around (from 💬 in search). Overrides offset/limit.",
+                            "optional": true
+                        },
+                        "-C": {
+                            "type": "integer",
+                            "description": "Messages before and after center_on (like grep -C)",
+                            "optional": true,
+                            "default": 10
+                        },
+                        "-B": {
+                            "type": "integer",
+                            "description": "Messages before center_on (like grep -B)",
+                            "optional": true
+                        },
+                        "-A": {
+                            "type": "integer",
+                            "description": "Messages after center_on (like grep -A)",
+                            "optional": true
                         }
                     },
                     "required": ["session_id"]
@@ -299,7 +330,7 @@ impl McpServer {
             },
             Tool {
                 name: "summarize_session".to_string(),
-                description: "Get instructions for summarizing a session with AI.".to_string(),
+                description: "Get Task tool instructions to summarize a session with haiku. Use for long sessions when you need an AI-generated overview.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -378,7 +409,10 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let context_size = args.get("context").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        // Parse grep-style context: -C (both), -B (before), -A (after)
+        let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(2);
+        let context_before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+        let context_after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
 
         let exclude_projects: Vec<String> = args
             .get("exclude_projects")
@@ -543,7 +577,7 @@ impl McpServer {
 
         let search_engine = self.search_engine.as_ref().unwrap();
         let results_with_context =
-            search_engine.search_with_context(query, context_size, context_size)?;
+            search_engine.search_with_context(query, context_before, context_after)?;
 
         // Filter and deduplicate
         let mut session_seen = std::collections::HashSet::new();
@@ -579,9 +613,10 @@ impl McpServer {
 
         if debug_mode {
             output.push_str(&format!(
-                "DEBUG: query={:?}, context={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
+                "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
                 args.get("query"),
-                context_size,
+                context_before,
+                context_after,
                 limit,
                 exclude_projects,
                 all_exclude_patterns
@@ -639,9 +674,6 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
-        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-
         let search_engine = self.search_engine.as_ref().unwrap();
         let mut messages = search_engine.get_session_messages(session_id)?;
 
@@ -669,9 +701,32 @@ impl McpServer {
             .unwrap_or_default();
         let short_session = &session_id[..8.min(session_id.len())];
 
-        // Apply pagination
-        let end = (offset + limit).min(total);
-        let page_messages = &messages[offset..end];
+        // Determine pagination: center_on mode vs offset/limit mode
+        let center_on = args.get("center_on").and_then(|v| v.as_str());
+        let (start, end, center_idx) = if let Some(uuid) = center_on {
+            // Find message by UUID (prefix match)
+            let idx = messages
+                .iter()
+                .position(|m| m.uuid.starts_with(uuid))
+                .unwrap_or(0);
+
+            // Parse -C/-B/-A
+            let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(10);
+            let before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+            let after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+
+            let start = idx.saturating_sub(before);
+            let end = (idx + after + 1).min(total);
+            (start, end, Some(idx))
+        } else {
+            // Standard offset/limit pagination
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let end = (offset + limit).min(total);
+            (offset, end, None)
+        };
+
+        let page_messages = &messages[start..end];
         let has_more = end < total;
 
         // Format header
@@ -680,14 +735,14 @@ impl McpServer {
             project,
             short_session,
             total,
-            offset,
+            start,
             end.saturating_sub(1),
             total
         );
 
         // Format messages - full content, collapse redundant whitespace
         for (i, msg) in page_messages.iter().enumerate() {
-            let idx = offset + i;
+            let idx = start + i;
             let time = msg.timestamp.format("%H:%M");
             let msg_type = match msg.message_type.as_str() {
                 "assistant" => "AI",
@@ -695,9 +750,14 @@ impl McpServer {
                 "summary" => "Sum",
                 other => other,
             };
+            // Mark centered message with »
+            let marker = if center_idx == Some(idx) { "»" } else { " " };
             // Collapse whitespace but keep full content
             let content: String = msg.content.split_whitespace().collect::<Vec<_>>().join(" ");
-            output.push_str(&format!("[{}] {} {}: {}\n", idx, time, msg_type, content));
+            output.push_str(&format!(
+                "{}[{}] {} {}: {}\n",
+                marker, idx, time, msg_type, content
+            ));
         }
 
         if has_more {

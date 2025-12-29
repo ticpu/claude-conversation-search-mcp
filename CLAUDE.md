@@ -50,6 +50,12 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 
 **Prefix matching for session IDs**: `get_session_messages` accepts short session IDs (first 8 chars) for convenience.
 
+## MCP Tool Schema Conventions
+
+- Don't repeat default values in descriptions when `"default": N` is set in schema
+- Use grep-style `-A`, `-B`, `-C` for context parameters (familiar to developers)
+- Keep descriptions terse - schema metadata speaks for itself
+
 ## Debugging MCP Tools
 
 MCP servers communicate via JSON-RPC over stdio. Use `debug: true` parameter on search tools to see:
