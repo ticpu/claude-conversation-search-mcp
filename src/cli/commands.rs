@@ -19,6 +19,7 @@ pub enum CliCommands {
         query: String,
         project: Option<String>,
         limit: usize,
+        context: usize,
     },
     Topics {
         project: Option<String>,
@@ -33,6 +34,9 @@ pub enum CliCommands {
     },
     Cache {
         action: CacheAction,
+    },
+    Install {
+        project: bool,
     },
 }
 
@@ -81,12 +85,13 @@ pub async fn run_cli(args: CliArgs) -> Result<()> {
             query,
             project,
             limit,
+            context,
         } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             // Auto-index before searching
             shared::auto_index(&index_path).await?;
-            search_conversations(&index_path, query, project, limit).await?;
+            search_conversations(&index_path, query, project, limit, context).await?;
         }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
@@ -114,8 +119,41 @@ pub async fn run_cli(args: CliArgs) -> Result<()> {
                 CacheAction::Clear => clear_cache(&index_path).await?,
             }
         }
+        CliCommands::Install { project } => install(project).await?,
     }
 
+    Ok(())
+}
+
+async fn install(project_scope: bool) -> Result<()> {
+    use std::process::Command;
+
+    let exe = std::env::current_exe()?;
+    let exe_path = exe
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid exe path"))?;
+    let scope = if project_scope { "project" } else { "user" };
+
+    let _ = Command::new("claude")
+        .args(["mcp", "remove", "-s", scope, "claude-conversation-search"])
+        .status();
+
+    let status = Command::new("claude")
+        .args([
+            "mcp",
+            "add",
+            "-s",
+            scope,
+            "claude-conversation-search",
+            exe_path,
+        ])
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("claude mcp add failed");
+    }
+
+    println!("{}", exe_path);
     Ok(())
 }
 
@@ -166,6 +204,7 @@ async fn search_conversations(
     query_text: String,
     project_filter: Option<String>,
     limit: usize,
+    context: usize,
 ) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
@@ -181,55 +220,20 @@ async fn search_conversations(
         limit,
     };
 
-    let results = search_engine.search(query)?;
+    let results = search_engine.search_with_context(query, context, context)?;
 
     if results.is_empty() {
         println!("No results found.");
         return Ok(());
     }
 
-    println!("Found {} results:\n", results.len());
+    println!("Found {} results (-C {}):\n", results.len(), context);
 
     for (i, result) in results.iter().enumerate() {
-        println!(
-            "{}. [{}] {} (score: {:.2})",
-            i + 1,
-            result.project,
-            result.timestamp.format("%Y-%m-%d %H:%M"),
-            result.score
-        );
-
-        // Show metadata tags
-        let mut tags = Vec::new();
-
-        if !result.technologies.is_empty() {
-            tags.push(format!("🔧 {}", result.technologies.join(", ")));
+        print!("{}", result.format_compact(i));
+        if i < results.len() - 1 {
+            println!();
         }
-
-        if !result.code_languages.is_empty() {
-            tags.push(format!("💻 {}", result.code_languages.join(", ")));
-        }
-
-        if result.has_code {
-            tags.push("📝 code".to_string());
-        }
-
-        if result.has_error {
-            tags.push("🚨 error".to_string());
-        }
-
-        if !result.tools_mentioned.is_empty() && result.tools_mentioned.len() <= 3 {
-            tags.push(format!("🔨 {}", result.tools_mentioned.join(", ")));
-        }
-
-        tags.push(format!("💬 {} interactions", result.interaction_count));
-
-        if !tags.is_empty() {
-            println!("   {}", tags.join(" • "));
-        }
-
-        println!("   Session: {}", result.session_id);
-        println!("   {}\n", result.snippet);
     }
 
     Ok(())
@@ -441,7 +445,7 @@ async fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result
 
         for (session_id, count) in sorted_sessions.iter().take(5) {
             let short_id = if session_id.len() > 12 {
-                format!("{}...", &session_id[..12])
+                format!("{}…", &session_id[..12])
             } else {
                 session_id.to_string()
             };
@@ -459,105 +463,97 @@ async fn view_session(index_path: &Path, session_id: String, show_full: bool) ->
     }
 
     let search_engine = SearchEngine::new(index_path)?;
-
-    // Search for the specific session using field query
-    let query = SearchQuery {
-        text: format!("session_id:{session_id}"),
-        project_filter: None,
-        session_filter: None,
-        limit: 100, // Sessions can be long
-    };
-
-    let results = search_engine.search(query)?;
+    let mut results = search_engine.get_session_messages(&session_id)?;
 
     if results.is_empty() {
-        println!("No conversations found for session: {session_id}");
-        println!("\nTip: Use 'claude-search stats' to see available session IDs");
+        println!("No messages found for session: {session_id}");
+        println!("Tip: Use 'claude-search stats' to see available session IDs");
         return Ok(());
     }
 
-    // Sort results by timestamp
-    let mut sorted_results = results;
-    sorted_results.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    // Sort by timestamp for chronological display
+    results.sort_by_key(|r| r.timestamp);
 
-    println!("📋 Session: {session_id}");
-    println!("📂 Project: {}", sorted_results[0].project);
-    println!(
-        "🕒 Time range: {} to {}",
-        sorted_results[0].timestamp.format("%Y-%m-%d %H:%M"),
-        sorted_results
-            .last()
-            .unwrap()
-            .timestamp
-            .format("%Y-%m-%d %H:%M")
+    // Get project path, replace $HOME with ~
+    let home = std::env::var("HOME").unwrap_or_default();
+    let project_path =
+        if !results[0].project_path.is_empty() && results[0].project_path != "unknown" {
+            results[0].project_path.replace(&home, "~")
+        } else {
+            format!("~/{}", results[0].project)
+        };
+
+    let short_session = &session_id[..8.min(session_id.len())];
+    let time_range = format!(
+        "{} - {}",
+        results[0].timestamp.format("%Y-%m-%d %H:%M"),
+        results.last().unwrap().timestamp.format("%H:%M")
     );
-    println!("💬 Total messages: {}\n", sorted_results.len());
 
-    // Show session-level metadata
-    let mut session_techs = std::collections::HashSet::new();
-    let mut session_langs = std::collections::HashSet::new();
-    let mut session_tools = std::collections::HashSet::new();
+    // Header line with all key info
+    println!(
+        "📁 {} 🗒️ {} ({} msgs) ⏱️ {}",
+        project_path,
+        short_session,
+        results.len(),
+        time_range
+    );
+
+    // Collect tags
+    let mut techs = std::collections::HashSet::new();
+    let mut langs = std::collections::HashSet::new();
     let mut has_code = false;
     let mut has_errors = false;
-
-    for result in &sorted_results {
-        session_techs.extend(result.technologies.iter().cloned());
-        session_langs.extend(result.code_languages.iter().cloned());
-        session_tools.extend(result.tools_mentioned.iter().cloned());
-        if result.has_code {
-            has_code = true;
-        }
-        if result.has_error {
-            has_errors = true;
-        }
+    for r in &results {
+        techs.extend(r.technologies.iter().cloned());
+        langs.extend(r.code_languages.iter().cloned());
+        has_code |= r.has_code;
+        has_errors |= r.has_error;
     }
-
-    let mut session_tags = Vec::new();
-    if !session_techs.is_empty() {
-        let mut techs: Vec<_> = session_techs.into_iter().collect();
-        techs.sort();
-        session_tags.push(format!("🔧 {}", techs.join(", ")));
+    let mut tags = Vec::new();
+    if !techs.is_empty() {
+        let mut t: Vec<_> = techs.into_iter().collect();
+        t.sort();
+        tags.push(t.join(","));
     }
-    if !session_langs.is_empty() {
-        let mut langs: Vec<_> = session_langs.into_iter().collect();
-        langs.sort();
-        session_tags.push(format!("💻 {}", langs.join(", ")));
+    if !langs.is_empty() {
+        let mut l: Vec<_> = langs.into_iter().collect();
+        l.sort();
+        tags.push(l.join(","));
     }
     if has_code {
-        session_tags.push("📝 code".to_string());
+        tags.push("code".to_string());
     }
     if has_errors {
-        session_tags.push("🚨 errors".to_string());
+        tags.push("error".to_string());
     }
-
-    if !session_tags.is_empty() {
-        println!("Session topics: {}\n", session_tags.join(" • "));
+    if !tags.is_empty() {
+        println!("tags: {}", tags.join(" "));
     }
+    println!();
 
-    println!("Messages:");
-    println!("{}", "─".repeat(80));
-
-    for (i, result) in sorted_results.iter().enumerate() {
-        println!(
-            "{}. {} | Score: {:.2}",
-            i + 1,
-            result.timestamp.format("%H:%M:%S"),
-            result.score
-        );
-
-        if show_full {
-            println!("{}", result.content);
+    // Messages in dense format, skip non-displayable messages
+    let max_content = if show_full { 2000 } else { 200 };
+    for result in results.iter().filter(|r| r.is_displayable()) {
+        let role = match result.message_type.as_str() {
+            "User" => "User",
+            "Assistant" => "AI",
+            "Summary" => "Sum",
+            _ => "?",
+        };
+        let time = result.timestamp.format("%H:%M:%S");
+        let content: String = result.content.chars().take(max_content).collect();
+        let content = content.split_whitespace().collect::<Vec<_>>().join(" ");
+        let ellipsis = if result.content.chars().count() > max_content {
+            "..."
         } else {
-            println!("{}", result.snippet);
-        }
-
-        if i < sorted_results.len() - 1 {
-            println!("{}", "─".repeat(40));
-        }
+            ""
+        };
+        println!("[{}] {}: {}{}", time, role, content, ellipsis);
     }
 
-    if !show_full && sorted_results.len() > 3 {
-        println!("\nUse --full flag to see complete message content");
+    if !show_full && results.iter().any(|r| r.content.chars().count() > 200) {
+        println!("\nUse --full for complete content");
     }
 
     Ok(())

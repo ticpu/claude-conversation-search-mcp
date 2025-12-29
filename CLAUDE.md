@@ -1,59 +1,66 @@
 # Claude Code Project Instructions
 
+## Output Philosophy
+
+This tool is designed for **Claude to search its own conversation history**. Output must be optimized for AI consumption:
+
+**Dense & Information-Rich**:
+- Maximum useful data per line, minimal decoration
+- No ASCII art, banners, or decorative separators
+- Use `…` (single char) not `...` (3 chars) for truncation
+- Collapse whitespace in previews
+
+**Hierarchical Format**:
+```
+N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
+🎟️rust,api,error
+   User: context before…
+»  AI: matched content…
+   User: context after…
+```
+- `📁` project path (hyperlink to directory)
+- `🗒️` session UUID (hyperlink to jsonl file)
+- `💬` message UUID
+- `🎟️` tags (technologies, languages, error flag)
+- `»` marks the matched message
+
+**grep -C Style Context**:
+- `-C N` shows N messages before/after match
+- Filters noise (tool_result dumps, warmup messages via `is_displayable()`)
+- Deduplicates by session
+
+**Terminal Hyperlinks**:
+- OSC 8 hyperlinks when terminal supports it (detected via DA1 query)
+- `HYPERLINKS=0` to disable, `HYPERLINKS=1` to force enable
+
 ## Project Architecture
 
-**Single Binary with Subcommands**: The project uses a unified architecture:
-- `src/main.rs` - Main entry point with clap subcommand routing
-- `src/cli/` - CLI-specific code (commands.rs, etc.)
-- `src/mcp/` - MCP server and related functionality (server.rs, conversation_aggregator.rs, etc.)
-- `src/shared/` - Shared modules used by both CLI and MCP (cache, search, indexer, models, etc.)
+- `src/main.rs` - Entry point, clap subcommand routing
+- `src/cli/` - CLI commands
+- `src/mcp/` - MCP server (server.rs, stats_analyzer.rs)
+- `src/shared/` - Shared modules (cache, search, indexer, models)
 
-**Command Structure**:
-- `claude-search index` - Build/update search index
-- `claude-search search <query>` - Search conversations  
-- `claude-search topics` - Show technology topics
-- `claude-search stats` - Show conversation statistics
-- `claude-search session <id>` - View specific session
-- `claude-search cache info|clear` - Cache management
-- `claude-search mcp` - Run as MCP server
+## Design Decisions
 
-## Development Notes
+**summarize_session pattern**: Returns Task tool instructions instead of doing work itself. Avoids polluting MCP tool descriptions with complex instructions. The haiku agent spawned by Task reads these instructions.
 
-- Prefer `cargo check` over `cargo build` when just checking for compilation errors - it's much quicker
-- Use `cargo build` only when you need the actual binary
-- **Single Binary Architecture**: Uses subcommands (`claude-search mcp`, `claude-search search`, etc.) eliminating dead code warnings and complexity from multiple binaries
-- All modules use standard `crate::shared` imports - no feature flags or path-based imports needed
+**Token estimation**: `HAIKU_CONTEXT_WINDOW * CONTEXT_SAFETY_MARGIN` (200k * 0.75 = 150k) determines when to warn about large sessions.
 
-## Special Notes
+**is_displayable() filter**: Centralized in `SearchResult` to filter Warmup messages and non-User/Assistant/Summary types. Used by search, session viewing, and summarization.
 
-- AI Analysis Feature uses WebFetch approach with config at `~/.config/claude-search-mcp/config.yaml`
-- To test MCP changes: use the `respawn_server` MCP tool available in Claude Code conversations
+**Prefix matching for session IDs**: `get_session_messages` accepts short session IDs (first 8 chars) for convenience.
 
 ## Debugging MCP Tools
 
-Since MCP servers communicate via JSON-RPC over stdio, traditional debugging methods (println!, logging) interfere with the protocol. Instead:
-
-**Use the debug parameter**: All search tools support a `debug: true` parameter that shows:
+MCP servers communicate via JSON-RPC over stdio. Use `debug: true` parameter on search tools to see:
 - Raw JSON arguments received
-- Parameter parsing results  
+- Parameter parsing results
 - Filtering logic details
-- Result counts at each stage
-
-Example usage:
-```
-mcp__claude-conversation-search__search_conversations(query="test", exclude_patterns=[".*temp.*"], debug=true)
-```
-
-This outputs detailed debugging information directly in the search results, allowing you to troubleshoot parameter parsing and filtering logic.
 
 ## Pre-commit Checklist
 
-1. `cargo test` - Run all tests
-2. `cargo clippy --fix --allow-dirty` - Fix clippy warnings automatically  
-3. `cargo fmt` - Format code consistently
+1. `cargo test`
+2. `cargo clippy --fix --allow-dirty`
+3. `cargo fmt`
 
-- All clippy warnings must be resolved before committing.
-- Remove unused code instead of suppressing warnings.
-- Fix all warnings properly - do NOT use underscore prefixes (`_var_name`) to hide unused variables
-
-- Try not to use super:: and crate:: all around the file, prefer importing something more specific.
+All warnings must be resolved. Remove unused code instead of suppressing.

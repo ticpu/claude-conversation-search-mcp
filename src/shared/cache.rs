@@ -251,3 +251,137 @@ pub struct ProjectStats {
     pub entries: u64,
     pub last_updated: DateTime<Utc>,
 }
+
+/// Result of checking index health
+#[derive(Debug, Clone)]
+pub struct IndexHealth {
+    pub total_indexed_files: usize,
+    pub total_entries: u64,
+    pub last_indexed: Option<DateTime<Utc>>,
+    pub stale_files: Vec<PathBuf>,
+    pub missing_files: Vec<PathBuf>,
+    pub new_files: Vec<PathBuf>,
+    pub status: IndexHealthStatus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexHealthStatus {
+    Healthy,
+    NeedsUpdate,
+    NeedsRebuild,
+}
+
+impl CacheManager {
+    /// Quick health check - just counts stale/new files without full scan
+    /// Returns (stale_count, new_count) for passive reporting
+    pub fn quick_health_check(&self, all_jsonl_files: &[PathBuf]) -> (usize, usize) {
+        let mut stale = 0;
+        let mut new_files = 0;
+        for (path, meta) in &self.metadata.indexed_files {
+            if let Ok(file_meta) = fs::metadata(path) {
+                let mtime = file_meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if file_meta.len() != meta.size || mtime != meta.modified.timestamp() {
+                    stale += 1;
+                }
+            }
+        }
+        for path in all_jsonl_files {
+            if !self.metadata.indexed_files.contains_key(path) {
+                new_files += 1;
+            }
+        }
+        (stale, new_files)
+    }
+
+    /// Check index health by comparing cached metadata with actual files
+    pub fn check_index_health(&self, all_jsonl_files: &[PathBuf]) -> Result<IndexHealth> {
+        let mut stale_files = Vec::new();
+        let mut missing_files = Vec::new();
+        let mut new_files = Vec::new();
+
+        // Check for stale and missing files
+        for (cached_path, cached_meta) in &self.metadata.indexed_files {
+            if !cached_path.exists() {
+                missing_files.push(cached_path.clone());
+            } else {
+                // Check if file has been modified
+                if let Ok(file_meta) = fs::metadata(cached_path) {
+                    let current_size = file_meta.len();
+                    let current_mtime = DateTime::from_timestamp(
+                        file_meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0),
+                        0,
+                    )
+                    .unwrap_or_else(Utc::now);
+
+                    if current_size != cached_meta.size || current_mtime != cached_meta.modified {
+                        stale_files.push(cached_path.clone());
+                    }
+                }
+            }
+        }
+
+        // Check for new files not in cache
+        for file_path in all_jsonl_files {
+            if !self.metadata.indexed_files.contains_key(file_path) {
+                new_files.push(file_path.clone());
+            }
+        }
+
+        // Determine overall status
+        let status = if missing_files.len() > self.metadata.indexed_files.len() / 2 {
+            IndexHealthStatus::NeedsRebuild
+        } else if !stale_files.is_empty() || !new_files.is_empty() || !missing_files.is_empty() {
+            IndexHealthStatus::NeedsUpdate
+        } else {
+            IndexHealthStatus::Healthy
+        };
+
+        Ok(IndexHealth {
+            total_indexed_files: self.metadata.indexed_files.len(),
+            total_entries: self.metadata.total_entries,
+            last_indexed: self.metadata.last_full_scan,
+            stale_files,
+            missing_files,
+            new_files,
+            status,
+        })
+    }
+}
+
+impl std::fmt::Display for IndexHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Index Health Report")?;
+        writeln!(f, "===================")?;
+        writeln!(
+            f,
+            "Total indexed: {} files, {} entries",
+            self.total_indexed_files, self.total_entries
+        )?;
+        if let Some(last) = self.last_indexed {
+            writeln!(f, "Last indexed: {}", last.format("%Y-%m-%d %H:%M:%S UTC"))?;
+        }
+        writeln!(
+            f,
+            "Stale files: {} (modified since indexed)",
+            self.stale_files.len()
+        )?;
+        writeln!(
+            f,
+            "Missing files: {} (deleted from disk)",
+            self.missing_files.len()
+        )?;
+        writeln!(f, "New files: {} (not yet indexed)", self.new_files.len())?;
+        writeln!(f, "Status: {:?}", self.status)?;
+        Ok(())
+    }
+}

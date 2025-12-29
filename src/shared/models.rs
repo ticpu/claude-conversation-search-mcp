@@ -1,10 +1,52 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Raw JSONL message structure for parsing Claude Code logs
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RawJsonlMessage {
+    pub uuid: Option<String>,
+    pub parent_uuid: Option<String>,
+    pub session_id: Option<String>,
+    #[serde(rename = "type")]
+    pub message_type: Option<String>,
+    pub timestamp: Option<String>,
+    pub cwd: Option<String>,
+    pub message: Option<RawMessage>,
+    pub is_sidechain: Option<bool>,
+    pub agent_id: Option<String>,
+    // Summary type fields
+    pub summary: Option<String>,
+    pub leaf_uuid: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RawMessage {
+    pub role: Option<String>,
+    pub content: Option<serde_json::Value>,
+    pub model: Option<String>,
+}
+
+/// Content block types in assistant messages
+#[derive(Debug, Clone)]
+pub enum ContentBlock {
+    Text(String),
+    Thinking(String),
+    ToolUse {
+        name: String,
+        input_preview: String,
+    },
+    ToolResult {
+        content_preview: String,
+        is_error: bool,
+    },
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConversationEntry {
+    pub uuid: String,
+    pub parent_uuid: Option<String>,
     pub session_id: String,
-    pub message_uuid: String,
     pub project_path: String,
     pub timestamp: DateTime<Utc>,
     pub message_type: MessageType,
@@ -12,6 +54,8 @@ pub struct ConversationEntry {
     pub model: Option<String>,
     pub cwd: Option<String>,
     pub sequence_num: usize,
+    pub is_sidechain: bool,
+    pub agent_id: Option<String>,
 
     // Enhanced metadata for better search and categorization
     pub technologies: Vec<String>,
@@ -21,12 +65,11 @@ pub struct ConversationEntry {
     pub tools_mentioned: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum MessageType {
     User,
     Assistant,
-    ToolUse,
-    ToolResult,
+    Summary,
     System,
 }
 
@@ -38,8 +81,10 @@ pub struct SearchQuery {
     pub limit: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
+    pub uuid: String,
+    pub parent_uuid: Option<String>,
     pub content: String,
     pub project: String,
     pub project_path: String,
@@ -54,4 +99,22 @@ pub struct SearchResult {
     pub has_error: bool,
     pub interaction_count: usize,
     pub sequence_num: usize,
+    pub is_sidechain: bool,
+    pub agent_id: Option<String>,
+    pub message_type: String,
+}
+
+impl SearchResult {
+    /// Check if message should be displayed (filters noise like Warmup, tool_result dumps)
+    pub fn is_displayable(&self) -> bool {
+        // Filter by message type
+        if !matches!(self.message_type.as_str(), "User" | "Assistant" | "Summary") {
+            return false;
+        }
+        // Filter internal warmup messages
+        if self.content.trim() == "Warmup" {
+            return false;
+        }
+        true
+    }
 }

@@ -6,10 +6,12 @@ use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error};
 
-use super::conversation_aggregator;
 use crate::shared::{
-    CacheManager, SearchEngine, SearchQuery, SearchResult, auto_index, get_cache_dir, get_config,
+    CacheManager, SearchEngine, SearchQuery, auto_index, get_cache_dir, get_config,
 };
+
+const HAIKU_CONTEXT_WINDOW: usize = 200_000;
+const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
 
 // MCP Protocol Structures
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,29 +38,6 @@ struct JsonRpcError {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct InitializeRequest {
-    #[serde(rename = "protocolVersion")]
-    protocol_version: String,
-    capabilities: ClientCapabilities,
-    #[serde(rename = "clientInfo")]
-    client_info: ClientInfo,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ClientCapabilities {
-    #[serde(default)]
-    experimental: HashMap<String, Value>,
-    #[serde(default)]
-    sampling: HashMap<String, Value>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ClientInfo {
-    name: String,
-    version: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,7 +165,7 @@ impl McpServer {
         let tools = vec![
             Tool {
                 name: "search_conversations".to_string(),
-                description: "Search through Claude Code conversation history with optional project filtering".to_string(),
+                description: "Search through Claude Code conversation history with grep -C style context".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -199,86 +178,37 @@ impl McpServer {
                             "description": "Optional project name to filter results",
                             "optional": true
                         },
+                        "context": {
+                            "type": "integer",
+                            "description": "Number of messages before/after match to show (like grep -C). Default: 2",
+                            "optional": true,
+                            "default": 2
+                        },
                         "exclude_projects": {
                             "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Optional exact project names to exclude from results",
+                            "items": { "type": "string" },
+                            "description": "Exact project names to exclude",
                             "optional": true
                         },
                         "exclude_patterns": {
                             "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Optional regex patterns to exclude projects by path/name. Examples: [\".*test.*\"] excludes anything with 'test', [\"^backup-.*\"] excludes projects starting with 'backup-', [\".*temp.*\", \".*old.*\"] excludes multiple patterns. Patterns match against both project name and full path.",
+                            "items": { "type": "string" },
+                            "description": "Regex patterns to exclude projects by path/name",
                             "optional": true
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results to return (default: 10)",
+                            "description": "Maximum results (default: 10)",
                             "optional": true,
                             "default": 10
                         },
                         "debug": {
                             "type": "string",
-                            "description": "Set to 'true' to enable debug output",
+                            "description": "Set to 'true' for debug output",
                             "optional": true
                         }
                     },
                     "required": ["query"]
-                }),
-            },
-            Tool {
-                name: "get_conversation_context".to_string(),
-                description: "Get detailed context for a specific session including all messages and metadata".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID to retrieve full context for"
-                        },
-                        "include_content": {
-                            "type": "boolean",
-                            "description": "Whether to include full message content (default: false - returns snippets)",
-                            "optional": true,
-                            "default": false
-                        }
-                    },
-                    "required": ["session_id"]
-                }),
-            },
-            Tool {
-                name: "analyze_conversation_topics".to_string(),
-                description: "Analyze technology topics and patterns from search results. Use query to focus analysis.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query to find conversations for analysis (e.g. 'rust error', 'database api'). Defaults to broad search.",
-                            "optional": true
-                        },
-                        "project": {
-                            "type": "string",
-                            "description": "Optional project name to filter analysis",
-                            "optional": true
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of projects to show (default: 20)",
-                            "optional": true,
-                            "default": 20
-                        },
-                        "search_limit": {
-                            "type": "integer",
-                            "description": "Number of search results to analyze (default: 500)",
-                            "optional": true,
-                            "default": 500
-                        }
-                    }
                 }),
             },
             Tool {
@@ -290,20 +220,53 @@ impl McpServer {
                 }),
             },
             Tool {
-                name: "analyze_conversation_content".to_string(),
-                description: "AI-powered analysis of selected conversations using WebFetch".to_string(),
+                name: "reindex".to_string(),
+                description: "Update index for stale/new files. Use when search results seem incomplete or index warning shown.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "session_ids": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Array of conversation session IDs to analyze"
+                        "full": { "type": "boolean", "description": "Force full rebuild (default: incremental)", "optional": true }
+                    }
+                }),
+            },
+            Tool {
+                name: "get_session_messages".to_string(),
+                description: "Paginate session messages. For full summary, start by using summarize_session to setup a task.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID to retrieve messages for"
                         },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Starting message index (default: 0)",
+                            "optional": true,
+                            "default": 0
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Messages per page (default: 50)",
+                            "optional": true,
+                            "default": 50
+                        }
                     },
-                    "required": ["session_ids"]
+                    "required": ["session_id"]
+                }),
+            },
+            Tool {
+                name: "summarize_session".to_string(),
+                description: "Get instructions for summarizing a session with AI.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID to summarize"
+                        }
+                    },
+                    "required": ["session_id"]
                 }),
             },
         ];
@@ -320,25 +283,10 @@ impl McpServer {
 
         let result = match request.name.as_str() {
             "search_conversations" => self.tool_search_conversations(request.arguments).await?,
-            "get_conversation_context" => {
-                super::context_viewer::handle_get_conversation_context(
-                    self.search_engine.as_ref(),
-                    request.arguments,
-                )
-                .await?
-            }
-            "analyze_conversation_topics" => {
-                super::topic_analyzer::handle_analyze_topics(
-                    self.search_engine.as_ref(),
-                    request.arguments,
-                )
-                .await?
-            }
             "respawn_server" => self.tool_respawn().await?,
-            "analyze_conversation_content" => {
-                self.tool_analyze_conversation_content(request.arguments)
-                    .await?
-            }
+            "reindex" => self.tool_reindex(request.arguments).await?,
+            "get_session_messages" => self.tool_get_session_messages(request.arguments).await?,
+            "summarize_session" => self.tool_summarize_session(request.arguments).await?,
             _ => {
                 return Ok(serde_json::to_value(CallToolResponse {
                     content: vec![ToolResult {
@@ -361,7 +309,6 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?
             .to_string();
 
-        // Check if debug mode is enabled
         let debug_mode = args
             .get("debug")
             .and_then(|v| v.as_str())
@@ -372,6 +319,9 @@ impl McpServer {
             .get("project")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+
+        let context_size = args.get("context").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+
         let exclude_projects: Vec<String> = args
             .get("exclude_projects")
             .and_then(|v| v.as_array())
@@ -386,15 +336,12 @@ impl McpServer {
         let exclude_patterns: Vec<String> = args
             .get("exclude_patterns")
             .map(|v| {
-                // Handle both array and string representations
                 if let Some(arr) = v.as_array() {
-                    // Direct array
                     arr.iter()
                         .filter_map(|v| v.as_str())
                         .map(|s| s.to_string())
                         .collect()
                 } else if let Some(s) = v.as_str() {
-                    // JSON string representation - parse it
                     serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
                 } else {
                     Vec::new()
@@ -402,21 +349,19 @@ impl McpServer {
             })
             .unwrap_or_default();
 
-        // Merge runtime exclusion patterns with configured ones
         let config = get_config();
+        let claude_dir = config.get_claude_dir()?;
+        let pattern = claude_dir.join("projects/**/*.jsonl");
+        let all_files: Vec<_> = glob::glob(&pattern.to_string_lossy())?.flatten().collect();
+        let cache = CacheManager::new(&config.get_cache_dir()?)?;
+        let (stale_count, new_count) = cache.quick_health_check(&all_files);
+
         let mut all_exclude_patterns = config.search.exclude_patterns.clone();
         all_exclude_patterns.extend(exclude_patterns.clone());
 
-        // Compile regex patterns for exclusion
         let exclude_regexes: Vec<Regex> = all_exclude_patterns
             .iter()
-            .filter_map(|pattern| match Regex::new(pattern) {
-                Ok(regex) => Some(regex),
-                Err(e) => {
-                    tracing::warn!("Invalid regex pattern '{}': {}", pattern, e);
-                    None
-                }
-            })
+            .filter_map(|p| Regex::new(p).ok())
             .collect();
 
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
@@ -425,145 +370,202 @@ impl McpServer {
             text: query_text,
             project_filter,
             session_filter: None,
-            limit: limit * 3, // Get more results to allow for deduplication
+            limit: limit * 3,
         };
 
         let search_engine = self.search_engine.as_ref().unwrap();
-        let all_results = search_engine.search(query)?;
+        let results_with_context =
+            search_engine.search_with_context(query, context_size, context_size)?;
 
-        // Filter out excluded projects (both exact names and regex patterns)
-        let filtered_results: Vec<_> = all_results
-            .iter()
-            .filter(|result| {
-                // Check exact project name exclusions
-                if exclude_projects.contains(&result.project) {
+        // Filter and deduplicate
+        let mut session_seen = std::collections::HashSet::new();
+        let filtered: Vec<_> = results_with_context
+            .into_iter()
+            .filter(|r| {
+                let proj = &r.matched_message.project;
+                let path = &r.matched_message.project_path;
+                if exclude_projects.contains(proj) {
                     return false;
                 }
-
-                // Check regex pattern exclusions (against both project name and full path)
                 for regex in &exclude_regexes {
-                    if regex.is_match(&result.project) || regex.is_match(&result.project_path) {
+                    if regex.is_match(proj) || regex.is_match(path) {
                         return false;
                     }
                 }
-
-                true
+                // Deduplicate by session
+                session_seen.insert(r.matched_message.session_id.clone())
             })
+            .take(limit)
             .collect();
-
-        // Deduplicate by session_id, keeping highest scoring result per session
-        let mut session_best: std::collections::HashMap<String, &SearchResult> =
-            std::collections::HashMap::new();
-        for result in &filtered_results {
-            match session_best.get(&result.session_id) {
-                Some(existing) if existing.score >= result.score => {}
-                _ => {
-                    session_best.insert(result.session_id.clone(), result);
-                }
-            }
-        }
-
-        let mut results: Vec<_> = session_best.values().cloned().collect();
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        results.truncate(limit);
 
         let mut output = String::new();
 
-        // Show debug information if requested
         if debug_mode {
-            output.push_str("=== DEBUG MODE ===\n");
-            output.push_str(&format!("Raw arguments: {:?}\n", args));
             output.push_str(&format!(
-                "Parsed exclude_projects: {:?}\n",
-                exclude_projects
-            ));
-            output.push_str(&format!(
-                "Parsed exclude_patterns: {:?}\n",
-                exclude_patterns
-            ));
-            output.push_str(&format!(
-                "Config exclude_patterns: {:?}\n",
-                config.search.exclude_patterns
-            ));
-            output.push_str(&format!(
-                "All exclude_patterns: {:?}\n",
+                "DEBUG: query={:?}, context={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
+                args.get("query"),
+                context_size,
+                limit,
+                exclude_projects,
                 all_exclude_patterns
             ));
-            output.push_str(&format!(
-                "Compiled {} regex patterns\n",
-                exclude_regexes.len()
-            ));
-            output.push_str(&format!(
-                "Results: {} -> {} -> {}\n",
-                all_results.len(),
-                filtered_results.len(),
-                results.len()
-            ));
-            output.push_str("==================\n\n");
         }
 
-        // Show active exclusion filters (only if filters are active and not in debug mode)
-        if !debug_mode && (!exclude_projects.is_empty() || !all_exclude_patterns.is_empty()) {
-            let mut filter_info = Vec::new();
-            if !exclude_projects.is_empty() {
-                filter_info.push(format!("{} projects", exclude_projects.len()));
-            }
-            if !all_exclude_patterns.is_empty() {
-                filter_info.push(format!("{} patterns", all_exclude_patterns.len()));
-            }
-            output.push_str(&format!("Excluding: {}\n\n", filter_info.join(", ")));
+        if !exclude_projects.is_empty() || !all_exclude_patterns.is_empty() {
+            output.push_str(&format!(
+                "Excluding: {} projects, {} patterns\n",
+                exclude_projects.len(),
+                all_exclude_patterns.len()
+            ));
         }
 
-        if results.is_empty() {
+        if filtered.is_empty() {
             output.push_str("No results found.\n");
         } else {
-            output.push_str(&format!("Found {} results:\n\n", results.len()));
-
-            for (i, result) in results.iter().enumerate() {
-                output.push_str(&format!(
-                    "{}. [{}] {} (score: {:.2})\n",
-                    i + 1,
-                    result.project,
-                    result.timestamp.format("%Y-%m-%d %H:%M"),
-                    result.score
-                ));
-
-                // Show full project path if different from project name
-                if result.project_path != result.project && result.project_path != "unknown" {
-                    output.push_str(&format!("   Path: {}\n", result.project_path));
+            output.push_str(&format!(
+                "Found {} results (-C {}):\n\n",
+                filtered.len(),
+                context_size
+            ));
+            for (i, result) in filtered.iter().enumerate() {
+                output.push_str(&result.format_compact(i));
+                if i < filtered.len() - 1 {
+                    output.push('\n');
                 }
-
-                // Add metadata tags (machine-readable, no emojis)
-                let mut tags = Vec::new();
-                if !result.technologies.is_empty() {
-                    tags.push(format!("tech: {}", result.technologies.join(", ")));
-                }
-                if !result.code_languages.is_empty() {
-                    tags.push(format!("lang: {}", result.code_languages.join(", ")));
-                }
-                if result.has_code {
-                    tags.push("has_code".to_string());
-                }
-                if result.has_error {
-                    tags.push("has_error".to_string());
-                }
-                if !result.tools_mentioned.is_empty() && result.tools_mentioned.len() <= 3 {
-                    tags.push(format!("tools: {}", result.tools_mentioned.join(", ")));
-                }
-                tags.push(format!("interactions: {}", result.interaction_count));
-
-                if !tags.is_empty() {
-                    output.push_str(&format!("   {}\n", tags.join(" • ")));
-                }
-
-                output.push_str(&format!("   Session: {}\n", result.session_id));
-                output.push_str(&format!("   {}\n\n", result.snippet));
             }
         }
+
+        if stale_count > 0 || new_count > 0 {
+            output.push_str(&format!(
+                "\nIndex: {} stale, {} new files. Use reindex if results incomplete.\n",
+                stale_count, new_count
+            ));
+        }
+
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: output,
+            }],
+            is_error: None,
+        })?)
+    }
+
+    async fn tool_get_session_messages(&self, args: Option<Value>) -> Result<Value> {
+        let args = args.unwrap_or_default();
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
+
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        let search_engine = self.search_engine.as_ref().unwrap();
+        let mut messages = search_engine.get_session_messages(session_id)?;
+
+        if messages.is_empty() {
+            return Ok(serde_json::to_value(CallToolResponse {
+                content: vec![ToolResult {
+                    result_type: "text".to_string(),
+                    text: format!("No messages found for session {}", session_id),
+                }],
+                is_error: Some(true),
+            })?);
+        }
+
+        // Sort by sequence number and filter displayable messages
+        messages.sort_by_key(|m| m.sequence_num);
+        let messages: Vec<_> = messages
+            .into_iter()
+            .filter(|m| m.is_displayable())
+            .collect();
+
+        let total = messages.len();
+        let project = messages
+            .first()
+            .map(|m| m.project_path.clone())
+            .unwrap_or_default();
+        let short_session = &session_id[..8.min(session_id.len())];
+
+        // Apply pagination
+        let end = (offset + limit).min(total);
+        let page_messages = &messages[offset..end];
+        let has_more = end < total;
+
+        // Format header
+        let mut output = format!(
+            "📁 {} 🗒️ {} ({} msgs) [{}-{}/{}]\n\n",
+            project,
+            short_session,
+            total,
+            offset,
+            end.saturating_sub(1),
+            total
+        );
+
+        // Format messages - full content, collapse redundant whitespace
+        for (i, msg) in page_messages.iter().enumerate() {
+            let idx = offset + i;
+            let time = msg.timestamp.format("%H:%M");
+            let msg_type = match msg.message_type.as_str() {
+                "assistant" => "AI",
+                "user" => "User",
+                "summary" => "Sum",
+                other => other,
+            };
+            // Collapse whitespace but keep full content
+            let content: String = msg.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            output.push_str(&format!("[{}] {} {}: {}\n", idx, time, msg_type, content));
+        }
+
+        if has_more {
+            output.push_str(&format!("\n+more: offset={}\n", end));
+        }
+
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: output,
+            }],
+            is_error: None,
+        })?)
+    }
+
+    async fn tool_summarize_session(&self, args: Option<Value>) -> Result<Value> {
+        let args = args.unwrap_or_default();
+        let session_id = args
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
+
+        // Get session stats for size estimation
+        let search_engine = self.search_engine.as_ref().unwrap();
+        let messages = search_engine.get_session_messages(session_id)?;
+        let msg_count = messages.len();
+        let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        let approx_tokens = total_chars / 4; // rough estimate: ~4 chars per token
+
+        let safe_limit = (HAIKU_CONTEXT_WINDOW as f64 * CONTEXT_SAFETY_MARGIN) as usize;
+        let size_note = if approx_tokens > safe_limit {
+            " (large - may need multiple agents)"
+        } else {
+            ""
+        };
+
+        let output = format!(
+            r#"Session {session_id}: {msg_count} messages, ~{approx_tokens} tokens{size_note}
+
+Task(
+  subagent_type: "general-purpose",
+  model: "haiku",
+  prompt: "Summarize session {session_id}:
+1. Call get_session_messages(session_id=\"{session_id}\")
+2. If output ends with '+more: offset=N', call again with that offset
+3. Repeat until no '+more' appears
+4. Return a concise summary: topic, key decisions, outcome"
+)"#
+        );
 
         Ok(serde_json::to_value(CallToolResponse {
             content: vec![ToolResult {
@@ -609,12 +611,44 @@ impl McpServer {
         Ok(serde_json::to_value(response)?)
     }
 
-    async fn tool_analyze_conversation_content(&self, args: Option<Value>) -> Result<Value> {
-        conversation_aggregator::handle_analyze_conversation_content(
-            self.search_engine.as_ref(),
-            args,
-        )
-        .await
+    async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {
+        let args = args.unwrap_or_default();
+        let full_rebuild = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+        let config = crate::shared::get_config();
+        let index_path = config.get_cache_dir()?;
+        let claude_dir = config.get_claude_dir()?;
+        let pattern = claude_dir.join("projects/**/*.jsonl");
+        let all_files: Vec<_> = glob::glob(&pattern.to_string_lossy())?.flatten().collect();
+
+        let result = if full_rebuild {
+            // Full rebuild - clear and recreate
+            if index_path.exists() {
+                std::fs::remove_dir_all(&index_path)?;
+            }
+            let mut indexer = crate::shared::SearchIndexer::new(&index_path)?;
+            let mut cache = crate::shared::CacheManager::new(&index_path)?;
+            cache.update_incremental(&mut indexer, all_files)?;
+            self.search_engine = Some(crate::shared::SearchEngine::new(&index_path)?);
+            "Full rebuild complete".to_string()
+        } else {
+            // Incremental update
+            let mut indexer = crate::shared::SearchIndexer::open(&index_path)?;
+            let mut cache = crate::shared::CacheManager::new(&index_path)?;
+            let (stale, new) = cache.quick_health_check(&all_files);
+            cache.update_incremental(&mut indexer, all_files)?;
+            self.search_engine = Some(crate::shared::SearchEngine::new(&index_path)?);
+            format!(
+                "Incremental update: {} stale + {} new files reindexed",
+                stale, new
+            )
+        };
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: result,
+            }],
+            is_error: None,
+        })?)
     }
 
     async fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {

@@ -32,6 +32,9 @@ enum Commands {
         /// Results limit
         #[arg(long, default_value = "10")]
         limit: usize,
+        /// Context lines (messages before/after match, like grep -C)
+        #[arg(short = 'C', long, default_value = "2")]
+        context: usize,
     },
     /// Show technology topics and their usage across conversations
     Topics {
@@ -63,6 +66,12 @@ enum Commands {
     },
     /// Run as MCP server
     Mcp,
+    /// Register with Claude MCP
+    Install {
+        /// Use project scope instead of user scope
+        #[arg(long)]
+        project: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -119,10 +128,12 @@ async fn main() -> Result<()> {
                         query,
                         project,
                         limit,
+                        context,
                     } => cli::CliCommands::Search {
                         query,
                         project,
                         limit,
+                        context,
                     },
                     Commands::Topics { project, limit } => {
                         cli::CliCommands::Topics { project, limit }
@@ -138,6 +149,7 @@ async fn main() -> Result<()> {
                         },
                     },
                     Commands::Mcp => unreachable!(), // Already handled above
+                    Commands::Install { project } => cli::CliCommands::Install { project },
                 },
             };
             cli::run_cli(cli_args).await

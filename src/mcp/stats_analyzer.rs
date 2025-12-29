@@ -218,12 +218,6 @@ pub async fn handle_get_stats(
         output.push('\n');
     }
 
-    // Usage tips
-    output.push_str("## Usage Tips\n");
-    output.push_str("- Use `search_conversations` with project filters to focus analysis\n");
-    output.push_str("- Try `analyze_conversation_topics` for deeper technology insights\n");
-    output.push_str("- Use `get_conversation_context` to explore interesting sessions\n");
-
     Ok(serde_json::to_value(CallToolResponse {
         content: vec![ToolResult {
             result_type: "text".to_string(),

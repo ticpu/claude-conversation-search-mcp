@@ -1,10 +1,22 @@
 # Claude Code Conversation Search
 
-A high-performance search engine for your Claude Code conversation history, built in Rust with lightning-fast full-text search capabilities.
+**The only tool that lets Claude search its own conversation history.**
+
+Other tools (claude-history-explorer, claude-code-history-viewer, etc.) are *viewers* - you browse your history manually. This tool is an **MCP server** that gives Claude direct access to search past conversations, enabling it to recall previous solutions, patterns, and context without you having to find and paste them.
+
+## Why This Tool?
+
+| Feature | This Tool | Other Tools |
+|---------|-----------|-------------|
+| Claude can search its own history | ✓ MCP integration | ✗ Manual browsing only |
+| Full-text search | ✓ Tantivy/BM25 | Some have regex |
+| Smart content filtering | ✓ Skips tool_result noise | ✗ Index everything |
+| Passive staleness detection | ✓ Warns when index outdated | ✗ |
+| CLI + MCP in one binary | ✓ | N/A |
 
 ## Overview
 
-Claude Code stores all your conversations locally as JSONL files, but there's no built-in way to search through them. This tool indexes all your conversations and provides powerful search capabilities, letting you quickly find past solutions, discussions, and code snippets.
+Claude Code stores conversations as JSONL files in `~/.claude/projects/`. This tool indexes them with smart filtering (skips file dumps, keeps reasoning) and exposes search via MCP so Claude can find relevant past conversations during your session.
 
 ## Features
 
@@ -27,24 +39,32 @@ Claude Code stores all your conversations locally as JSONL files, but there's no
 
 ### 🎯 **Smart Features**
 - **Auto-discovery** of Claude Code directories (`~/.claude/projects/`)
-- **Project organization** with conversation grouping by directory
+- **Smart content filtering**: Indexes text/thinking blocks, skips tool_result file dumps (noise reduction)
+- **UUID-based deduplication**: Handles session resume and rollbacks gracefully
+- **Passive health monitoring**: Warns when index is stale, offers reindex tool
 - **Robust parsing** handles malformed JSONL gracefully
 
 ## Quick Start
 
-### Installation
+### One-Line Install
 
 ```bash
-# From source
-git clone https://github.com/user/claude-conversation-search
-cd claude-conversation-search
-
-# Build the unified binary
-cargo build --release
-cp target/release/claude-conversation-search /usr/local/bin/  # or add to PATH
+git clone https://github.com/ticpu/claude-conversation-search-mcp
+cd claude-conversation-search-mcp
+cargo run --release -- install
 ```
 
-**Note**: The project now uses a single binary with subcommands for both CLI and MCP server functionality, eliminating the need for feature flags and multiple binaries.
+The installer registers the binary with Claude Code MCP.
+
+Verify: `claude mcp list` should show `claude-conversation-search`.
+
+### Manual Installation
+
+```bash
+cargo build --release
+cp target/release/claude-conversation-search ~/.local/bin/
+claude mcp add claude-conversation-search ~/.local/bin/claude-conversation-search mcp
+```
 
 ### Basic Usage
 
@@ -157,12 +177,11 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
    - "Show stats on my coding conversations"
 
 ### MCP Tools Available
-- **search_conversations**: Search through indexed conversations with optional project exclusion
-- **get_conversation_context**: Get full context around specific results
-- **analyze_conversation_topics**: Analyze technology usage patterns
-- **get_conversation_stats**: Get detailed statistics about conversations
-- **respawn_server**: Reload the MCP server without restarting Claude Code
-- **analyze_conversation_content**: AI-powered analysis of selected conversations (requires web server config)
+- **search_conversations**: grep-C style search with context. Shows 🎟️ tags (technologies, languages, errors).
+- **get_session_messages**: Paginated full session content for quick lookups.
+- **summarize_session**: Returns Task instructions for haiku-powered summarization of large sessions.
+- **reindex**: Update index for stale/new files (use when search results seem incomplete).
+- **respawn_server**: Reload MCP server without restarting Claude Code.
 
 ## Examples
 
@@ -216,27 +235,6 @@ The tool works out of the box, but you can customize behavior:
 - **Linux**: `~/.cache/claude-conversation-search/`
 - **macOS**: `~/Library/Caches/claude-conversation-search/`  
 - **Windows**: `%LOCALAPPDATA%\claude-conversation-search\`
-
-### AI Analysis Configuration (Optional)
-
-For AI-powered conversation analysis, create `~/.config/claude-conversation-search-mcp/config.yaml`:
-
-```yaml
-web_server:
-  path: /var/www/html/claude-temp/
-  url: https://yourdomain.com/claude-temp/
-```
-
-**How it works:**
-- The MCP server writes conversation content to the configured local path
-- Uses WebFetch tool to analyze content via the corresponding **publicly accessible** URL
-- **No API key required** - leverages Claude Code's built-in WebFetch capability
-- Temporary files are cleaned up after analysis
-
-**Requirements:**
-- You need a web server with a publicly accessible domain
-- The local path must be writable by the MCP server
-- The URL must correspond to the local path and be web-accessible
 
 ## Performance
 

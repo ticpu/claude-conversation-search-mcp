@@ -1,10 +1,24 @@
 use super::metadata::MetadataExtractor;
-use super::models::{ConversationEntry, MessageType};
-use super::utils::extract_content_from_json;
-use anyhow::{Result, anyhow};
+use super::models::{ContentBlock, ConversationEntry, MessageType, RawJsonlMessage};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde_json::Value;
 use std::path::Path;
+use tracing::warn;
+
+/// Maximum chars to keep from tool_result content (noise reduction)
+const TOOL_RESULT_MAX_CHARS: usize = 500;
+/// Maximum chars to keep from tool_use input preview
+const TOOL_USE_INPUT_MAX_CHARS: usize = 200;
+
+/// Safely truncate a string at a character boundary
+fn truncate_utf8(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars - 1).collect();
+        format!("{}…", truncated)
+    }
+}
 
 pub struct JsonlParser;
 
@@ -22,8 +36,19 @@ impl JsonlParser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<ConversationEntry>> {
         let content = std::fs::read_to_string(path)?;
         let mut entries = Vec::new();
-
         let project_name = self.extract_project_name(path);
+
+        // Detect if this is an agent file
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let is_agent_file = filename.starts_with("agent-");
+        let file_agent_id = if is_agent_file {
+            filename
+                .strip_prefix("agent-")
+                .and_then(|s| s.strip_suffix(".jsonl"))
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
 
         let mut sequence_counter = 0;
         for (line_num, line) in content.lines().enumerate() {
@@ -31,15 +56,17 @@ impl JsonlParser {
                 continue;
             }
 
-            match serde_json::from_str::<Value>(line) {
-                Ok(json) => {
-                    if let Ok(entry) = self.parse_entry(json, &project_name, sequence_counter) {
+            match serde_json::from_str::<RawJsonlMessage>(line) {
+                Ok(raw) => {
+                    if let Some(entry) =
+                        self.parse_raw_message(raw, &project_name, sequence_counter, &file_agent_id)
+                    {
                         entries.push(entry);
                         sequence_counter += 1;
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Invalid JSON at {}:{}: {}", path.display(), line_num + 1, e);
+                    warn!("Invalid JSON at {}:{}: {}", path.display(), line_num + 1, e);
                 }
             }
         }
@@ -47,81 +74,215 @@ impl JsonlParser {
         Ok(entries)
     }
 
-    fn parse_entry(
+    fn parse_raw_message(
         &self,
-        json: Value,
-        fallback_project_name: &str,
+        raw: RawJsonlMessage,
+        fallback_project: &str,
         sequence_num: usize,
-    ) -> Result<ConversationEntry> {
-        let session_id = json
-            .get("sessionId")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing sessionId"))?
-            .to_string();
+        file_agent_id: &Option<String>,
+    ) -> Option<ConversationEntry> {
+        let msg_type = raw.message_type.as_deref()?;
 
-        let message_uuid = json
-            .get("uuid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // Filter out noise message types
+        match msg_type {
+            "file-history-snapshot" | "queue-operation" => return None,
+            "user" | "assistant" | "summary" => {}
+            _ => return None, // Skip unknown types
+        }
 
-        let timestamp_str = json
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing timestamp"))?;
-        let timestamp: DateTime<Utc> = timestamp_str.parse()?;
+        // Get required fields
+        let uuid = raw.uuid.clone()?;
+        let session_id = raw.session_id.clone()?;
+        let timestamp_str = raw.timestamp.as_deref()?;
+        let timestamp: DateTime<Utc> = timestamp_str.parse().ok()?;
 
-        let message_type = json
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(|s| match s {
-                "user" => MessageType::User,
-                "assistant" => MessageType::Assistant,
-                "tool_use" => MessageType::ToolUse,
-                "tool_result" => MessageType::ToolResult,
-                _ => MessageType::System,
-            })
-            .unwrap_or(MessageType::System);
-
-        let content = extract_content_from_json(&json);
-
-        let model = json
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let cwd = json
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // Use cwd for project path if available, otherwise fallback to directory name
-        let project_path = if let Some(ref cwd_path) = cwd {
-            self.extract_project_name_from_path(cwd_path)
-        } else {
-            fallback_project_name.to_string()
+        // Determine message type
+        let message_type = match msg_type {
+            "user" => MessageType::User,
+            "assistant" => MessageType::Assistant,
+            "summary" => MessageType::Summary,
+            _ => MessageType::System,
         };
 
+        // Extract searchable content
+        let (content, has_error, tools_used) = if msg_type == "summary" {
+            (raw.summary.unwrap_or_default(), false, Vec::new())
+        } else {
+            self.extract_searchable_content(&raw)
+        };
+
+        // Skip empty content
+        if content.trim().is_empty() {
+            return None;
+        }
+
+        // Get project path from cwd or fallback
+        let project_path = raw
+            .cwd
+            .as_ref()
+            .map(|cwd| self.extract_project_name_from_path(cwd))
+            .unwrap_or_else(|| fallback_project.to_string());
+
+        // Get model from message
+        let model = raw.message.as_ref().and_then(|m| m.model.clone());
+
+        // Use agent_id from message or from filename
+        let agent_id = raw.agent_id.or_else(|| file_agent_id.clone());
+
         // Extract metadata from content
-        let (technologies, tools_mentioned, code_languages, has_code, has_error) =
+        let (technologies, tools_mentioned, code_languages, has_code, content_has_error) =
             MetadataExtractor::extract_all_metadata(&content);
 
-        Ok(ConversationEntry {
+        // Merge tools from content blocks with metadata extraction
+        let mut all_tools = tools_mentioned;
+        for tool in tools_used {
+            if !all_tools.contains(&tool) {
+                all_tools.push(tool);
+            }
+        }
+
+        Some(ConversationEntry {
+            uuid,
+            parent_uuid: raw.parent_uuid,
             session_id,
-            message_uuid,
             project_path,
             timestamp,
             message_type,
             content,
             model,
-            cwd,
+            cwd: raw.cwd,
             sequence_num,
+            is_sidechain: raw.is_sidechain.unwrap_or(false),
+            agent_id,
             technologies,
             has_code,
             code_languages,
-            has_error,
-            tools_mentioned,
+            has_error: has_error || content_has_error,
+            tools_mentioned: all_tools,
         })
+    }
+
+    /// Extract searchable content from message, filtering noise
+    fn extract_searchable_content(&self, raw: &RawJsonlMessage) -> (String, bool, Vec<String>) {
+        let message = match &raw.message {
+            Some(m) => m,
+            None => return (String::new(), false, Vec::new()),
+        };
+
+        let content_value = match &message.content {
+            Some(c) => c,
+            None => return (String::new(), false, Vec::new()),
+        };
+
+        // Handle string content (simple user messages)
+        if let Some(text) = content_value.as_str() {
+            return (text.to_string(), false, Vec::new());
+        }
+
+        // Handle array content (assistant messages with blocks)
+        let blocks = match content_value.as_array() {
+            Some(arr) => arr,
+            None => return (String::new(), false, Vec::new()),
+        };
+
+        let mut parts = Vec::new();
+        let mut has_error = false;
+        let mut tools_used = Vec::new();
+
+        for block in blocks {
+            if let Some(content_block) = self.parse_content_block(block) {
+                match content_block {
+                    ContentBlock::Text(text) => {
+                        parts.push(text);
+                    }
+                    ContentBlock::Thinking(thinking) => {
+                        // Include thinking - valuable reasoning content
+                        parts.push(format!("[thinking] {}", thinking));
+                    }
+                    ContentBlock::ToolUse {
+                        name,
+                        input_preview,
+                    } => {
+                        // Include tool name and truncated input
+                        tools_used.push(name.clone());
+                        if !input_preview.is_empty() {
+                            parts.push(format!("[{}] {}", name, input_preview));
+                        }
+                    }
+                    ContentBlock::ToolResult {
+                        content_preview,
+                        is_error,
+                    } => {
+                        // Include truncated result and error flag
+                        if is_error {
+                            has_error = true;
+                            parts.push(format!("[error] {}", content_preview));
+                        } else if !content_preview.trim().is_empty() {
+                            // Only include non-empty, non-error results (truncated)
+                            parts.push(format!("[result] {}", content_preview));
+                        }
+                    }
+                }
+            }
+        }
+
+        (parts.join("\n"), has_error, tools_used)
+    }
+
+    fn parse_content_block(&self, block: &serde_json::Value) -> Option<ContentBlock> {
+        let block_type = block.get("type")?.as_str()?;
+
+        match block_type {
+            "text" => {
+                let text = block.get("text")?.as_str()?;
+                Some(ContentBlock::Text(text.to_string()))
+            }
+            "thinking" => {
+                let thinking = block.get("thinking")?.as_str()?;
+                Some(ContentBlock::Thinking(thinking.to_string()))
+            }
+            "tool_use" => {
+                let name = block.get("name")?.as_str()?.to_string();
+                let input = block.get("input");
+                let input_preview = input
+                    .map(|v| truncate_utf8(&v.to_string(), TOOL_USE_INPUT_MAX_CHARS))
+                    .unwrap_or_default();
+                Some(ContentBlock::ToolUse {
+                    name,
+                    input_preview,
+                })
+            }
+            "tool_result" => {
+                let is_error = block
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let content = block.get("content");
+                let content_preview = content
+                    .and_then(|v| {
+                        // Handle both string and array content
+                        if let Some(s) = v.as_str() {
+                            Some(s.to_string())
+                        } else if let Some(arr) = v.as_array() {
+                            // Extract text from array format
+                            let texts: Vec<&str> = arr
+                                .iter()
+                                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                                .collect();
+                            Some(texts.join(" "))
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|s| truncate_utf8(&s, TOOL_RESULT_MAX_CHARS))
+                    .unwrap_or_default();
+                Some(ContentBlock::ToolResult {
+                    content_preview,
+                    is_error,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn extract_project_name(&self, path: &Path) -> String {
@@ -133,38 +294,94 @@ impl JsonlParser {
     }
 
     fn extract_project_name_from_path(&self, cwd_path: &str) -> String {
-        // Extract a nice project name from the cwd path
         let path = Path::new(cwd_path);
-
-        // Try to find a meaningful project name by looking for common patterns
         let components: Vec<&str> = path
             .components()
             .filter_map(|c| c.as_os_str().to_str())
             .collect();
 
-        // Look for patterns like /home/user/project or /mnt/drive/path/to/project
-        // Take the last meaningful directory name
+        // Look for meaningful project name, skip common dirs
         for i in (0..components.len()).rev() {
             let component = components[i];
-
-            // Skip common non-project directories
             if matches!(
                 component,
                 "src" | "lib" | "bin" | "target" | "node_modules" | ".git"
             ) {
                 continue;
             }
-
-            // If we find a component that looks like a project name, use it
             if !component.starts_with('.') && component.len() > 1 {
                 return component.to_string();
             }
         }
 
-        // Fallback to the last component
         path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_user_message() {
+        let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{"role":"user","content":"Hello world"}}"#;
+        let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
+        let parser = JsonlParser::new();
+        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+
+        assert_eq!(entry.uuid, "abc123");
+        assert_eq!(entry.content, "Hello world");
+        assert_eq!(entry.message_type, MessageType::User);
+    }
+
+    #[test]
+    fn test_skip_file_history_snapshot() {
+        let json = r#"{"type":"file-history-snapshot","messageId":"xyz"}"#;
+        let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
+        let parser = JsonlParser::new();
+        let entry = parser.parse_raw_message(raw, "test", 0, &None);
+
+        assert!(entry.is_none());
+    }
+
+    #[test]
+    fn test_parse_assistant_with_text_block() {
+        let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Here is my response"}]}}"#;
+        let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
+        let parser = JsonlParser::new();
+        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+
+        assert_eq!(entry.content, "Here is my response");
+        assert_eq!(entry.message_type, MessageType::Assistant);
+    }
+
+    #[test]
+    fn test_parse_thinking_block() {
+        let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}"#;
+        let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
+        let parser = JsonlParser::new();
+        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+
+        assert!(entry.content.contains("[thinking]"));
+        assert!(entry.content.contains("Let me think about this"));
+    }
+
+    #[test]
+    fn test_tool_result_truncation() {
+        let long_content = "x".repeat(1000);
+        let json = format!(
+            r#"{{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"assistant","content":[{{"type":"tool_result","content":"{}"}}]}}}}"#,
+            long_content
+        );
+        let raw: RawJsonlMessage = serde_json::from_str(&json).unwrap();
+        let parser = JsonlParser::new();
+        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+
+        // Should be truncated to ~500 chars + "[result] " prefix + "…"
+        assert!(entry.content.len() < 600);
+        assert!(entry.content.ends_with("…"));
     }
 }

@@ -5,7 +5,12 @@ use std::path::Path;
 use tantivy::schema::{FAST, Field, INDEXED, STORED, Schema, SchemaBuilder, TEXT};
 use tantivy::{Index, IndexWriter, doc};
 
+/// Current schema version - increment when schema changes to trigger rebuild
+pub const SCHEMA_VERSION: u32 = 2;
+
 pub struct IndexFields {
+    pub uuid_field: Field,
+    pub parent_uuid_field: Field,
     pub content_field: Field,
     pub project_field: Field,
     pub session_field: Field,
@@ -19,6 +24,8 @@ pub struct IndexFields {
     pub has_error_field: Field,
     pub cwd_field: Field,
     pub sequence_num_field: Field,
+    pub is_sidechain_field: Field,
+    pub agent_id_field: Field,
 }
 
 pub struct SearchIndexer {
@@ -30,6 +37,10 @@ impl SearchIndexer {
     /// Create the canonical schema - single source of truth
     pub fn build_schema() -> (Schema, IndexFields) {
         let mut schema_builder = SchemaBuilder::default();
+
+        // Primary key for deduplication
+        let uuid_field = schema_builder.add_text_field("uuid", TEXT | STORED | FAST);
+        let parent_uuid_field = schema_builder.add_text_field("parent_uuid", TEXT | STORED | FAST);
 
         let content_field = schema_builder.add_text_field("content", TEXT | STORED);
         let project_field = schema_builder.add_text_field("project", TEXT | STORED | FAST);
@@ -49,9 +60,14 @@ impl SearchIndexer {
         let cwd_field = schema_builder.add_text_field("cwd", TEXT | STORED | FAST);
         let sequence_num_field =
             schema_builder.add_u64_field("sequence_num", INDEXED | STORED | FAST);
+        let is_sidechain_field =
+            schema_builder.add_bool_field("is_sidechain", INDEXED | STORED | FAST);
+        let agent_id_field = schema_builder.add_text_field("agent_id", TEXT | STORED | FAST);
 
         let schema = schema_builder.build();
         let fields = IndexFields {
+            uuid_field,
+            parent_uuid_field,
             content_field,
             project_field,
             session_field,
@@ -65,6 +81,8 @@ impl SearchIndexer {
             has_error_field,
             cwd_field,
             sequence_num_field,
+            is_sidechain_field,
+            agent_id_field,
         };
 
         (schema, fields)
@@ -74,25 +92,24 @@ impl SearchIndexer {
     pub fn validate_schema(index_path: &Path) -> Result<bool> {
         let index = Index::open_in_dir(index_path)?;
         let actual_schema = index.schema();
-        let (_, expected_fields) = Self::build_schema();
 
-        // Check required fields exist and have correct types
-        let required_checks = [
-            ("content", &expected_fields.content_field),
-            ("project", &expected_fields.project_field),
-            ("session_id", &expected_fields.session_field),
-            ("timestamp", &expected_fields.timestamp_field),
-            ("message_type", &expected_fields.message_type_field),
-            ("model", &expected_fields.model_field),
+        // Check required fields exist - uuid is required in v2 schema
+        let required_fields = [
+            "uuid",
+            "content",
+            "project",
+            "session_id",
+            "timestamp",
+            "message_type",
+            "model",
         ];
 
-        for (field_name, _) in required_checks {
+        for field_name in required_fields {
             if actual_schema.get_field(field_name).is_err() {
                 return Ok(false);
             }
         }
 
-        // Simple validation: if we can get the required fields, schema is compatible
         Ok(true)
     }
 
@@ -113,34 +130,23 @@ impl SearchIndexer {
 
         // Get fields from the existing schema
         let fields = IndexFields {
+            uuid_field: schema.get_field("uuid")?,
+            parent_uuid_field: schema.get_field("parent_uuid")?,
             content_field: schema.get_field("content")?,
             project_field: schema.get_field("project")?,
             session_field: schema.get_field("session_id")?,
             timestamp_field: schema.get_field("timestamp")?,
             message_type_field: schema.get_field("message_type")?,
             model_field: schema.get_field("model")?,
-            // Handle optional fields for backward compatibility
-            technologies_field: schema
-                .get_field("technologies")
-                .unwrap_or_else(|_| schema.get_field("content").unwrap()),
-            code_languages_field: schema
-                .get_field("code_languages")
-                .unwrap_or_else(|_| schema.get_field("content").unwrap()),
-            tools_mentioned_field: schema
-                .get_field("tools_mentioned")
-                .unwrap_or_else(|_| schema.get_field("content").unwrap()),
-            has_code_field: schema
-                .get_field("has_code")
-                .unwrap_or_else(|_| schema.get_field("content").unwrap()),
-            has_error_field: schema
-                .get_field("has_error")
-                .unwrap_or_else(|_| schema.get_field("content").unwrap()),
-            cwd_field: schema
-                .get_field("cwd")
-                .unwrap_or_else(|_| schema.get_field("content").unwrap()),
-            sequence_num_field: schema
-                .get_field("sequence_num")
-                .unwrap_or_else(|_| schema.get_field("timestamp").unwrap()),
+            technologies_field: schema.get_field("technologies")?,
+            code_languages_field: schema.get_field("code_languages")?,
+            tools_mentioned_field: schema.get_field("tools_mentioned")?,
+            has_code_field: schema.get_field("has_code")?,
+            has_error_field: schema.get_field("has_error")?,
+            cwd_field: schema.get_field("cwd")?,
+            sequence_num_field: schema.get_field("sequence_num")?,
+            is_sidechain_field: schema.get_field("is_sidechain")?,
+            agent_id_field: schema.get_field("agent_id")?,
         };
 
         let config = get_config();
@@ -152,6 +158,8 @@ impl SearchIndexer {
     pub fn index_conversations(&mut self, entries: Vec<ConversationEntry>) -> Result<()> {
         for entry in entries {
             let doc = doc!(
+                self.fields.uuid_field => entry.uuid,
+                self.fields.parent_uuid_field => entry.parent_uuid.unwrap_or_default(),
                 self.fields.content_field => entry.content,
                 self.fields.project_field => entry.project_path,
                 self.fields.session_field => entry.session_id,
@@ -165,6 +173,8 @@ impl SearchIndexer {
                 self.fields.has_error_field => entry.has_error,
                 self.fields.cwd_field => entry.cwd.unwrap_or_else(|| "unknown".to_string()),
                 self.fields.sequence_num_field => entry.sequence_num as u64,
+                self.fields.is_sidechain_field => entry.is_sidechain,
+                self.fields.agent_id_field => entry.agent_id.unwrap_or_default(),
             );
 
             self.writer.add_document(doc)?;

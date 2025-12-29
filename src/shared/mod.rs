@@ -6,6 +6,7 @@ pub mod metadata;
 pub mod models;
 pub mod parser;
 pub mod search;
+pub mod terminal;
 pub mod utils;
 
 pub use cache::*;
