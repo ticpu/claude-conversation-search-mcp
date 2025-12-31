@@ -5,6 +5,7 @@ use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "claude-conversation-search")]
+#[command(version)]
 #[command(about = "Search Claude Code conversations and run MCP server")]
 struct Cli {
     /// Verbosity level (-v for WARN, -vv for INFO, -vvv for DEBUG)
