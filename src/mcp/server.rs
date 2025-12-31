@@ -703,8 +703,9 @@ impl McpServer {
             // Standard offset/limit pagination
             let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let start = offset.min(total);
             let end = (offset + limit).min(total);
-            (offset, end, None)
+            (start, end, None)
         };
 
         let page_messages = &messages[start..end];
