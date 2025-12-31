@@ -70,6 +70,16 @@ MCP servers communicate via JSON-RPC over stdio. Use `debug: true` parameter on 
 - Parameter parsing results
 - Filtering logic details
 
+## Testing
+
+Test changes before committing. No need to install - use the built binary directly:
+
+```bash
+cargo build --release
+./target/release/claude-conversation-search session <session_id>
+./target/release/claude-conversation-search search "query"
+```
+
 ## Pre-commit Checklist
 
 1. `cargo test`

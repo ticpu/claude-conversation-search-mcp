@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::shared::{
     CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index,
@@ -149,6 +149,39 @@ impl McpServer {
             search_engine,
             cache_dir,
         })
+    }
+
+    /// Check if a session's source JSONL is stale and reindex if needed.
+    /// Returns true if reindexing occurred.
+    fn ensure_session_fresh(&mut self, session_id: &str, project_path: &str) -> Result<bool> {
+        use crate::shared::path_utils::session_jsonl_path;
+
+        let jsonl_path = match session_jsonl_path(project_path, session_id) {
+            Some(p) if p.exists() => p,
+            _ => return Ok(false),
+        };
+
+        let cache = CacheManager::new(&self.cache_dir)?;
+        if !cache.needs_indexing(&jsonl_path)? {
+            return Ok(false);
+        }
+
+        info!(
+            "Session {} is stale, reindexing {}",
+            session_id,
+            jsonl_path.display()
+        );
+
+        // Reindex just this file
+        let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
+        let mut cache = CacheManager::new(&self.cache_dir)?;
+        cache.update_incremental(&mut indexer, vec![jsonl_path])?;
+
+        // Reload search engine
+        let counts = cache.get_session_counts().clone();
+        self.search_engine = SearchEngine::new(&self.cache_dir, counts)?;
+
+        Ok(true)
     }
 
     async fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
@@ -648,15 +681,22 @@ impl McpServer {
         })?)
     }
 
-    async fn tool_get_session_messages(&self, args: Option<Value>) -> Result<Value> {
+    async fn tool_get_session_messages(&mut self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let session_id = args
             .get("session_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
-        let search_engine = &self.search_engine;
-        let mut messages = search_engine.get_session_messages(session_id)?;
+        let mut messages = self.search_engine.get_session_messages(session_id)?;
+
+        // Check if session source is stale and reindex if needed
+        if let Some(first) = messages.first()
+            && self.ensure_session_fresh(session_id, &first.project_path)?
+        {
+            // Re-fetch after reindex
+            messages = self.search_engine.get_session_messages(session_id)?;
+        }
 
         if messages.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {

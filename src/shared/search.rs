@@ -1,7 +1,7 @@
 use super::models::{SearchQuery, SearchResult, SortOrder};
 use super::path_utils::{session_jsonl_path, short_uuid};
 use super::terminal::file_hyperlink;
-use super::utils::{count_jsonl_lines, truncate_content};
+use super::utils::truncate_content;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -161,12 +161,6 @@ impl SearchEngine {
         for match_result in matches {
             let session_messages = self.get_session_messages(&match_result.session_id)?;
 
-            // Get actual line count from JSONL file (fallback to index count if file not found)
-            let total_session_messages =
-                session_jsonl_path(&match_result.project_path, &match_result.session_id)
-                    .and_then(|p| count_jsonl_lines(&p))
-                    .unwrap_or(session_messages.len());
-
             // If we can't get session messages, still return the match with just itself as context
             if session_messages.is_empty() {
                 results_with_context.push(SearchResultWithContext {
@@ -181,6 +175,12 @@ impl SearchEngine {
             // Sort by sequence number
             let mut session_messages = session_messages;
             session_messages.sort_by_key(|m| m.sequence_num);
+
+            // Count only displayable messages (consistent with get_session_messages)
+            let total_session_messages = session_messages
+                .iter()
+                .filter(|m| m.is_displayable())
+                .count();
 
             // Find the matching message index by UUID or by content/timestamp as fallback
             let match_idx = session_messages
@@ -705,5 +705,150 @@ impl SearchResultWithContext {
         }
 
         output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::indexer::SearchIndexer;
+    use crate::shared::models::{ConversationEntry, MessageType};
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    fn make_entry(
+        uuid: &str,
+        session_id: &str,
+        msg_type: MessageType,
+        content: &str,
+        seq: usize,
+    ) -> ConversationEntry {
+        ConversationEntry {
+            uuid: uuid.to_string(),
+            parent_uuid: None,
+            session_id: session_id.to_string(),
+            project_path: "/test/project".to_string(),
+            timestamp: Utc::now(),
+            message_type: msg_type,
+            content: content.to_string(),
+            model: None,
+            cwd: None,
+            sequence_num: seq,
+            is_sidechain: false,
+            agent_id: None,
+            technologies: vec![],
+            has_code: false,
+            code_languages: vec![],
+            has_error: false,
+            tools_mentioned: vec![],
+        }
+    }
+
+    #[test]
+    fn test_get_session_messages_returns_all_indexed() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        // Create 100 messages for a session
+        let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let entries: Vec<_> = (0..100)
+            .map(|i| {
+                let msg_type = if i % 2 == 0 {
+                    MessageType::User
+                } else {
+                    MessageType::Assistant
+                };
+                make_entry(
+                    &format!("uuid-{:04}", i),
+                    session_id,
+                    msg_type,
+                    &format!("Message {}", i),
+                    i,
+                )
+            })
+            .collect();
+
+        // Index them
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        // Retrieve with SearchEngine
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+        let messages = engine.get_session_messages(session_id).unwrap();
+
+        assert_eq!(
+            messages.len(),
+            100,
+            "Should retrieve all 100 indexed messages"
+        );
+    }
+
+    #[test]
+    fn test_get_session_messages_with_short_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "12345678-abcd-efgh-ijkl-mnopqrstuvwx";
+        let entries = vec![
+            make_entry("uuid-1", session_id, MessageType::User, "Hello", 0),
+            make_entry("uuid-2", session_id, MessageType::Assistant, "Hi there", 1),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        // Test with short ID (first 8 chars)
+        let messages = engine.get_session_messages("12345678").unwrap();
+        assert_eq!(
+            messages.len(),
+            2,
+            "Should find messages with short session ID"
+        );
+    }
+
+    #[test]
+    fn test_displayable_count_matches_retrieval() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "testtest-1234-5678-abcd-ef0123456789";
+        let entries = vec![
+            make_entry("uuid-1", session_id, MessageType::User, "User message", 0),
+            make_entry(
+                "uuid-2",
+                session_id,
+                MessageType::Assistant,
+                "Assistant message",
+                1,
+            ),
+            make_entry(
+                "uuid-3",
+                session_id,
+                MessageType::System,
+                "System message",
+                2,
+            ),
+            make_entry("uuid-4", session_id, MessageType::Summary, "Summary", 3),
+            make_entry("uuid-5", session_id, MessageType::User, "Warmup", 4), // Should be filtered
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+        let messages = engine.get_session_messages(session_id).unwrap();
+
+        // Count displayable
+        let displayable_count = messages.iter().filter(|m| m.is_displayable()).count();
+        // User, Assistant, Summary are displayable; System is not; "Warmup" content filtered
+        assert_eq!(
+            displayable_count, 3,
+            "Should have 3 displayable messages (User, Assistant, Summary)"
+        );
     }
 }

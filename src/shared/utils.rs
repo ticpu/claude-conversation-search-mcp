@@ -5,8 +5,7 @@ use super::lock::ExclusiveIndexAccess;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use glob::glob;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::fs::{self};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -50,12 +49,6 @@ pub fn truncate_content(s: &str, max_chars: usize, collapse_whitespace: bool) ->
         let truncated: String = processed.chars().take(max_chars - 1).collect();
         format!("{}…", truncated)
     }
-}
-
-/// Count lines in a JSONL file (returns None if file doesn't exist or can't be read)
-pub fn count_jsonl_lines(path: &Path) -> Option<usize> {
-    let file = File::open(path).ok()?;
-    Some(BufReader::new(file).lines().count())
 }
 
 pub fn auto_index(index_path: &Path) -> Result<()> {
