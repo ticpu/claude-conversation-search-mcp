@@ -434,7 +434,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
         text: "*".to_string(),
         project_filter: project_filter.clone(),
         session_filter: None,
-        limit: 2000,
+        limit: 1_000_000,
         sort_by: SortOrder::default(),
         after: None,
         before: None,
@@ -481,18 +481,28 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     println!();
 
+    let total_indexed = cache_stats.total_entries as usize;
+    let sampled = results.len();
+
     println!("Conversation Analysis:");
-    println!("  💬 Total conversations: {}", results.len());
+    println!("  💬 Total messages indexed: {}", total_indexed);
     println!("  🏗️ Unique sessions: {}", session_counts.len());
+    if sampled < total_indexed {
+        println!(
+            "  📊 Sampled for stats: {} ({:.1}%)",
+            sampled,
+            (sampled as f64 / total_indexed as f64) * 100.0
+        );
+    }
     println!(
-        "  📝 Conversations with code: {} ({:.1}%)",
+        "  📝 Messages with code: {} ({:.1}%)",
         code_conversations,
-        (code_conversations as f64 / results.len() as f64) * 100.0
+        (code_conversations as f64 / sampled as f64) * 100.0
     );
     println!(
-        "  🚨 Conversations with errors: {} ({:.1}%)",
+        "  🚨 Messages with errors: {} ({:.1}%)",
         error_conversations,
-        (error_conversations as f64 / results.len() as f64) * 100.0
+        (error_conversations as f64 / sampled as f64) * 100.0
     );
     println!(
         "  💬 Total interactions: {} (avg: {} per conversation)",
