@@ -252,9 +252,30 @@ The tool works out of the box, but you can customize behavior:
 - `CLAUDE_SEARCH_CACHE` - Custom cache directory location  
 - `RUST_LOG` - Control logging verbosity (`error`, `warn`, `info`, `debug`, `trace`)
 
+### Config File
+
+`~/.config/claude-conversation-search-mcp/config.yaml`:
+
+```yaml
+limits:
+  per_file_chars: 150000        # Max chars indexed per JSONL file
+  tool_result_max_chars: 2000   # Max chars kept from tool_result content
+  tool_input_max_chars: 200     # Max chars kept from tool_use input
+
+search:
+  exclude_patterns: []          # Regex patterns to exclude from results
+
+index:
+  auto_index_on_startup: true
+  writer_heap_mb: 50
+```
+
+Changing `tool_result_max_chars` or `tool_input_max_chars` requires a reindex (`claude-conversation-search index rebuild`).
+
 ### Cache Location
+
 - **Linux**: `~/.cache/claude-conversation-search/`
-- **macOS**: `~/Library/Caches/claude-conversation-search/`  
+- **macOS**: `~/Library/Caches/claude-conversation-search/`
 - **Windows**: `%LOCALAPPDATA%\claude-conversation-search\`
 
 ## Performance

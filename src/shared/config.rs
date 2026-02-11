@@ -66,11 +66,21 @@ impl Default for LockingConfig {
 pub struct LimitsConfig {
     #[serde(default = "LimitsConfig::default_per_file_chars")]
     pub per_file_chars: usize,
+    #[serde(default = "LimitsConfig::default_tool_result_max_chars")]
+    pub tool_result_max_chars: usize,
+    #[serde(default = "LimitsConfig::default_tool_input_max_chars")]
+    pub tool_input_max_chars: usize,
 }
 
 impl LimitsConfig {
     fn default_per_file_chars() -> usize {
         150_000
+    }
+    fn default_tool_result_max_chars() -> usize {
+        2000
+    }
+    fn default_tool_input_max_chars() -> usize {
+        200
     }
 }
 
@@ -78,6 +88,8 @@ impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             per_file_chars: 150_000,
+            tool_result_max_chars: 2000,
+            tool_input_max_chars: 200,
         }
     }
 }

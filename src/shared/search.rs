@@ -769,9 +769,10 @@ impl SearchResultWithContext {
         }
 
         // Context messages
+        let default_opts = DisplayOptions::default();
         for (i, msg) in self.context_messages.iter().enumerate() {
             let prefix = if i == self.match_index { ">> " } else { "   " };
-            let content = truncate_content(&msg.content, 500, true);
+            let content = truncate_content(&msg.content, default_opts.truncate_length, true);
             output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
         }
 

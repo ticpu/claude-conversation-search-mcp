@@ -7,8 +7,7 @@ use std::io::BufReader;
 use std::path::Path;
 use tracing::warn;
 
-/// Maximum chars to keep from tool_result content (noise reduction)
-const TOOL_RESULT_MAX_CHARS: usize = 500;
+use super::config::get_config;
 
 /// Read text file, skipping UTF-8 BOM if present
 fn read_text_file(path: &Path) -> Result<String> {
@@ -40,9 +39,6 @@ fn read_text_file(path: &Path) -> Result<String> {
     file.read_to_string(&mut content)?;
     Ok(content)
 }
-
-/// Maximum chars to keep from tool_use input preview
-const TOOL_USE_INPUT_MAX_CHARS: usize = 200;
 
 #[derive(Default)]
 pub struct JsonlParser;
@@ -260,7 +256,13 @@ impl JsonlParser {
                 let name = block.get("name")?.as_str()?.to_string();
                 let input = block.get("input");
                 let input_preview = input
-                    .map(|v| truncate_content(&v.to_string(), TOOL_USE_INPUT_MAX_CHARS, false))
+                    .map(|v| {
+                        truncate_content(
+                            &v.to_string(),
+                            get_config().limits.tool_input_max_chars,
+                            false,
+                        )
+                    })
                     .unwrap_or_default();
                 Some(ContentBlock::ToolUse {
                     name,
@@ -289,7 +291,7 @@ impl JsonlParser {
                             None
                         }
                     })
-                    .map(|s| truncate_content(&s, TOOL_RESULT_MAX_CHARS, false))
+                    .map(|s| truncate_content(&s, get_config().limits.tool_result_max_chars, false))
                     .unwrap_or_default();
                 Some(ContentBlock::ToolResult {
                     content_preview,
@@ -386,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_truncation() {
-        let long_content = "x".repeat(1000);
+        let long_content = "x".repeat(5000);
         let json = format!(
             r#"{{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"assistant","content":[{{"type":"tool_result","content":"{}"}}]}}}}"#,
             long_content
@@ -395,8 +397,8 @@ mod tests {
         let parser = JsonlParser;
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
-        // Should be truncated to ~500 chars + "[result] " prefix + "…"
-        assert!(entry.content.len() < 600);
-        assert!(entry.content.ends_with("…"));
+        // Should be truncated to ~get_config().limits.tool_result_max_chars + "[result] " prefix + "…"
+        assert!(entry.content.len() < get_config().limits.tool_result_max_chars + 100);
+        assert!(entry.content.ends_with('…'));
     }
 }
