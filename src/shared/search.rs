@@ -11,6 +11,45 @@ use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Value};
 use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term};
 
+/// Extract project name from a path and split into TEXT-tokenizer segments.
+/// Tantivy's default TEXT tokenizer splits on non-alphanumeric characters,
+/// so "/path/to/my-project_name" → ["my", "project", "name"].
+fn project_filter_segments(filter: &str) -> Vec<&str> {
+    let path = Path::new(filter);
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(filter);
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn build_project_query(project_field: Field, filter: &str) -> Box<dyn tantivy::query::Query> {
+    let segments = project_filter_segments(filter);
+    let segment_queries: Vec<_> = segments
+        .iter()
+        .map(|seg| {
+            let term = Term::from_field_text(project_field, &seg.to_lowercase());
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                    as Box<dyn tantivy::query::Query>,
+            )
+        })
+        .collect();
+    Box::new(BooleanQuery::new(segment_queries))
+}
+
+fn project_matches(project_path: &str, filter: &str) -> bool {
+    let filter_name = Path::new(filter)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(filter);
+    let result_name = Path::new(project_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(project_path);
+    result_name == filter_name
+}
+
 /// Maximum messages to retrieve per session.
 /// Claude Code sessions rarely exceed 1000 messages; this limit prevents
 /// runaway queries while covering all realistic session sizes.
@@ -101,10 +140,9 @@ impl SearchEngine {
             Box::new(text_query) as Box<dyn tantivy::query::Query>,
         )];
 
-        if let Some(project_filter) = query.project_filter {
-            let project_term = Term::from_field_text(self.project_field, &project_filter);
-            let project_query = TermQuery::new(project_term, IndexRecordOption::Basic);
-            final_query_parts.push((Occur::Must, Box::new(project_query)));
+        if let Some(ref project_filter) = query.project_filter {
+            let project_query = build_project_query(self.project_field, project_filter);
+            final_query_parts.push((Occur::Must, project_query));
         }
 
         if let Some(ref session_filter) = query.session_filter {
@@ -140,6 +178,13 @@ impl SearchEngine {
             // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
             if let Some(ref session_filter) = query.session_filter
                 && !result.session_id.starts_with(session_filter.as_str())
+            {
+                continue;
+            }
+
+            // Apply project post-filter (Tantivy matches segments, verify full project name)
+            if let Some(ref project_filter) = query.project_filter
+                && !project_matches(&result.project_path, project_filter)
             {
                 continue;
             }
@@ -538,9 +583,9 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let searcher = self.reader.searcher();
 
-        let query: Box<dyn tantivy::query::Query> = if let Some(project_filter) = project_filter {
-            let project_term = Term::from_field_text(self.project_field, &project_filter);
-            Box::new(TermQuery::new(project_term, IndexRecordOption::Basic))
+        let query: Box<dyn tantivy::query::Query> = if let Some(ref project_filter) = project_filter
+        {
+            build_project_query(self.project_field, project_filter)
         } else {
             Box::new(tantivy::query::AllQuery)
         };
@@ -550,6 +595,13 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (_score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, 1.0, "")?;
+
+            if let Some(ref project_filter) = project_filter
+                && !project_matches(&result.project_path, project_filter)
+            {
+                continue;
+            }
+
             results.push(result);
         }
 
@@ -826,6 +878,259 @@ mod tests {
             messages.len(),
             2,
             "Should find messages with short session ID"
+        );
+    }
+
+    fn make_entry_with_project(
+        uuid: &str,
+        session_id: &str,
+        msg_type: MessageType,
+        content: &str,
+        seq: usize,
+        project_name: &str,
+        cwd: &str,
+    ) -> ConversationEntry {
+        ConversationEntry {
+            uuid: uuid.to_string(),
+            parent_uuid: None,
+            session_id: session_id.to_string(),
+            project_path: project_name.to_string(),
+            timestamp: Utc::now(),
+            message_type: msg_type,
+            content: content.to_string(),
+            model: None,
+            cwd: Some(cwd.to_string()),
+            sequence_num: seq,
+            is_sidechain: false,
+            agent_id: None,
+            technologies: vec![],
+            has_code: false,
+            code_languages: vec![],
+            has_error: false,
+            tools_mentioned: vec![],
+        }
+    }
+
+    #[test]
+    fn test_project_filter_with_full_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let entries = vec![
+            make_entry_with_project(
+                "uuid-1",
+                session_id,
+                MessageType::User,
+                "hello world",
+                0,
+                "my-cool-project",
+                "/home/user/GIT/my-cool-project",
+            ),
+            make_entry_with_project(
+                "uuid-2",
+                session_id,
+                MessageType::Assistant,
+                "hi there",
+                1,
+                "my-cool-project",
+                "/home/user/GIT/my-cool-project",
+            ),
+            make_entry_with_project(
+                "uuid-3",
+                session_id,
+                MessageType::User,
+                "other stuff",
+                2,
+                "other-project",
+                "/home/user/GIT/other-project",
+            ),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        // Filter by full path (how users pass --project)
+        let results = engine
+            .search(SearchQuery {
+                text: "hello".to_string(),
+                limit: 10,
+                project_filter: Some("/home/user/GIT/my-cool-project".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find 1 result with full path project filter"
+        );
+        assert_eq!(results[0].uuid, "uuid-1");
+
+        // Filter by short project name
+        let results = engine
+            .search(SearchQuery {
+                text: "hello".to_string(),
+                limit: 10,
+                project_filter: Some("my-cool-project".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find 1 result with short project name filter"
+        );
+
+        // Filter should exclude non-matching projects
+        let results = engine
+            .search(SearchQuery {
+                text: "hello".to_string(),
+                limit: 10,
+                project_filter: Some("other-project".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(results.len(), 0, "Should find 0 results for wrong project");
+    }
+
+    #[test]
+    fn test_project_filter_get_all_documents() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let entries = vec![
+            make_entry_with_project(
+                "uuid-1",
+                session_id,
+                MessageType::User,
+                "hello",
+                0,
+                "freeswitch-database_utils",
+                "/mnt/bcachefs/@home/user/GIT/freeswitch-database_utils",
+            ),
+            make_entry_with_project(
+                "uuid-2",
+                session_id,
+                MessageType::User,
+                "world",
+                1,
+                "claude-conversation-search-mcp",
+                "/mnt/bcachefs/@home/user/GIT/claude-conversation-search-mcp",
+            ),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        let results = engine
+            .get_all_documents(
+                Some("/mnt/bcachefs/@home/user/GIT/freeswitch-database_utils".to_string()),
+                10,
+            )
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find 1 document for freeswitch-database_utils"
+        );
+    }
+
+    #[test]
+    fn test_session_filter_with_full_uuid() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_a = "aaaaaaaa-1111-2222-3333-444444444444";
+        let session_b = "bbbbbbbb-5555-6666-7777-888888888888";
+        let entries = vec![
+            make_entry("uuid-1", session_a, MessageType::User, "hello world", 0),
+            make_entry("uuid-2", session_b, MessageType::User, "hello world", 0),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        // Full session ID
+        let results = engine
+            .search(SearchQuery {
+                text: "hello".to_string(),
+                limit: 10,
+                session_filter: Some(session_a.to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "Should find 1 result for session A");
+        assert_eq!(results[0].uuid, "uuid-1");
+
+        // Short prefix
+        let results = engine
+            .search(SearchQuery {
+                text: "hello".to_string(),
+                limit: 10,
+                session_filter: Some("aaaaaaaa".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find 1 result with short session prefix"
+        );
+        assert_eq!(results[0].uuid, "uuid-1");
+    }
+
+    #[test]
+    fn test_get_session_messages_by_prefix() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "aabbccdd-1122-3344-5566-778899001122";
+        let entries = vec![
+            make_entry("uuid-1", session_id, MessageType::User, "first", 0),
+            make_entry("uuid-2", session_id, MessageType::Assistant, "second", 1),
+            make_entry("uuid-3", session_id, MessageType::User, "third", 2),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer.index_conversations(entries).unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        // Full ID
+        let messages = engine.get_session_messages(session_id).unwrap();
+        assert_eq!(messages.len(), 3);
+
+        // Short prefix
+        let messages = engine.get_session_messages("aabbccdd").unwrap();
+        assert_eq!(
+            messages.len(),
+            3,
+            "Should find all messages with short prefix"
+        );
+
+        // Non-matching prefix
+        let messages = engine.get_session_messages("xxxxxxxx").unwrap();
+        assert_eq!(
+            messages.len(),
+            0,
+            "Should find no messages for wrong prefix"
         );
     }
 

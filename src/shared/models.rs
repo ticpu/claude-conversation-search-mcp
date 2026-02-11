@@ -93,7 +93,7 @@ pub enum SortOrder {
     DateAsc,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     pub text: String,
     pub project_filter: Option<String>,
