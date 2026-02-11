@@ -5,6 +5,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::io::BufReader;
 use std::path::Path;
+use strip_ansi_escapes::strip_str;
 use tracing::warn;
 
 use super::config::get_config;
@@ -115,12 +116,13 @@ impl JsonlParser {
             _ => MessageType::System,
         };
 
-        // Extract searchable content
+        // Extract searchable content, stripping ANSI escape sequences from tool output
         let (content, has_error, tools_used) = if msg_type == "summary" {
             (raw.summary.unwrap_or_default(), false, Vec::new())
         } else {
             self.extract_searchable_content(&raw)
         };
+        let content = strip_str(&content);
 
         // Skip empty content
         if content.trim().is_empty() {
