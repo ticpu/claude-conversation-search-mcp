@@ -91,10 +91,16 @@ All warnings must be resolved. Remove unused code instead of suppressing.
 ## Release Process
 
 1. Update version in `Cargo.toml`
-2. Run `cargo clippy -- -D warnings` (CI uses `-D warnings`)
-3. Commit: `git commit -m "bump: Version X.Y.Z"`
-4. Push and wait for CI: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
-5. Tag: `git tag -as vX.Y.Z` (annotated + signed)
-6. Push tag: `git push --tags`
+2. Run `cargo update` (update all dependencies)
+3. Run `cargo clippy -- -D warnings` (CI uses `-D warnings`)
+4. Run `cargo test`
+5. Run `cargo build --release` (verify build succeeds)
+6. Add Cargo.lock: `git add -f Cargo.lock` (force-add despite .gitignore history)
+7. Commit: `git commit -m "bump: Version X.Y.Z"`
+8. Push and wait for CI: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
+9. Tag: `git tag -as vX.Y.Z` (annotated + signed)
+10. Push tag: `git push --tags`
 
 Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.
+
+**Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=ours` to always use our version (never merge).
