@@ -1,7 +1,9 @@
 use crate::cli::index;
-use crate::shared::{self, CacheManager, SearchEngine, SearchQuery, SortOrder};
+use crate::shared::{self, CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder};
 use anyhow::Result;
-use clap::Subcommand;
+use chrono::{NaiveDate, TimeZone, Utc};
+use clap::{Subcommand, ValueEnum};
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::Level;
@@ -32,10 +34,31 @@ pub enum CliCommands {
         context: usize,
         /// Context lines before match (like grep -B)
         #[arg(short = 'B')]
-        before: Option<usize>,
+        ctx_before: Option<usize>,
         /// Context lines after match (like grep -A)
         #[arg(short = 'A')]
-        after: Option<usize>,
+        ctx_after: Option<usize>,
+        /// Exclude projects by name
+        #[arg(long)]
+        exclude_project: Vec<String>,
+        /// Exclude results matching regex patterns
+        #[arg(long)]
+        exclude_pattern: Vec<String>,
+        /// Sort order
+        #[arg(long, value_enum, default_value = "relevance")]
+        sort: SortArg,
+        /// Results after date (YYYY-MM-DD or ISO 8601)
+        #[arg(long)]
+        after: Option<String>,
+        /// Results before date (YYYY-MM-DD or ISO 8601)
+        #[arg(long)]
+        before: Option<String>,
+        /// Include extra content types
+        #[arg(long, value_enum)]
+        include: Vec<IncludeArg>,
+        /// Characters shown per message (0 = full content)
+        #[arg(long, default_value = "300")]
+        truncate: usize,
     },
     /// Show technology topics and their usage across conversations
     Topics {
@@ -100,6 +123,30 @@ pub enum CacheAction {
     Clear,
 }
 
+#[derive(ValueEnum, Clone, Default)]
+pub enum SortArg {
+    #[default]
+    Relevance,
+    DateDesc,
+    DateAsc,
+}
+
+#[derive(ValueEnum, Clone, PartialEq)]
+pub enum IncludeArg {
+    Thinking,
+    Tools,
+}
+
+impl From<SortArg> for SortOrder {
+    fn from(s: SortArg) -> Self {
+        match s {
+            SortArg::Relevance => SortOrder::Relevance,
+            SortArg::DateDesc => SortOrder::DateDesc,
+            SortArg::DateAsc => SortOrder::DateAsc,
+        }
+    }
+}
+
 #[derive(Subcommand, Default)]
 pub enum IndexAction {
     /// Show index status and statistics (default)
@@ -147,24 +194,40 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             session,
             limit,
             context,
-            before,
+            ctx_before,
+            ctx_after,
+            exclude_project,
+            exclude_pattern,
+            sort,
             after,
+            before,
+            include,
+            truncate,
         } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
-            // Auto-index before searching
             shared::auto_index(&index_path)?;
-            let ctx_before = before.unwrap_or(context);
-            let ctx_after = after.unwrap_or(context);
-            search_conversations(
-                &index_path,
+            let cb = ctx_before.unwrap_or(context);
+            let ca = ctx_after.unwrap_or(context);
+            let opts = SearchOpts {
                 query,
                 project,
                 session,
                 limit,
-                ctx_before,
-                ctx_after,
-            )?;
+                context_before: cb,
+                context_after: ca,
+                exclude_projects: exclude_project,
+                exclude_patterns: exclude_pattern,
+                sort: sort.into(),
+                after: after.as_deref().map(parse_date).transpose()?,
+                before: before.as_deref().map(parse_date).transpose()?,
+                display: DisplayOptions {
+                    include_thinking: include.contains(&IncludeArg::Thinking),
+                    include_tools: include.contains(&IncludeArg::Tools),
+                    truncate_length: truncate,
+                },
+            };
+            search_conversations(&index_path, opts)?;
         }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
@@ -287,50 +350,97 @@ fn clear_cache(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn search_conversations(
-    index_path: &Path,
-    query_text: String,
-    project_filter: Option<String>,
-    session_filter: Option<String>,
+struct SearchOpts {
+    query: String,
+    project: Option<String>,
+    session: Option<String>,
     limit: usize,
     context_before: usize,
     context_after: usize,
-) -> Result<()> {
+    exclude_projects: Vec<String>,
+    exclude_patterns: Vec<String>,
+    sort: SortOrder,
+    after: Option<chrono::DateTime<Utc>>,
+    before: Option<chrono::DateTime<Utc>>,
+    display: DisplayOptions,
+}
+
+fn parse_date(s: &str) -> Result<chrono::DateTime<Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap()));
+    }
+    anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
+}
+
+fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
         return Ok(());
     }
 
+    let config = shared::get_config();
+    let mut all_exclude_patterns = config.search.exclude_patterns.clone();
+    all_exclude_patterns.extend(opts.exclude_patterns);
+
+    let exclude_regexes: Vec<Regex> = all_exclude_patterns
+        .iter()
+        .filter_map(|p| Regex::new(p).ok())
+        .collect();
+
     let cache = CacheManager::new(index_path)?;
     let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
 
     let query = SearchQuery {
-        text: query_text,
-        project_filter,
-        session_filter,
-        limit,
-        sort_by: SortOrder::default(),
-        after: None,
-        before: None,
+        text: opts.query,
+        project_filter: opts.project,
+        session_filter: opts.session,
+        limit: opts.limit * 3,
+        sort_by: opts.sort,
+        after: opts.after,
+        before: opts.before,
     };
 
-    let results = search_engine.search_with_context(query, context_before, context_after)?;
+    let results =
+        search_engine.search_with_context(query, opts.context_before, opts.context_after)?;
 
-    if results.is_empty() {
+    let mut session_seen = std::collections::HashSet::new();
+    let filtered: Vec<_> = results
+        .into_iter()
+        .filter(|r| {
+            let proj = &r.matched_message.project;
+            let path = &r.matched_message.project_path;
+
+            if opts.exclude_projects.contains(proj) {
+                return false;
+            }
+            for regex in &exclude_regexes {
+                if regex.is_match(proj) || regex.is_match(path) {
+                    return false;
+                }
+            }
+            session_seen.insert(r.matched_message.session_id.clone())
+        })
+        .take(opts.limit)
+        .collect();
+
+    if filtered.is_empty() {
         println!("No results found.");
         return Ok(());
     }
 
-    let ctx_display = if context_before == context_after {
-        format!("-C {}", context_before)
+    let ctx_display = if opts.context_before == opts.context_after {
+        format!("-C {}", opts.context_before)
     } else {
-        format!("-B {} -A {}", context_before, context_after)
+        format!("-B {} -A {}", opts.context_before, opts.context_after)
     };
-    println!("Found {} results ({}):\n", results.len(), ctx_display);
+    println!("Found {} results ({}):\n", filtered.len(), ctx_display);
 
-    for (i, result) in results.iter().enumerate() {
-        print!("{}", result.format_compact(i));
-        if i < results.len() - 1 {
+    for (i, result) in filtered.iter().enumerate() {
+        print!("{}", result.format_compact_with_options(i, &opts.display));
+        if i < filtered.len() - 1 {
             println!();
         }
     }
