@@ -107,9 +107,21 @@ impl SearchEngine {
             final_query_parts.push((Occur::Must, Box::new(project_query)));
         }
 
-        if let Some(session_filter) = query.session_filter {
-            let session_term = Term::from_field_text(self.session_field, &session_filter);
-            let session_query = TermQuery::new(session_term, IndexRecordOption::Basic);
+        if let Some(ref session_filter) = query.session_filter {
+            // Split on hyphens like get_session_messages - TEXT fields tokenize at hyphens
+            let segments: Vec<_> = session_filter.split('-').collect();
+            let segment_queries: Vec<_> = segments
+                .iter()
+                .map(|seg| {
+                    let term = Term::from_field_text(self.session_field, seg);
+                    (
+                        Occur::Must,
+                        Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                            as Box<dyn tantivy::query::Query>,
+                    )
+                })
+                .collect();
+            let session_query = BooleanQuery::new(segment_queries);
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
@@ -124,6 +136,13 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
+
+            // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
+            if let Some(ref session_filter) = query.session_filter
+                && !result.session_id.starts_with(session_filter.as_str())
+            {
+                continue;
+            }
 
             // Apply date range filters
             if let Some(after) = query.after

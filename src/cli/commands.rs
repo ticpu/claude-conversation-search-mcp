@@ -21,6 +21,9 @@ pub enum CliCommands {
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
+        /// Filter by session ID (prefix match)
+        #[arg(long)]
+        session: Option<String>,
         /// Results limit
         #[arg(long, default_value = "10")]
         limit: usize,
@@ -56,6 +59,18 @@ pub enum CliCommands {
         /// Show full content (not just snippets)
         #[arg(long)]
         full: bool,
+        /// Center on a message UUID (prefix match)
+        #[arg(long)]
+        center: Option<String>,
+        /// Context messages before and after center (like grep -C)
+        #[arg(short = 'C', default_value = "5")]
+        context: usize,
+        /// Context messages before center (like grep -B)
+        #[arg(short = 'B')]
+        before: Option<usize>,
+        /// Context messages after center (like grep -A)
+        #[arg(short = 'A')]
+        after: Option<usize>,
     },
     /// Summarize a session using Claude (runs in jailed empty dir)
     Summary {
@@ -129,6 +144,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
         CliCommands::Search {
             query,
             project,
+            session,
             limit,
             context,
             before,
@@ -140,7 +156,15 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             shared::auto_index(&index_path)?;
             let ctx_before = before.unwrap_or(context);
             let ctx_after = after.unwrap_or(context);
-            search_conversations(&index_path, query, project, limit, ctx_before, ctx_after)?;
+            search_conversations(
+                &index_path,
+                query,
+                project,
+                session,
+                limit,
+                ctx_before,
+                ctx_after,
+            )?;
         }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
@@ -154,11 +178,20 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             shared::auto_index(&index_path)?;
             show_stats(&index_path, project)?;
         }
-        CliCommands::Session { session_id, full } => {
+        CliCommands::Session {
+            session_id,
+            full,
+            center,
+            context,
+            before,
+            after,
+        } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
-            view_session(&index_path, session_id, full)?;
+            let ctx_before = before.unwrap_or(context);
+            let ctx_after = after.unwrap_or(context);
+            view_session(&index_path, session_id, full, center, ctx_before, ctx_after)?;
         }
         CliCommands::Summary { session_id } => {
             let config = shared::get_config();
@@ -258,6 +291,7 @@ fn search_conversations(
     index_path: &Path,
     query_text: String,
     project_filter: Option<String>,
+    session_filter: Option<String>,
     limit: usize,
     context_before: usize,
     context_after: usize,
@@ -273,7 +307,7 @@ fn search_conversations(
     let query = SearchQuery {
         text: query_text,
         project_filter,
-        session_filter: None,
+        session_filter,
         limit,
         sort_by: SortOrder::default(),
         after: None,
@@ -534,7 +568,14 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Result<()> {
+fn view_session(
+    index_path: &Path,
+    session_id: String,
+    show_full: bool,
+    center_on: Option<String>,
+    context_before: usize,
+    context_after: usize,
+) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
         return Ok(());
@@ -553,6 +594,26 @@ fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Resul
     // Sort by timestamp for chronological display
     results.sort_by_key(|r| r.timestamp);
 
+    // Filter displayable messages
+    let displayable: Vec<_> = results.iter().filter(|r| r.is_displayable()).collect();
+    let total = displayable.len();
+
+    // Determine window: center_on mode vs full session
+    let (window, center_idx) = if let Some(ref uuid) = center_on {
+        let idx = displayable
+            .iter()
+            .position(|m| m.uuid.starts_with(uuid.as_str()))
+            .unwrap_or_else(|| {
+                eprintln!("Warning: message {uuid} not found, showing from start");
+                0
+            });
+        let start = idx.saturating_sub(context_before);
+        let end = (idx + context_after + 1).min(total);
+        (&displayable[start..end], Some(idx))
+    } else {
+        (&displayable[..], None)
+    };
+
     let project_path = results[0].project_path_display();
     let short_session = shared::short_uuid(&session_id);
     let time_range = format!(
@@ -562,68 +623,88 @@ fn view_session(index_path: &Path, session_id: String, show_full: bool) -> Resul
     );
 
     // Header line with all key info
-    println!(
-        "📁 {} 🗒️ {} ({} msgs) ⏱️ {}",
-        project_path,
-        short_session,
-        results.len(),
-        time_range
-    );
+    if center_on.is_some() {
+        println!(
+            "📁 {} 🗒️ {} ({}/{} msgs) ⏱️ {}",
+            project_path,
+            short_session,
+            window.len(),
+            total,
+            time_range
+        );
+    } else {
+        println!(
+            "📁 {} 🗒️ {} ({} msgs) ⏱️ {}",
+            project_path, short_session, total, time_range
+        );
+    }
 
-    // Collect tags
-    let mut techs = std::collections::HashSet::new();
-    let mut langs = std::collections::HashSet::new();
-    let mut has_code = false;
-    let mut has_errors = false;
-    for r in &results {
-        techs.extend(r.technologies.iter().cloned());
-        langs.extend(r.code_languages.iter().cloned());
-        has_code |= r.has_code;
-        has_errors |= r.has_error;
-    }
-    let mut tags = Vec::new();
-    if !techs.is_empty() {
-        let mut t: Vec<_> = techs.into_iter().collect();
-        t.sort();
-        tags.push(t.join(","));
-    }
-    if !langs.is_empty() {
-        let mut l: Vec<_> = langs.into_iter().collect();
-        l.sort();
-        tags.push(l.join(","));
-    }
-    if has_code {
-        tags.push("code".to_string());
-    }
-    if has_errors {
-        tags.push("error".to_string());
-    }
-    if !tags.is_empty() {
-        println!("tags: {}", tags.join(" "));
+    if center_on.is_none() {
+        // Collect tags only in full view
+        let mut techs = std::collections::HashSet::new();
+        let mut langs = std::collections::HashSet::new();
+        let mut has_code = false;
+        let mut has_errors = false;
+        for r in &results {
+            techs.extend(r.technologies.iter().cloned());
+            langs.extend(r.code_languages.iter().cloned());
+            has_code |= r.has_code;
+            has_errors |= r.has_error;
+        }
+        let mut tags = Vec::new();
+        if !techs.is_empty() {
+            let mut t: Vec<_> = techs.into_iter().collect();
+            t.sort();
+            tags.push(t.join(","));
+        }
+        if !langs.is_empty() {
+            let mut l: Vec<_> = langs.into_iter().collect();
+            l.sort();
+            tags.push(l.join(","));
+        }
+        if has_code {
+            tags.push("code".to_string());
+        }
+        if has_errors {
+            tags.push("error".to_string());
+        }
+        if !tags.is_empty() {
+            println!("tags: {}", tags.join(" "));
+        }
     }
     println!();
 
-    // Messages in dense format, skip non-displayable messages
+    // Messages in dense format
     let max_content = if show_full { 2000 } else { 200 };
-    for result in results.iter().filter(|r| r.is_displayable()) {
+    for result in window {
         let time = result.timestamp.format("%H:%M:%S");
+        let marker = if center_idx.is_some()
+            && Some(&result.uuid)
+                == center_on.as_ref().and_then(|u| {
+                    if result.uuid.starts_with(u.as_str()) {
+                        Some(&result.uuid)
+                    } else {
+                        None
+                    }
+                }) {
+            "»"
+        } else {
+            " "
+        };
         let content: String = result.content.chars().take(max_content).collect();
         let content = content.split_whitespace().collect::<Vec<_>>().join(" ");
         let ellipsis = if result.content.chars().count() > max_content {
-            "..."
+            "…"
         } else {
             ""
         };
         println!(
-            "[{}] {}: {}{}",
-            time,
+            "{marker} [{time}] {}: {content}{ellipsis}",
             result.role_display(),
-            content,
-            ellipsis
         );
     }
 
-    if !show_full && results.iter().any(|r| r.content.chars().count() > 200) {
+    if !show_full && window.iter().any(|r| r.content.chars().count() > 200) {
         println!("\nUse --full for complete content");
     }
 

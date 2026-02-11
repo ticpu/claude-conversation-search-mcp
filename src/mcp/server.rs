@@ -228,6 +228,11 @@ impl McpServer {
                             "description": "Filter by project name",
                             "optional": true
                         },
+                        "session": {
+                            "type": "string",
+                            "description": "Filter by session ID (prefix match)",
+                            "optional": true
+                        },
                         "-C": {
                             "type": "integer",
                             "description": "Messages before and after match (like grep -C)",
@@ -442,6 +447,11 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let session_filter = args
+            .get("session")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Parse grep-style context: -C (both), -B (before), -A (after)
         let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(2);
         let context_before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
@@ -582,7 +592,7 @@ impl McpServer {
         let query = SearchQuery {
             text: query_text,
             project_filter,
-            session_filter: None,
+            session_filter,
             limit: limit * 3,
             sort_by,
             after,
