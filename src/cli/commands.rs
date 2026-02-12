@@ -105,6 +105,11 @@ pub enum CliCommands {
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
     /// Run as MCP server
     Mcp,
     /// Register with Claude MCP
@@ -187,6 +192,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                 IndexAction::Vacuum => index::vacuum(&index_path)?,
             }
         }
+        CliCommands::Completions { .. } => unreachable!("Completions handled in main"),
         CliCommands::Mcp => unreachable!("MCP handled in main"),
         CliCommands::Search {
             query,
@@ -725,19 +731,18 @@ fn view_session(
     };
 
     let project_path = results[0].project_path_display();
-    let short_session = shared::short_uuid(&session_id);
     let time_range = format!(
         "{} - {}",
         results[0].timestamp.format("%Y-%m-%d %H:%M"),
         results.last().unwrap().timestamp.format("%H:%M")
     );
 
-    // Header line with all key info
+    // Header line with all key info - full session UUID for `claude -r`
     if center_on.is_some() {
         println!(
             "📁 {} 🗒️ {} ({}/{} msgs) ⏱️ {}",
             project_path,
-            short_session,
+            session_id,
             window.len(),
             total,
             time_range
@@ -745,7 +750,7 @@ fn view_session(
     } else {
         println!(
             "📁 {} 🗒️ {} ({} msgs) ⏱️ {}",
-            project_path, short_session, total, time_range
+            project_path, session_id, total, time_range
         );
     }
 
