@@ -39,6 +39,7 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 - `src/cli/` - CLI commands
 - `src/mcp/` - MCP server (server.rs, stats_analyzer.rs)
 - `src/shared/` - Shared modules (cache, search, indexer, models)
+- `src/shared/path_utils.rs` - All `.claude/` filesystem concerns: `projects_dir()`, `project_dir_name()`, `session_jsonl_path()`, `discover_jsonl_files()`, `active_session_jsonl()`. This is the single source of truth for Claude directory layout. Do not duplicate this logic elsewhere.
 
 ## Design Decisions
 
@@ -49,6 +50,8 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 **is_displayable() filter**: Centralized in `SearchResult` to filter Warmup messages and non-User/Assistant/Summary types. Used by search, session viewing, and summarization.
 
 **Prefix matching for session IDs**: `get_session_messages` accepts short session IDs (first 8 chars) for convenience.
+
+**Active session exclusion**: MCP `search_conversations` excludes the currently-written JSONL from stale checks via `active_session_jsonl(cwd)` in `path_utils`. This walks up from the process cwd to find the matching `.claude/projects/<dir>/` entry, same algorithm as `claude-session-uuid`.
 
 ## CLI/MCP Feature Parity
 

@@ -2,27 +2,15 @@ use super::cache::CacheManager;
 use super::config::get_config;
 use super::indexer::SearchIndexer;
 use super::lock::ExclusiveIndexAccess;
+use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use glob::glob;
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
-pub fn get_claude_dir() -> Result<PathBuf> {
-    get_config().get_claude_dir()
-}
-
 pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
-}
-
-/// Discover all JSONL files in Claude projects directory
-pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
-    let claude_dir = get_claude_dir()?;
-    let pattern = claude_dir.join("projects/**/*.jsonl");
-    let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?.flatten().collect();
-    Ok(files)
 }
 
 /// Get file modification time as DateTime<Utc>

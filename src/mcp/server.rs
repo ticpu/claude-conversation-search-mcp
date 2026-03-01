@@ -9,8 +9,9 @@ use tracing::{debug, error, info};
 
 use crate::shared::{
     CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index,
-    discover_jsonl_files, get_cache_dir, get_config, short_uuid,
+    get_cache_dir, get_config, short_uuid,
 };
+use crate::shared::path_utils::{active_session_jsonl, discover_jsonl_files};
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
 const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
@@ -476,32 +477,15 @@ impl McpServer {
             .unwrap_or_default();
 
         let config = get_config();
-        let claude_dir = config.get_claude_dir()?;
         let all_files = discover_jsonl_files()?;
 
-        // Detect current session early to exclude from stale check
-        let current_session_file: Option<std::path::PathBuf> =
-            std::env::current_dir().ok().and_then(|cwd| {
-                let cwd_str = cwd.to_string_lossy().replace(['/', '\\', '.'], "-");
-                let sess_pattern = claude_dir.join("projects").join(&cwd_str).join("*.jsonl");
-                glob::glob(&sess_pattern.to_string_lossy())
-                    .ok()?
-                    .flatten()
-                    .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
-            });
-
-        // Exclude current session from stale check (it's always being written to)
-        let current_session_name = current_session_file
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str());
-
+        // Exclude the active session from stale checks (it is always being written to).
+        let current_session_file =
+            std::env::current_dir().ok().and_then(|cwd| active_session_jsonl(&cwd));
+        let current_session_file_ref = current_session_file.as_deref();
         let files_for_stale_check: Vec<_> = all_files
             .iter()
-            .filter(|f| {
-                let name = f.file_name().and_then(|n| n.to_str());
-                name != current_session_name
-            })
+            .filter(|f| Some(f.as_path()) != current_session_file_ref)
             .cloned()
             .collect();
 
