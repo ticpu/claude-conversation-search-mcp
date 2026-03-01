@@ -843,6 +843,7 @@ mod tests {
         // Index them
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         // Retrieve with SearchEngine
@@ -869,6 +870,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -950,6 +952,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1029,6 +1032,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1061,6 +1065,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1110,6 +1115,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1163,6 +1169,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer.index_conversations(entries).unwrap();
+        indexer.commit().unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();

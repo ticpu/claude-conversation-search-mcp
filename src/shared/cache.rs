@@ -1,8 +1,10 @@
 use super::indexer::SearchIndexer;
+use super::models::MessageType;
 use super::parser::JsonlParser;
 use super::utils::file_mtime;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -72,80 +74,96 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        use super::models::MessageType;
         let parser = JsonlParser;
-        let mut files_processed = 0;
-        let mut total_entries = 0;
 
+        // Phase 1 (serial): remove deleted files and collect files that need parsing.
+        let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
             if !file_path.exists() {
-                // Remove from cache if file was deleted
                 if self.metadata.indexed_files.remove(&file_path).is_some() {
                     debug!("Removed deleted file from cache: {}", file_path.display());
                 }
                 continue;
             }
-
             if !self.needs_indexing(&file_path)? {
                 debug!("Skipping unchanged file: {}", file_path.display());
                 continue;
             }
+            to_parse.push(file_path);
+        }
 
-            info!("Processing: {}", file_path.display());
+        if to_parse.is_empty() {
+            info!("No files needed indexing");
+            return Ok(());
+        }
 
-            // Parse and index the file
-            match parser.parse_file(&file_path) {
-                Ok(entries) => {
-                    let entry_count = entries.len();
-                    total_entries += entry_count;
+        // Phase 2 (parallel): parse all files concurrently.
+        struct ParsedFile {
+            path: PathBuf,
+            file_size: u64,
+            file_modified: DateTime<Utc>,
+            entries: Vec<super::models::ConversationEntry>,
+        }
 
-                    if entry_count > 0 {
-                        // Delete old documents for this session before re-indexing
-                        if let Some(first) = entries.first() {
-                            indexer.delete_session(&first.session_id)?;
-                            // Clear old session count before recount
-                            self.metadata.session_counts.remove(&first.session_id);
-                        }
-
-                        // Count user/assistant messages per session
-                        for entry in &entries {
-                            if matches!(
-                                entry.message_type,
-                                MessageType::User | MessageType::Assistant
-                            ) {
-                                *self
-                                    .metadata
-                                    .session_counts
-                                    .entry(entry.session_id.clone())
-                                    .or_insert(0) += 1;
-                            }
-                        }
-
-                        indexer.index_conversations(entries)?;
-                        info!("  Indexed {} entries", entry_count);
+        let parsed: Vec<_> = to_parse
+            .into_par_iter()
+            .filter_map(|file_path| {
+                info!("Processing: {}", file_path.display());
+                let file_size = fs::metadata(&file_path).ok()?.len();
+                let file_modified = file_mtime(&file_path).ok()?;
+                match parser.parse_file(&file_path) {
+                    Ok(entries) => Some(ParsedFile { path: file_path, file_size, file_modified, entries }),
+                    Err(e) => {
+                        warn!("Failed to parse {}: {}", file_path.display(), e);
+                        None
                     }
-
-                    // Update cache metadata
-                    let file_size = fs::metadata(&file_path)?.len();
-                    let file_modified = file_mtime(&file_path)?;
-
-                    let cached_metadata = FileMetadata {
-                        size_hex: format!("{file_size:x}"),
-                        size: file_size,
-                        modified: file_modified,
-                        indexed_at: Utc::now(),
-                        entry_count,
-                    };
-
-                    self.metadata
-                        .indexed_files
-                        .insert(file_path.clone(), cached_metadata);
-                    files_processed += 1;
                 }
-                Err(e) => {
-                    warn!("Failed to parse {}: {}", file_path.display(), e);
+            })
+            .collect();
+
+        // Phase 3 (serial): feed into IndexWriter and update cache metadata.
+        let mut files_processed = 0;
+        let mut total_entries = 0;
+
+        for parsed_file in parsed {
+            let entry_count = parsed_file.entries.len();
+            total_entries += entry_count;
+
+            if entry_count > 0 {
+                if let Some(first) = parsed_file.entries.first() {
+                    indexer.delete_session(&first.session_id)?;
+                    self.metadata.session_counts.remove(&first.session_id);
                 }
+
+                for entry in &parsed_file.entries {
+                    if matches!(entry.message_type, MessageType::User | MessageType::Assistant) {
+                        *self
+                            .metadata
+                            .session_counts
+                            .entry(entry.session_id.clone())
+                            .or_insert(0) += 1;
+                    }
+                }
+
+                indexer.index_conversations(parsed_file.entries)?;
+                info!("  Indexed {} entries", entry_count);
             }
+
+            self.metadata.indexed_files.insert(
+                parsed_file.path,
+                FileMetadata {
+                    size_hex: format!("{:x}", parsed_file.file_size),
+                    size: parsed_file.file_size,
+                    modified: parsed_file.file_modified,
+                    indexed_at: Utc::now(),
+                    entry_count,
+                },
+            );
+            files_processed += 1;
+        }
+
+        if files_processed > 0 {
+            indexer.commit()?;
         }
 
         self.metadata.total_entries += total_entries as u64;

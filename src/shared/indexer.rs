@@ -190,6 +190,10 @@ impl SearchIndexer {
             self.writer.add_document(doc)?;
         }
 
+        Ok(())
+    }
+
+    pub fn commit(&mut self) -> Result<()> {
         self.writer.commit()?;
         Ok(())
     }

@@ -117,7 +117,7 @@ impl JsonlParser {
         };
 
         // Extract searchable content, stripping ANSI escape sequences from tool output
-        let (content, has_error, tools_used) = if msg_type == "summary" {
+        let (content, mut has_error, tools_used) = if msg_type == "summary" {
             (raw.summary.unwrap_or_default(), false, Vec::new())
         } else {
             self.extract_searchable_content(&raw)
@@ -142,17 +142,21 @@ impl JsonlParser {
         // Use agent_id from message or from filename
         let agent_id = raw.agent_id.or_else(|| file_agent_id.clone());
 
-        // Extract metadata from content
-        let (technologies, tools_mentioned, code_languages, has_code, content_has_error) =
-            metadata::extract_all_metadata(&content);
-
-        // Merge tools from content blocks with metadata extraction
-        let mut all_tools = tools_mentioned;
-        for tool in tools_used {
-            if !all_tools.contains(&tool) {
-                all_tools.push(tool);
-            }
-        }
+        let (technologies, code_languages, has_code, tools_mentioned) =
+            if get_config().index.enable_tagging {
+                let (techs, tools, langs, has_code, content_has_error) =
+                    metadata::extract_all_metadata(&content);
+                has_error |= content_has_error;
+                let mut all_tools = tools;
+                for tool in tools_used {
+                    if !all_tools.contains(&tool) {
+                        all_tools.push(tool);
+                    }
+                }
+                (techs, langs, has_code, all_tools)
+            } else {
+                (vec![], vec![], false, tools_used)
+            };
 
         Some(ConversationEntry {
             uuid,
@@ -170,8 +174,8 @@ impl JsonlParser {
             technologies,
             has_code,
             code_languages,
-            has_error: has_error || content_has_error,
-            tools_mentioned: all_tools,
+            has_error,
+            tools_mentioned,
         })
     }
 

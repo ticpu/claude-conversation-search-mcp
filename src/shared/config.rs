@@ -15,6 +15,8 @@ pub struct IndexConfig {
     pub auto_index_on_startup: bool,
     #[serde(default = "IndexConfig::default_writer_heap_mb")]
     pub writer_heap_mb: u32,
+    #[serde(default)]
+    pub enable_tagging: bool,
     pub cache_dir: Option<PathBuf>,
     pub claude_dir: Option<PathBuf>,
 }
@@ -25,7 +27,7 @@ impl IndexConfig {
     }
 
     fn default_writer_heap_mb() -> u32 {
-        50
+        512
     }
 }
 
@@ -33,7 +35,8 @@ impl Default for IndexConfig {
     fn default() -> Self {
         Self {
             auto_index_on_startup: true,
-            writer_heap_mb: 50,
+            writer_heap_mb: Self::default_writer_heap_mb(),
+            enable_tagging: false,
             cache_dir: None,
             claude_dir: None,
         }

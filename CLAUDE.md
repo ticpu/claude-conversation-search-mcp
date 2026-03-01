@@ -103,4 +103,4 @@ All warnings must be resolved. Remove unused code instead of suppressing.
 
 Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.
 
-**Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=ours` to always use our version (never merge).
+**Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=ours` to always use our version (never merge). Do not stage `Cargo.lock` outside of the release process.
