@@ -116,7 +116,10 @@ mod tests {
 
     #[test]
     fn test_project_dir_name() {
-        assert_eq!(project_dir_name("/home/user/my.project"), "-home-user-my-project");
+        assert_eq!(
+            project_dir_name("/home/user/my.project"),
+            "-home-user-my-project"
+        );
         assert_eq!(project_dir_name("/home/user/foo"), "-home-user-foo");
         assert_eq!(project_dir_name("C:\\Users\\foo"), "C:-Users-foo");
     }
@@ -174,5 +177,4 @@ mod tests {
         let found = find_session_in_projects(&cwd, &projects);
         assert!(found.is_none());
     }
-
 }

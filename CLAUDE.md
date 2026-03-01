@@ -91,6 +91,14 @@ cargo build --release
 
 All warnings must be resolved. Remove unused code instead of suppressing.
 
+## Pre-commit Hook
+
+A pre-commit hook lives in `hooks/pre-commit` (runs fmt, clippy, tests). Install with:
+
+```bash
+bash hooks/install.sh
+```
+
 ## Release Process
 
 1. Update version in `Cargo.toml`
@@ -100,8 +108,8 @@ All warnings must be resolved. Remove unused code instead of suppressing.
 5. Run `cargo build --release` (verify build succeeds)
 6. Add Cargo.lock: `git add -f Cargo.lock` (force-add despite .gitignore history)
 7. Commit: `git commit -m "bump: Version X.Y.Z"`
-8. Push and wait for CI: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
-9. Tag: `git tag -as vX.Y.Z` (annotated + signed)
+8. Push and **wait for CI to pass**: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
+9. **Only after CI passes**: Tag: `git tag -as vX.Y.Z` (annotated + signed)
 10. Push tag: `git push --tags`
 
 Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.

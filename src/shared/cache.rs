@@ -112,7 +112,12 @@ impl CacheManager {
                 let file_size = fs::metadata(&file_path).ok()?.len();
                 let file_modified = file_mtime(&file_path).ok()?;
                 match parser.parse_file(&file_path) {
-                    Ok(entries) => Some(ParsedFile { path: file_path, file_size, file_modified, entries }),
+                    Ok(entries) => Some(ParsedFile {
+                        path: file_path,
+                        file_size,
+                        file_modified,
+                        entries,
+                    }),
                     Err(e) => {
                         warn!("Failed to parse {}: {}", file_path.display(), e);
                         None
@@ -136,7 +141,10 @@ impl CacheManager {
                 }
 
                 for entry in &parsed_file.entries {
-                    if matches!(entry.message_type, MessageType::User | MessageType::Assistant) {
+                    if matches!(
+                        entry.message_type,
+                        MessageType::User | MessageType::Assistant
+                    ) {
                         *self
                             .metadata
                             .session_counts

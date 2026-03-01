@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error, info};
 
-use crate::shared::{
-    CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index,
-    get_cache_dir, get_config, short_uuid,
-};
 use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
+use crate::shared::{
+    CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir,
+    get_config, short_uuid,
+};
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
 const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
