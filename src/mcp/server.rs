@@ -11,7 +11,7 @@ use crate::shared::{
     CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index,
     get_cache_dir, get_config, short_uuid,
 };
-use crate::shared::path_utils::{active_session_jsonl, discover_jsonl_files};
+use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
 const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
@@ -480,8 +480,9 @@ impl McpServer {
         let all_files = discover_jsonl_files()?;
 
         // Exclude the active session from stale checks (it is always being written to).
-        let current_session_file =
-            std::env::current_dir().ok().and_then(|cwd| active_session_jsonl(&cwd));
+        // Use globally_active_session_jsonl since the MCP server cwd is fixed at startup
+        // and does not reflect the currently active project.
+        let current_session_file = globally_active_session_jsonl();
         let current_session_file_ref = current_session_file.as_deref();
         let files_for_stale_check: Vec<_> = all_files
             .iter()
@@ -639,20 +640,14 @@ impl McpServer {
             ));
         }
 
+        if stale_count > 1 || new_count > 0 {
+            output.push_str(&format!(
+                "Note: index is stale ({} modified, {} new files). Call reindex tool for fresher results.\n",
+                stale_count, new_count
+            ));
+        }
+
         if filtered.is_empty() {
-            if stale_count > 0 || new_count > 0 {
-                // No results but index is stale - return error prompting reindex
-                return Ok(serde_json::to_value(CallToolResponse {
-                    content: vec![ToolResult {
-                        result_type: "text".to_string(),
-                        text: format!(
-                            "No results found. Index is stale ({} modified, {} new files). Call reindex tool and retry search.",
-                            stale_count, new_count
-                        ),
-                    }],
-                    is_error: Some(true),
-                })?);
-            }
             output.push_str("No results found.\n");
         } else {
             for (i, result) in filtered.iter().enumerate() {

@@ -58,8 +58,18 @@ pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
 /// Find the JSONL file for the currently active Claude session by walking up from `cwd`
 /// until a matching `.claude/projects/<dir>/` is found.
 /// Returns the most-recently-modified JSONL in that project directory.
+///
+/// Note: this is only reliable when `cwd` reflects the actual current project.
+/// For long-lived daemons whose cwd is fixed at startup, use
+/// [`globally_active_session_jsonl`] instead.
 pub fn active_session_jsonl(cwd: &Path) -> Option<PathBuf> {
     let projects = projects_dir().ok()?;
+    find_session_in_projects(cwd, &projects)
+}
+
+/// Walk up from `cwd` through `projects`, returning the most-recently-modified
+/// JSONL for the first matching project directory found.
+pub(crate) fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<PathBuf> {
     let mut current = cwd;
     loop {
         let dir_name = project_dir_name(&current.to_string_lossy());
@@ -78,6 +88,17 @@ pub fn active_session_jsonl(cwd: &Path) -> Option<PathBuf> {
             _ => return None,
         }
     }
+}
+
+/// Find the most-recently-modified JSONL across all projects.
+/// Used by long-lived processes (e.g. MCP server) whose cwd does not reflect
+/// the currently active Claude session.
+pub fn globally_active_session_jsonl() -> Option<PathBuf> {
+    let pattern = projects_dir().ok()?.join("**/*.jsonl");
+    glob(&pattern.to_string_lossy())
+        .ok()?
+        .flatten()
+        .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
 }
 
 #[cfg(test)]
@@ -118,7 +139,7 @@ mod tests {
 
         // active_session_jsonl uses projects_dir() which goes through config,
         // so test the walk-up logic directly with a known projects base.
-        let found = find_active_session_in(&cwd, &root.join("claude").join("projects"));
+        let found = find_session_in_projects(&cwd, &root.join("claude").join("projects"));
         assert_eq!(found, Some(session_file));
     }
 
@@ -138,7 +159,7 @@ mod tests {
         let session_file = project_dir.join("sess.jsonl");
         fs::write(&session_file, b"{}").unwrap();
 
-        let found = find_active_session_in(&cwd, &root.join("claude").join("projects"));
+        let found = find_session_in_projects(&cwd, &root.join("claude").join("projects"));
         assert_eq!(found, Some(session_file));
     }
 
@@ -150,29 +171,8 @@ mod tests {
         let projects = tmp.path().join("claude").join("projects");
         fs::create_dir_all(&projects).unwrap();
 
-        let found = find_active_session_in(&cwd, &projects);
+        let found = find_session_in_projects(&cwd, &projects);
         assert!(found.is_none());
     }
 
-    /// Testable version of active_session_jsonl with an explicit projects dir.
-    pub(crate) fn find_active_session_in(cwd: &Path, projects: &Path) -> Option<PathBuf> {
-        let mut current = cwd;
-        loop {
-            let dir_name = project_dir_name(&current.to_string_lossy());
-            let project_dir = projects.join(&dir_name);
-            if project_dir.exists() {
-                let best = glob(&project_dir.join("*.jsonl").to_string_lossy())
-                    .ok()?
-                    .flatten()
-                    .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok());
-                if best.is_some() {
-                    return best;
-                }
-            }
-            match current.parent() {
-                Some(p) if p != current => current = p,
-                _ => return None,
-            }
-        }
-    }
 }
