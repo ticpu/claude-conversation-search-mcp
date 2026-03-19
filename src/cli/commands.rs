@@ -94,6 +94,9 @@ pub enum CliCommands {
         /// Context messages after center (like grep -A)
         #[arg(short = 'A')]
         after: Option<usize>,
+        /// Characters shown per message (0 = full content)
+        #[arg(long, default_value = "200")]
+        truncate: usize,
     },
     /// Summarize a session using Claude (runs in jailed empty dir)
     Summary {
@@ -254,13 +257,22 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             context,
             before,
             after,
+            truncate,
         } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             let ctx_before = before.unwrap_or(context);
             let ctx_after = after.unwrap_or(context);
-            view_session(&index_path, session_id, full, center, ctx_before, ctx_after)?;
+            let max_content = if full { 0 } else { truncate };
+            view_session(
+                &index_path,
+                session_id,
+                max_content,
+                center,
+                ctx_before,
+                ctx_after,
+            )?;
         }
         CliCommands::Summary { session_id } => {
             let config = shared::get_config();
@@ -687,7 +699,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 fn view_session(
     index_path: &Path,
     session_id: String,
-    show_full: bool,
+    truncate_length: usize,
     center_on: Option<String>,
     context_before: usize,
     context_after: usize,
@@ -790,7 +802,6 @@ fn view_session(
     println!();
 
     // Messages in dense format
-    let max_content = if show_full { 2000 } else { 200 };
     for result in window {
         let time = result.timestamp.format("%H:%M:%S");
         let marker = if center_idx.is_some()
@@ -806,21 +817,34 @@ fn view_session(
         } else {
             " "
         };
-        let content: String = result.content.chars().take(max_content).collect();
-        let content = content.split_whitespace().collect::<Vec<_>>().join(" ");
-        let ellipsis = if result.content.chars().count() > max_content {
-            "…"
+        let content = if truncate_length > 0 {
+            let truncated: String = result.content.chars().take(truncate_length).collect();
+            let ellipsis = if result.content.chars().count() > truncate_length {
+                "…"
+            } else {
+                ""
+            };
+            format!(
+                "{}{}",
+                truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                ellipsis
+            )
         } else {
-            ""
+            result
+                .content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         };
-        println!(
-            "{marker} [{time}] {}: {content}{ellipsis}",
-            result.role_display(),
-        );
+        println!("{marker} [{time}] {}: {content}", result.role_display(),);
     }
 
-    if !show_full && window.iter().any(|r| r.content.chars().count() > 200) {
-        println!("\nUse --full for complete content");
+    if truncate_length > 0
+        && window
+            .iter()
+            .any(|r| r.content.chars().count() > truncate_length)
+    {
+        println!("\nUse --full or --truncate 0 for complete content");
     }
 
     Ok(())

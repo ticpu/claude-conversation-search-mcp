@@ -356,6 +356,12 @@ impl McpServer {
                             "type": "integer",
                             "description": "Messages after center_on (like grep -A)",
                             "optional": true
+                        },
+                        "truncate_length": {
+                            "type": "integer",
+                            "description": "Chars shown per message. 0 = full content",
+                            "optional": true,
+                            "default": 0
                         }
                     },
                     "required": ["session_id"]
@@ -710,6 +716,10 @@ impl McpServer {
             .map(|m| m.project_path_display())
             .unwrap_or_default();
         let short_session = short_uuid(session_id);
+        let truncate_length = args
+            .get("truncate_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
 
         // Determine pagination: center_on mode vs offset/limit mode
         let center_on = args.get("center_on").and_then(|v| v.as_str());
@@ -751,15 +761,28 @@ impl McpServer {
             total
         );
 
-        // Format messages - full content, collapse redundant whitespace
+        // Format messages - collapse redundant whitespace, apply truncation
         for (i, msg) in page_messages.iter().enumerate() {
             let idx = start + i;
             let time = msg.timestamp.format("%H:%M");
             let msg_type = msg.role_display();
             // Mark centered message with »
             let marker = if center_idx == Some(idx) { "»" } else { " " };
-            // Collapse whitespace but keep full content
-            let content: String = msg.content.split_whitespace().collect::<Vec<_>>().join(" ");
+            let content = if truncate_length > 0 {
+                let truncated: String = msg.content.chars().take(truncate_length).collect();
+                let ellipsis = if msg.content.chars().count() > truncate_length {
+                    "…"
+                } else {
+                    ""
+                };
+                format!(
+                    "{}{}",
+                    truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                    ellipsis
+                )
+            } else {
+                msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
+            };
             output.push_str(&format!(
                 "{}[{}] {} {}: {}\n",
                 marker, idx, time, msg_type, content
