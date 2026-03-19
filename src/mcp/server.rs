@@ -677,22 +677,132 @@ impl McpServer {
     }
 
     async fn tool_get_session_messages(&mut self, args: Option<Value>) -> Result<Value> {
+        use crate::shared::parser::JsonlParser;
+        use crate::shared::path_utils::find_session_jsonl;
+
         let args = args.unwrap_or_default();
         let session_id = args
             .get("session_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
-        let mut messages = self.search_engine.get_session_messages(session_id)?;
+        // Read from JSONL directly for full-fidelity content
+        let entries = if let Some(jsonl_path) = find_session_jsonl(session_id)? {
+            JsonlParser::with_full_content().parse_file(&jsonl_path)?
+        } else {
+            // Fallback to Tantivy index
+            let mut messages = self.search_engine.get_session_messages(session_id)?;
+            if let Some(first) = messages.first()
+                && self.ensure_session_fresh(session_id, &first.project_path)?
+            {
+                messages = self.search_engine.get_session_messages(session_id)?;
+            }
+            // Convert SearchResult to ConversationEntry-like display
+            return self.format_session_from_index(messages, session_id, &args);
+        };
 
-        // Check if session source is stale and reindex if needed
-        if let Some(first) = messages.first()
-            && self.ensure_session_fresh(session_id, &first.project_path)?
-        {
-            // Re-fetch after reindex
-            messages = self.search_engine.get_session_messages(session_id)?;
+        if entries.is_empty() {
+            return Ok(serde_json::to_value(CallToolResponse {
+                content: vec![ToolResult {
+                    result_type: "text".to_string(),
+                    text: format!("No messages found for session {}", session_id),
+                }],
+                is_error: Some(true),
+            })?);
         }
 
+        let messages: Vec<_> = entries.into_iter().filter(|e| e.is_displayable()).collect();
+
+        let total = messages.len();
+        let project = messages
+            .first()
+            .map(|m| m.project_path_display())
+            .unwrap_or_default();
+        let short_session = short_uuid(session_id);
+        let truncate_length = args
+            .get("truncate_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        let center_on = args.get("center_on").and_then(|v| v.as_str());
+        let (start, end, center_idx) = if let Some(uuid) = center_on {
+            let idx = messages
+                .iter()
+                .position(|m| m.uuid.starts_with(uuid))
+                .unwrap_or(0);
+            let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(10);
+            let before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+            let after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+            let start = idx.saturating_sub(before);
+            let end = (idx + after + 1).min(total);
+            (start, end, Some(idx))
+        } else {
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let start = offset.min(total);
+            let end = (offset + limit).min(total);
+            (start, end, None)
+        };
+
+        let page_messages = &messages[start..end];
+        let has_more = end < total;
+
+        let mut output = format!(
+            "📁 {} 🗒️ {} ({} msgs) [{}-{}/{}]\n\n",
+            project,
+            short_session,
+            total,
+            start,
+            end.saturating_sub(1),
+            total
+        );
+
+        for (i, msg) in page_messages.iter().enumerate() {
+            let idx = start + i;
+            let time = msg.timestamp.format("%H:%M");
+            let msg_type = msg.message_type.short_name();
+            let marker = if center_idx == Some(idx) { "»" } else { " " };
+            let content = if truncate_length > 0 {
+                let truncated: String = msg.content.chars().take(truncate_length).collect();
+                let ellipsis = if msg.content.chars().count() > truncate_length {
+                    "…"
+                } else {
+                    ""
+                };
+                format!(
+                    "{}{}",
+                    truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                    ellipsis
+                )
+            } else {
+                msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
+            };
+            output.push_str(&format!(
+                "{}[{}] {} {}: {}\n",
+                marker, idx, time, msg_type, content
+            ));
+        }
+
+        if has_more {
+            output.push_str(&format!("\n+more: offset={}\n", end));
+        }
+
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text: output,
+            }],
+            is_error: None,
+        })?)
+    }
+
+    /// Fallback: format session from Tantivy SearchResult objects (pre-truncated content)
+    fn format_session_from_index(
+        &self,
+        mut messages: Vec<crate::shared::SearchResult>,
+        session_id: &str,
+        args: &Value,
+    ) -> Result<Value> {
         if messages.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {
                 content: vec![ToolResult {
@@ -703,7 +813,6 @@ impl McpServer {
             })?);
         }
 
-        // Sort by sequence number and filter displayable messages
         messages.sort_by_key(|m| m.sequence_num);
         let messages: Vec<_> = messages
             .into_iter()
@@ -721,25 +830,19 @@ impl McpServer {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
-        // Determine pagination: center_on mode vs offset/limit mode
         let center_on = args.get("center_on").and_then(|v| v.as_str());
         let (start, end, center_idx) = if let Some(uuid) = center_on {
-            // Find message by UUID (prefix match)
             let idx = messages
                 .iter()
                 .position(|m| m.uuid.starts_with(uuid))
                 .unwrap_or(0);
-
-            // Parse -C/-B/-A
             let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(10);
             let before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
             let after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
-
             let start = idx.saturating_sub(before);
             let end = (idx + after + 1).min(total);
             (start, end, Some(idx))
         } else {
-            // Standard offset/limit pagination
             let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
             let start = offset.min(total);
@@ -750,9 +853,8 @@ impl McpServer {
         let page_messages = &messages[start..end];
         let has_more = end < total;
 
-        // Format header
         let mut output = format!(
-            "📁 {} 🗒️ {} ({} msgs) [{}-{}/{}]\n\n",
+            "📁 {} 🗒️ {} ({} msgs, from index) [{}-{}/{}]\n\n",
             project,
             short_session,
             total,
@@ -761,12 +863,10 @@ impl McpServer {
             total
         );
 
-        // Format messages - collapse redundant whitespace, apply truncation
         for (i, msg) in page_messages.iter().enumerate() {
             let idx = start + i;
             let time = msg.timestamp.format("%H:%M");
             let msg_type = msg.role_display();
-            // Mark centered message with »
             let marker = if center_idx == Some(idx) { "»" } else { " " };
             let content = if truncate_length > 0 {
                 let truncated: String = msg.content.chars().take(truncate_length).collect();

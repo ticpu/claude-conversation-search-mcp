@@ -48,6 +48,20 @@ pub fn session_jsonl_path(project_path: &str, session_id: &str) -> Option<PathBu
     )
 }
 
+/// Find a session's JSONL file by session ID (prefix match).
+/// Searches all project directories for a file named `<session_id>.jsonl`.
+pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
+    let pattern = projects_dir()?.join("**/*.jsonl");
+    for path in glob(&pattern.to_string_lossy())?.flatten() {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && (stem == session_id || stem.starts_with(session_id))
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 /// Discover all JSONL session files under `.claude/projects/`.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
     let pattern = projects_dir()?.join("**/*.jsonl");

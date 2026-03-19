@@ -42,9 +42,15 @@ fn read_text_file(path: &Path) -> Result<String> {
 }
 
 #[derive(Default)]
-pub struct JsonlParser;
+pub struct JsonlParser {
+    full_content: bool,
+}
 
 impl JsonlParser {
+    pub fn with_full_content() -> Self {
+        Self { full_content: true }
+    }
+
     pub fn parse_file(&self, path: &Path) -> Result<Vec<ConversationEntry>> {
         let content = read_text_file(path)?;
         let mut entries = Vec::new();
@@ -263,11 +269,12 @@ impl JsonlParser {
                 let input = block.get("input");
                 let input_preview = input
                     .map(|v| {
-                        truncate_content(
-                            &v.to_string(),
-                            get_config().limits.tool_input_max_chars,
-                            false,
-                        )
+                        let s = v.to_string();
+                        if self.full_content {
+                            s
+                        } else {
+                            truncate_content(&s, get_config().limits.tool_input_max_chars, false)
+                        }
                     })
                     .unwrap_or_default();
                 Some(ContentBlock::ToolUse {
@@ -281,23 +288,27 @@ impl JsonlParser {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let content = block.get("content");
-                let content_preview = content
-                    .and_then(|v| {
-                        // Handle both string and array content
-                        if let Some(s) = v.as_str() {
-                            Some(s.to_string())
-                        } else if let Some(arr) = v.as_array() {
-                            // Extract text from array format
-                            let texts: Vec<&str> = arr
-                                .iter()
-                                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
-                                .collect();
-                            Some(texts.join(" "))
+                let extracted = content.and_then(|v| {
+                    if let Some(s) = v.as_str() {
+                        Some(s.to_string())
+                    } else if let Some(arr) = v.as_array() {
+                        let texts: Vec<&str> = arr
+                            .iter()
+                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .collect();
+                        Some(texts.join(" "))
+                    } else {
+                        None
+                    }
+                });
+                let content_preview = extracted
+                    .map(|s| {
+                        if self.full_content {
+                            s
                         } else {
-                            None
+                            truncate_content(&s, get_config().limits.tool_result_max_chars, false)
                         }
                     })
-                    .map(|s| truncate_content(&s, get_config().limits.tool_result_max_chars, false))
                     .unwrap_or_default();
                 Some(ContentBlock::ToolResult {
                     content_preview,
@@ -352,7 +363,7 @@ mod tests {
     fn test_parse_user_message() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{"role":"user","content":"Hello world"}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser;
+        let parser = JsonlParser::default();
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         assert_eq!(entry.uuid, "abc123");
@@ -364,7 +375,7 @@ mod tests {
     fn test_skip_file_history_snapshot() {
         let json = r#"{"type":"file-history-snapshot","messageId":"xyz"}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser;
+        let parser = JsonlParser::default();
         let entry = parser.parse_raw_message(raw, "test", 0, &None);
 
         assert!(entry.is_none());
@@ -374,7 +385,7 @@ mod tests {
     fn test_parse_assistant_with_text_block() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Here is my response"}]}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser;
+        let parser = JsonlParser::default();
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         assert_eq!(entry.content, "Here is my response");
@@ -385,7 +396,7 @@ mod tests {
     fn test_parse_thinking_block() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
-        let parser = JsonlParser;
+        let parser = JsonlParser::default();
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         assert!(entry.content.contains("[thinking]"));
@@ -400,7 +411,7 @@ mod tests {
             long_content
         );
         let raw: RawJsonlMessage = serde_json::from_str(&json).unwrap();
-        let parser = JsonlParser;
+        let parser = JsonlParser::default();
         let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
 
         // Should be truncated to ~get_config().limits.tool_result_max_chars + "[result] " prefix + "…"

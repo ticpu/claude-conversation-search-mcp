@@ -74,7 +74,7 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        let parser = JsonlParser;
+        let parser = JsonlParser::default();
 
         // Phase 1 (serial): remove deleted files and collect files that need parsing.
         let mut to_parse: Vec<PathBuf> = Vec::new();

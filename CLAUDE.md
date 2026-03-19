@@ -47,7 +47,9 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 
 **Token estimation**: `HAIKU_CONTEXT_WINDOW * CONTEXT_SAFETY_MARGIN` (200k * 0.75 = 150k) determines when to warn about large sessions.
 
-**is_displayable() filter**: Centralized in `SearchResult` to filter Warmup messages and non-User/Assistant/Summary types. Used by search, session viewing, and summarization.
+**is_displayable() filter**: On both `SearchResult` and `ConversationEntry` to filter Warmup messages and non-User/Assistant/Summary types. Used by search, session viewing, and summarization.
+
+**JSONL-first session reading**: `session` CLI and MCP `get_session_messages` read directly from the source JSONL file via `JsonlParser::with_full_content()` to get untruncated content. Falls back to Tantivy index only when the JSONL file is not found. The index content is pre-truncated during parsing (tool inputs/results).
 
 **Prefix matching for session IDs**: `get_session_messages` accepts short session IDs (first 8 chars) for convenience.
 
@@ -85,11 +87,12 @@ cargo build --release
 
 ## Pre-commit Checklist
 
-1. `cargo test`
+1. `cargo fmt` (required - pre-commit hook rejects unformatted code)
 2. `cargo clippy --fix --allow-dirty`
-3. `cargo fmt`
+3. `cargo test`
 
 All warnings must be resolved. Remove unused code instead of suppressing.
+Always run `cargo fmt` before `git commit` - the pre-commit hook checks formatting and will reject the commit if code is not formatted.
 
 ## Pre-commit Hook
 

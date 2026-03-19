@@ -65,6 +65,19 @@ pub struct ConversationEntry {
     pub tools_mentioned: Vec<String>,
 }
 
+impl ConversationEntry {
+    pub fn is_displayable(&self) -> bool {
+        matches!(
+            self.message_type,
+            MessageType::User | MessageType::Assistant | MessageType::Summary
+        ) && self.content.trim() != "Warmup"
+    }
+
+    pub fn project_path_display(&self) -> String {
+        super::path_utils::home_to_tilde(&self.project_path)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum MessageType {
     User,
