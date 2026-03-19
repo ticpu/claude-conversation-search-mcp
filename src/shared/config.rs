@@ -140,7 +140,10 @@ impl Config {
     }
 
     pub fn get_cache_dir(&self) -> Result<PathBuf> {
-        if let Some(cache_dir) = &self.index.cache_dir {
+        if let Some(cache_dir) = &self
+            .index
+            .cache_dir
+        {
             return Ok(cache_dir.clone());
         }
 
@@ -149,7 +152,10 @@ impl Config {
     }
 
     pub fn get_claude_dir(&self) -> Result<PathBuf> {
-        if let Some(claude_dir) = &self.index.claude_dir {
+        if let Some(claude_dir) = &self
+            .index
+            .claude_dir
+        {
             return Ok(claude_dir.clone());
         }
 
@@ -160,7 +166,9 @@ impl Config {
             return Ok(claude_dir);
         }
 
-        let config_claude_dir = home.join(".config").join("claude");
+        let config_claude_dir = home
+            .join(".config")
+            .join("claude");
         if config_claude_dir.exists() {
             return Ok(config_claude_dir);
         }
@@ -169,7 +177,10 @@ impl Config {
     }
 
     pub fn get_lock_file_path(&self) -> Result<PathBuf> {
-        if let Some(lock_file) = &self.locking.lock_file {
+        if let Some(lock_file) = &self
+            .locking
+            .lock_file
+        {
             return Ok(lock_file.clone());
         }
 
@@ -178,7 +189,11 @@ impl Config {
     }
 
     pub fn get_writer_heap_size(&self) -> usize {
-        (self.index.writer_heap_mb as usize) * 1024 * 1024
+        (self
+            .index
+            .writer_heap_mb as usize)
+            * 1024
+            * 1024
     }
 }
 

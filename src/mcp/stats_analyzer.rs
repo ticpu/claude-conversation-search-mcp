@@ -75,8 +75,12 @@ pub async fn handle_get_stats(
 
     for result in &results {
         session_count.insert(&result.session_id);
-        *project_counts.entry(&result.project).or_insert(0) += 1;
-        total_chars += result.content.len();
+        *project_counts
+            .entry(&result.project)
+            .or_insert(0) += 1;
+        total_chars += result
+            .content
+            .len();
 
         if result.has_code {
             has_code_count += 1;
@@ -87,34 +91,59 @@ pub async fn handle_get_stats(
 
         // Count technologies and languages
         for tech in &result.technologies {
-            *tech_counts.entry(tech).or_insert(0) += 1;
+            *tech_counts
+                .entry(tech)
+                .or_insert(0) += 1;
         }
         for lang in &result.code_languages {
-            *lang_counts.entry(lang).or_insert(0) += 1;
+            *lang_counts
+                .entry(lang)
+                .or_insert(0) += 1;
         }
 
         // Count by month
-        let month_key = result.timestamp.format("%Y-%m").to_string();
-        *monthly_counts.entry(month_key).or_insert(0) += 1;
+        let month_key = result
+            .timestamp
+            .format("%Y-%m")
+            .to_string();
+        *monthly_counts
+            .entry(month_key)
+            .or_insert(0) += 1;
     }
 
     // Sort projects by count
-    let mut project_stats: Vec<_> = project_counts.into_iter().collect();
-    project_stats.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut project_stats: Vec<_> = project_counts
+        .into_iter()
+        .collect();
+    project_stats.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+    });
 
     // Sort tech by count
-    let mut tech_stats: Vec<_> = tech_counts.into_iter().collect();
-    tech_stats.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut tech_stats: Vec<_> = tech_counts
+        .into_iter()
+        .collect();
+    tech_stats.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+    });
     tech_stats.truncate(15); // Top 15
 
     // Sort languages by count
-    let mut lang_stats: Vec<_> = lang_counts.into_iter().collect();
-    lang_stats.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut lang_stats: Vec<_> = lang_counts
+        .into_iter()
+        .collect();
+    lang_stats.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+    });
     lang_stats.truncate(10); // Top 10
 
     // Sort months chronologically
-    let mut monthly_stats: Vec<_> = monthly_counts.into_iter().collect();
-    monthly_stats.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut monthly_stats: Vec<_> = monthly_counts
+        .into_iter()
+        .collect();
+    monthly_stats.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+    });
 
     let mut output = String::new();
 
@@ -167,7 +196,10 @@ pub async fn handle_get_stats(
     // Project breakdown (if showing all projects)
     if project_filter.is_none() && project_stats.len() > 1 {
         output.push_str("## Projects\n");
-        for (project, count) in project_stats.iter().take(10) {
+        for (project, count) in project_stats
+            .iter()
+            .take(10)
+        {
             let percentage = (*count as f32 / results.len() as f32) * 100.0;
             output.push_str(&format!(
                 "**{}**: {} messages ({:.1}%)\n",

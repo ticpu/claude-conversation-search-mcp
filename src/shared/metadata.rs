@@ -197,7 +197,9 @@ pub fn extract_technologies(content: &str) -> Vec<String> {
             technologies.insert(tech.to_string());
         }
     }
-    technologies.into_iter().collect()
+    technologies
+        .into_iter()
+        .collect()
 }
 
 pub fn extract_tools_mentioned(content: &str) -> Vec<String> {
@@ -207,7 +209,9 @@ pub fn extract_tools_mentioned(content: &str) -> Vec<String> {
             tools.insert(tool.to_string());
         }
     }
-    tools.into_iter().collect()
+    tools
+        .into_iter()
+        .collect()
 }
 
 pub fn extract_code_languages(content: &str) -> Vec<String> {
@@ -217,7 +221,9 @@ pub fn extract_code_languages(content: &str) -> Vec<String> {
             languages.insert(lang.to_string());
         }
     }
-    languages.into_iter().collect()
+    languages
+        .into_iter()
+        .collect()
 }
 
 pub fn has_code_blocks(content: &str) -> bool {

@@ -32,7 +32,9 @@ pub fn project_dir_name(path: &str) -> String {
 
 /// Path to the `.claude/projects/` directory.
 pub fn projects_dir() -> Result<PathBuf> {
-    Ok(get_config().get_claude_dir()?.join("projects"))
+    Ok(get_config()
+        .get_claude_dir()?
+        .join("projects"))
 }
 
 /// Construct path to a session's JSONL file.
@@ -53,7 +55,9 @@ pub fn session_jsonl_path(project_path: &str, session_id: &str) -> Option<PathBu
 pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
     let pattern = projects_dir()?.join("**/*.jsonl");
     for path in glob(&pattern.to_string_lossy())?.flatten() {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        if let Some(stem) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
             && (stem == session_id || stem.starts_with(session_id))
         {
             return Ok(Some(path));
@@ -65,7 +69,9 @@ pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
 /// Discover all JSONL session files under `.claude/projects/`.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
     let pattern = projects_dir()?.join("**/*.jsonl");
-    let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?.flatten().collect();
+    let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?
+        .flatten()
+        .collect();
     Ok(files)
 }
 
@@ -89,10 +95,18 @@ pub(crate) fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<Pa
         let dir_name = project_dir_name(&current.to_string_lossy());
         let project_dir = projects.join(&dir_name);
         if project_dir.exists() {
-            let best = glob(&project_dir.join("*.jsonl").to_string_lossy())
-                .ok()?
-                .flatten()
-                .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok());
+            let best = glob(
+                &project_dir
+                    .join("*.jsonl")
+                    .to_string_lossy(),
+            )
+            .ok()?
+            .flatten()
+            .max_by_key(|p| {
+                p.metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+            });
             if best.is_some() {
                 return best;
             }
@@ -108,11 +122,17 @@ pub(crate) fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<Pa
 /// Used by long-lived processes (e.g. MCP server) whose cwd does not reflect
 /// the currently active Claude session.
 pub fn globally_active_session_jsonl() -> Option<PathBuf> {
-    let pattern = projects_dir().ok()?.join("**/*.jsonl");
+    let pattern = projects_dir()
+        .ok()?
+        .join("**/*.jsonl");
     glob(&pattern.to_string_lossy())
         .ok()?
         .flatten()
-        .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
+        .max_by_key(|p| {
+            p.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+        })
 }
 
 #[cfg(test)]
@@ -144,11 +164,16 @@ mod tests {
         let root = tmp.path();
 
         // Simulate: cwd = root/my/project, claude projects dir at root/claude/projects
-        let cwd = root.join("my").join("project");
+        let cwd = root
+            .join("my")
+            .join("project");
         fs::create_dir_all(&cwd).unwrap();
 
         let dir_name = project_dir_name(&cwd.to_string_lossy());
-        let project_dir = root.join("claude").join("projects").join(&dir_name);
+        let project_dir = root
+            .join("claude")
+            .join("projects")
+            .join(&dir_name);
         fs::create_dir_all(&project_dir).unwrap();
 
         let session_file = project_dir.join("abc123.jsonl");
@@ -156,7 +181,12 @@ mod tests {
 
         // active_session_jsonl uses projects_dir() which goes through config,
         // so test the walk-up logic directly with a known projects base.
-        let found = find_session_in_projects(&cwd, &root.join("claude").join("projects"));
+        let found = find_session_in_projects(
+            &cwd,
+            &root
+                .join("claude")
+                .join("projects"),
+        );
         assert_eq!(found, Some(session_file));
     }
 
@@ -166,26 +196,45 @@ mod tests {
         let root = tmp.path();
 
         // cwd is a subdirectory; session registered at parent level
-        let parent = root.join("my").join("project");
-        let cwd = parent.join("src").join("lib");
+        let parent = root
+            .join("my")
+            .join("project");
+        let cwd = parent
+            .join("src")
+            .join("lib");
         fs::create_dir_all(&cwd).unwrap();
 
         let dir_name = project_dir_name(&parent.to_string_lossy());
-        let project_dir = root.join("claude").join("projects").join(&dir_name);
+        let project_dir = root
+            .join("claude")
+            .join("projects")
+            .join(&dir_name);
         fs::create_dir_all(&project_dir).unwrap();
         let session_file = project_dir.join("sess.jsonl");
         fs::write(&session_file, b"{}").unwrap();
 
-        let found = find_session_in_projects(&cwd, &root.join("claude").join("projects"));
+        let found = find_session_in_projects(
+            &cwd,
+            &root
+                .join("claude")
+                .join("projects"),
+        );
         assert_eq!(found, Some(session_file));
     }
 
     #[test]
     fn test_active_session_jsonl_not_found() {
         let tmp = TempDir::new().unwrap();
-        let cwd = tmp.path().join("some").join("random").join("path");
+        let cwd = tmp
+            .path()
+            .join("some")
+            .join("random")
+            .join("path");
         fs::create_dir_all(&cwd).unwrap();
-        let projects = tmp.path().join("claude").join("projects");
+        let projects = tmp
+            .path()
+            .join("claude")
+            .join("projects");
         fs::create_dir_all(&projects).unwrap();
 
         let found = find_session_in_projects(&cwd, &projects);

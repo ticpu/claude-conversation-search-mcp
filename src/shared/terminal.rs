@@ -37,7 +37,8 @@ fn query_terminal_da1() -> bool {
     let mut raw = orig_termios.clone();
     raw.local_flags
         .remove(nix::sys::termios::LocalFlags::ICANON);
-    raw.local_flags.remove(nix::sys::termios::LocalFlags::ECHO);
+    raw.local_flags
+        .remove(nix::sys::termios::LocalFlags::ECHO);
     raw.control_chars[nix::sys::termios::SpecialCharacterIndices::VMIN as usize] = 0;
     raw.control_chars[nix::sys::termios::SpecialCharacterIndices::VTIME as usize] = 1; // 100ms timeout
 
@@ -48,13 +49,19 @@ fn query_terminal_da1() -> bool {
     // Send DA1 query: ESC [ c
     let result = (|| {
         let mut stdout = stdout.lock();
-        stdout.write_all(b"\x1b[c").ok()?;
-        stdout.flush().ok()?;
+        stdout
+            .write_all(b"\x1b[c")
+            .ok()?;
+        stdout
+            .flush()
+            .ok()?;
 
         // Read response with timeout
         let mut buf = [0u8; 64];
         let mut stdin_lock = stdin.lock();
-        let n = stdin_lock.read(&mut buf).ok()?;
+        let n = stdin_lock
+            .read(&mut buf)
+            .ok()?;
 
         // Any response starting with ESC [ means modern terminal
         // Format: ESC [ ? ... c

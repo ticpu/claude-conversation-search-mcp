@@ -57,7 +57,10 @@ impl JsonlParser {
         let project_name = self.extract_project_name(path);
 
         // Detect if this is an agent file
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         let is_agent_file = filename.starts_with("agent-");
         let file_agent_id = if is_agent_file {
             filename
@@ -69,8 +72,14 @@ impl JsonlParser {
         };
 
         let mut sequence_counter = 0;
-        for (line_num, line) in content.lines().enumerate() {
-            if line.trim().is_empty() {
+        for (line_num, line) in content
+            .lines()
+            .enumerate()
+        {
+            if line
+                .trim()
+                .is_empty()
+            {
                 continue;
             }
 
@@ -99,7 +108,9 @@ impl JsonlParser {
         sequence_num: usize,
         file_agent_id: &Option<String>,
     ) -> Option<ConversationEntry> {
-        let msg_type = raw.message_type.as_deref()?;
+        let msg_type = raw
+            .message_type
+            .as_deref()?;
 
         // Filter out noise message types
         match msg_type {
@@ -109,10 +120,18 @@ impl JsonlParser {
         }
 
         // Get required fields
-        let uuid = raw.uuid.clone()?;
-        let session_id = raw.session_id.clone()?;
-        let timestamp_str = raw.timestamp.as_deref()?;
-        let timestamp: DateTime<Utc> = timestamp_str.parse().ok()?;
+        let uuid = raw
+            .uuid
+            .clone()?;
+        let session_id = raw
+            .session_id
+            .clone()?;
+        let timestamp_str = raw
+            .timestamp
+            .as_deref()?;
+        let timestamp: DateTime<Utc> = timestamp_str
+            .parse()
+            .ok()?;
 
         // Determine message type
         let message_type = match msg_type {
@@ -124,14 +143,22 @@ impl JsonlParser {
 
         // Extract searchable content, stripping ANSI escape sequences from tool output
         let (content, mut has_error, tools_used) = if msg_type == "summary" {
-            (raw.summary.unwrap_or_default(), false, Vec::new())
+            (
+                raw.summary
+                    .unwrap_or_default(),
+                false,
+                Vec::new(),
+            )
         } else {
             self.extract_searchable_content(&raw)
         };
         let content = strip_str(&content);
 
         // Skip empty content
-        if content.trim().is_empty() {
+        if content
+            .trim()
+            .is_empty()
+        {
             return None;
         }
 
@@ -143,26 +170,36 @@ impl JsonlParser {
             .unwrap_or_else(|| fallback_project.to_string());
 
         // Get model from message
-        let model = raw.message.as_ref().and_then(|m| m.model.clone());
+        let model = raw
+            .message
+            .as_ref()
+            .and_then(|m| {
+                m.model
+                    .clone()
+            });
 
         // Use agent_id from message or from filename
-        let agent_id = raw.agent_id.or_else(|| file_agent_id.clone());
+        let agent_id = raw
+            .agent_id
+            .or_else(|| file_agent_id.clone());
 
-        let (technologies, code_languages, has_code, tools_mentioned) =
-            if get_config().index.enable_tagging {
-                let (techs, tools, langs, has_code, content_has_error) =
-                    metadata::extract_all_metadata(&content);
-                has_error |= content_has_error;
-                let mut all_tools = tools;
-                for tool in tools_used {
-                    if !all_tools.contains(&tool) {
-                        all_tools.push(tool);
-                    }
+        let (technologies, code_languages, has_code, tools_mentioned) = if get_config()
+            .index
+            .enable_tagging
+        {
+            let (techs, tools, langs, has_code, content_has_error) =
+                metadata::extract_all_metadata(&content);
+            has_error |= content_has_error;
+            let mut all_tools = tools;
+            for tool in tools_used {
+                if !all_tools.contains(&tool) {
+                    all_tools.push(tool);
                 }
-                (techs, langs, has_code, all_tools)
-            } else {
-                (vec![], vec![], false, tools_used)
-            };
+            }
+            (techs, langs, has_code, all_tools)
+        } else {
+            (vec![], vec![], false, tools_used)
+        };
 
         Some(ConversationEntry {
             uuid,
@@ -175,7 +212,9 @@ impl JsonlParser {
             model,
             cwd: raw.cwd,
             sequence_num,
-            is_sidechain: raw.is_sidechain.unwrap_or(false),
+            is_sidechain: raw
+                .is_sidechain
+                .unwrap_or(false),
             agent_id,
             technologies,
             has_code,
@@ -240,7 +279,10 @@ impl JsonlParser {
                         if is_error {
                             has_error = true;
                             parts.push(format!("[error] {}", content_preview));
-                        } else if !content_preview.trim().is_empty() {
+                        } else if !content_preview
+                            .trim()
+                            .is_empty()
+                        {
                             // Only include non-empty, non-error results (truncated)
                             parts.push(format!("[result] {}", content_preview));
                         }
@@ -253,19 +295,28 @@ impl JsonlParser {
     }
 
     fn parse_content_block(&self, block: &serde_json::Value) -> Option<ContentBlock> {
-        let block_type = block.get("type")?.as_str()?;
+        let block_type = block
+            .get("type")?
+            .as_str()?;
 
         match block_type {
             "text" => {
-                let text = block.get("text")?.as_str()?;
+                let text = block
+                    .get("text")?
+                    .as_str()?;
                 Some(ContentBlock::Text(text.to_string()))
             }
             "thinking" => {
-                let thinking = block.get("thinking")?.as_str()?;
+                let thinking = block
+                    .get("thinking")?
+                    .as_str()?;
                 Some(ContentBlock::Thinking(thinking.to_string()))
             }
             "tool_use" => {
-                let name = block.get("name")?.as_str()?.to_string();
+                let name = block
+                    .get("name")?
+                    .as_str()?
+                    .to_string();
                 let input = block.get("input");
                 let input_preview = input
                     .map(|v| {
@@ -273,7 +324,13 @@ impl JsonlParser {
                         if self.full_content {
                             s
                         } else {
-                            truncate_content(&s, get_config().limits.tool_input_max_chars, false)
+                            truncate_content(
+                                &s,
+                                get_config()
+                                    .limits
+                                    .tool_input_max_chars,
+                                false,
+                            )
                         }
                     })
                     .unwrap_or_default();
@@ -294,7 +351,10 @@ impl JsonlParser {
                     } else if let Some(arr) = v.as_array() {
                         let texts: Vec<&str> = arr
                             .iter()
-                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .filter_map(|item| {
+                                item.get("text")
+                                    .and_then(|t| t.as_str())
+                            })
                             .collect();
                         Some(texts.join(" "))
                     } else {
@@ -306,7 +366,13 @@ impl JsonlParser {
                         if self.full_content {
                             s
                         } else {
-                            truncate_content(&s, get_config().limits.tool_result_max_chars, false)
+                            truncate_content(
+                                &s,
+                                get_config()
+                                    .limits
+                                    .tool_result_max_chars,
+                                false,
+                            )
                         }
                     })
                     .unwrap_or_default();
@@ -331,7 +397,10 @@ impl JsonlParser {
         let path = Path::new(cwd_path);
         let components: Vec<&str> = path
             .components()
-            .filter_map(|c| c.as_os_str().to_str())
+            .filter_map(|c| {
+                c.as_os_str()
+                    .to_str()
+            })
             .collect();
 
         // Look for meaningful project name, skip common dirs
@@ -364,7 +433,9 @@ mod tests {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{"role":"user","content":"Hello world"}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
-        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+        let entry = parser
+            .parse_raw_message(raw, "test", 0, &None)
+            .unwrap();
 
         assert_eq!(entry.uuid, "abc123");
         assert_eq!(entry.content, "Hello world");
@@ -386,7 +457,9 @@ mod tests {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Here is my response"}]}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
-        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+        let entry = parser
+            .parse_raw_message(raw, "test", 0, &None)
+            .unwrap();
 
         assert_eq!(entry.content, "Here is my response");
         assert_eq!(entry.message_type, MessageType::Assistant);
@@ -397,10 +470,20 @@ mod tests {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"assistant","timestamp":"2025-12-28T10:00:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
-        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+        let entry = parser
+            .parse_raw_message(raw, "test", 0, &None)
+            .unwrap();
 
-        assert!(entry.content.contains("[thinking]"));
-        assert!(entry.content.contains("Let me think about this"));
+        assert!(
+            entry
+                .content
+                .contains("[thinking]")
+        );
+        assert!(
+            entry
+                .content
+                .contains("Let me think about this")
+        );
     }
 
     #[test]
@@ -412,10 +495,24 @@ mod tests {
         );
         let raw: RawJsonlMessage = serde_json::from_str(&json).unwrap();
         let parser = JsonlParser::default();
-        let entry = parser.parse_raw_message(raw, "test", 0, &None).unwrap();
+        let entry = parser
+            .parse_raw_message(raw, "test", 0, &None)
+            .unwrap();
 
         // Should be truncated to ~get_config().limits.tool_result_max_chars + "[result] " prefix + "…"
-        assert!(entry.content.len() < get_config().limits.tool_result_max_chars + 100);
-        assert!(entry.content.ends_with('…'));
+        assert!(
+            entry
+                .content
+                .len()
+                < get_config()
+                    .limits
+                    .tool_result_max_chars
+                    + 100
+        );
+        assert!(
+            entry
+                .content
+                .ends_with('…')
+        );
     }
 }

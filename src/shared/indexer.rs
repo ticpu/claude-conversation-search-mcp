@@ -105,7 +105,10 @@ impl SearchIndexer {
         ];
 
         for field_name in required_fields {
-            if actual_schema.get_field(field_name).is_err() {
+            if actual_schema
+                .get_field(field_name)
+                .is_err()
+            {
                 return Ok(false);
             }
         }
@@ -159,9 +162,17 @@ impl SearchIndexer {
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
         // TEXT field tokenizes at hyphens, so use first segment for deletion
         // UUID first segments are unique enough to avoid false matches
-        let first_segment = session_id.split('-').next().unwrap_or(session_id);
-        let term = Term::from_field_text(self.fields.session_field, first_segment);
-        self.writer.delete_term(term);
+        let first_segment = session_id
+            .split('-')
+            .next()
+            .unwrap_or(session_id);
+        let term = Term::from_field_text(
+            self.fields
+                .session_field,
+            first_segment,
+        );
+        self.writer
+            .delete_term(term);
         Ok(())
     }
 
@@ -187,14 +198,16 @@ impl SearchIndexer {
                 self.fields.agent_id_field => entry.agent_id.unwrap_or_default(),
             );
 
-            self.writer.add_document(doc)?;
+            self.writer
+                .add_document(doc)?;
         }
 
         Ok(())
     }
 
     pub fn commit(&mut self) -> Result<()> {
-        self.writer.commit()?;
+        self.writer
+            .commit()?;
         Ok(())
     }
 }

@@ -1,11 +1,19 @@
 #!/bin/bash
-# Pre-commit hook to check formatting and clippy
+# Pre-commit hook for binary crates
+# Copy to hooks/pre-commit and run hooks/install.sh
 
 set -e
 
+# Block #[allow(dead_code)] in staged files
+if git diff --cached --diff-filter=AM --name-only | grep '\.rs$' | \
+    xargs grep -nH '#\[.*allow(dead_code).*\]' 2>/dev/null; then
+    echo "Found #[allow(dead_code)] in staged files. Refactor without it or get explicit approval."
+    exit 1
+fi
+
 echo "Running cargo fmt check..."
-if ! cargo fmt -- --check; then
-    echo "Code is not formatted. Run 'cargo fmt' to fix."
+if ! cargo fmt --all -- --check; then
+    echo "Code is not formatted. Run 'cargo fmt --all' to fix."
     exit 1
 fi
 
@@ -21,3 +29,5 @@ if ! test_output=$(cargo test 2>&1); then
     echo "Tests failed. Fix them before committing."
     exit 1
 fi
+
+echo "Pre-commit checks passed"

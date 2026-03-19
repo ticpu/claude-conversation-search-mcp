@@ -37,7 +37,11 @@ fn parse_date(s: &str) -> Result<DateTime<Utc>, String> {
     }
     // Try YYYY-MM-DD
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap()));
+        return Ok(Utc.from_utc_datetime(
+            &date
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        ));
     }
     Err(format!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s))
 }
@@ -143,7 +147,9 @@ impl McpServer {
         auto_index(&cache_dir)?;
 
         let cache = CacheManager::new(&cache_dir)?;
-        let counts = cache.get_session_counts().clone();
+        let counts = cache
+            .get_session_counts()
+            .clone();
         let search_engine = SearchEngine::new(&cache_dir, counts)?;
 
         Ok(Self {
@@ -179,7 +185,9 @@ impl McpServer {
         cache.update_incremental(&mut indexer, vec![jsonl_path])?;
 
         // Reload search engine
-        let counts = cache.get_session_counts().clone();
+        let counts = cache
+            .get_session_counts()
+            .clone();
         self.search_engine = SearchEngine::new(&self.cache_dir, counts)?;
 
         Ok(true)
@@ -414,13 +422,34 @@ impl McpServer {
         let request: CallToolRequest = serde_json::from_value(params)?;
         debug!("Handling tool call: {}", request.name);
 
-        let result = match request.name.as_str() {
-            "search_conversations" => self.tool_search_conversations(request.arguments).await?,
-            "respawn_server" => self.tool_respawn().await?,
-            "reindex" => self.tool_reindex(request.arguments).await?,
-            "get_session_messages" => self.tool_get_session_messages(request.arguments).await?,
-            "summarize_session" => self.tool_summarize_session(request.arguments).await?,
-            "get_messages" => self.tool_get_messages(request.arguments).await?,
+        let result = match request
+            .name
+            .as_str()
+        {
+            "search_conversations" => {
+                self.tool_search_conversations(request.arguments)
+                    .await?
+            }
+            "respawn_server" => {
+                self.tool_respawn()
+                    .await?
+            }
+            "reindex" => {
+                self.tool_reindex(request.arguments)
+                    .await?
+            }
+            "get_session_messages" => {
+                self.tool_get_session_messages(request.arguments)
+                    .await?
+            }
+            "summarize_session" => {
+                self.tool_summarize_session(request.arguments)
+                    .await?
+            }
+            "get_messages" => {
+                self.tool_get_messages(request.arguments)
+                    .await?
+            }
             _ => {
                 return Ok(serde_json::to_value(CallToolResponse {
                     content: vec![ToolResult {
@@ -460,9 +489,18 @@ impl McpServer {
             .map(|s| s.to_string());
 
         // Parse grep-style context: -C (both), -B (before), -A (after)
-        let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(2);
-        let context_before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
-        let context_after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+        let context_c = args
+            .get("-C")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2);
+        let context_before = args
+            .get("-B")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(context_c) as usize;
+        let context_after = args
+            .get("-A")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(context_c) as usize;
 
         let exclude_projects = json_strings(args.get("exclude_projects"));
 
@@ -499,7 +537,10 @@ impl McpServer {
         let cache = CacheManager::new(&config.get_cache_dir()?)?;
         let (stale_count, new_count) = cache.quick_health_check(&files_for_stale_check);
 
-        let mut all_exclude_patterns = config.search.exclude_patterns.clone();
+        let mut all_exclude_patterns = config
+            .search
+            .exclude_patterns
+            .clone();
         all_exclude_patterns.extend(exclude_patterns.clone());
 
         let exclude_regexes: Vec<Regex> = all_exclude_patterns
@@ -507,7 +548,10 @@ impl McpServer {
             .filter_map(|p| Regex::new(p).ok())
             .collect();
 
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
 
         let sort_by = match args
             .get("sort_by")
@@ -519,7 +563,10 @@ impl McpServer {
             _ => SortOrder::Relevance,
         };
 
-        let after = if let Some(s) = args.get("after").and_then(|v| v.as_str()) {
+        let after = if let Some(s) = args
+            .get("after")
+            .and_then(|v| v.as_str())
+        {
             match parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
@@ -536,7 +583,10 @@ impl McpServer {
             None
         };
 
-        let before = if let Some(s) = args.get("before").and_then(|v| v.as_str()) {
+        let before = if let Some(s) = args
+            .get("before")
+            .and_then(|v| v.as_str())
+        {
             match parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
@@ -571,11 +621,13 @@ impl McpServer {
 
         // Get current session ID from file detected earlier
         let current_session_id: Option<String> = if !include_current_session {
-            current_session_file.as_ref().and_then(|p| {
-                p.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-            })
+            current_session_file
+                .as_ref()
+                .and_then(|p| {
+                    p.file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                })
         } else {
             None
         };
@@ -599,9 +651,15 @@ impl McpServer {
         let filtered: Vec<_> = results_with_context
             .into_iter()
             .filter(|r| {
-                let proj = &r.matched_message.project;
-                let path = &r.matched_message.project_path;
-                let session = &r.matched_message.session_id;
+                let proj = &r
+                    .matched_message
+                    .project;
+                let path = &r
+                    .matched_message
+                    .project_path;
+                let session = &r
+                    .matched_message
+                    .session_id;
 
                 // Exclude current session unless explicitly included
                 if let Some(ref current) = current_session_id
@@ -656,7 +714,10 @@ impl McpServer {
         if filtered.is_empty() {
             output.push_str("No results found.\n");
         } else {
-            for (i, result) in filtered.iter().enumerate() {
+            for (i, result) in filtered
+                .iter()
+                .enumerate()
+            {
                 output.push_str(&result.format_compact_with_options(i, &display_opts));
                 if i < filtered.len() - 1 {
                     output.push('\n');
@@ -691,11 +752,15 @@ impl McpServer {
             JsonlParser::with_full_content().parse_file(&jsonl_path)?
         } else {
             // Fallback to Tantivy index
-            let mut messages = self.search_engine.get_session_messages(session_id)?;
+            let mut messages = self
+                .search_engine
+                .get_session_messages(session_id)?;
             if let Some(first) = messages.first()
                 && self.ensure_session_fresh(session_id, &first.project_path)?
             {
-                messages = self.search_engine.get_session_messages(session_id)?;
+                messages = self
+                    .search_engine
+                    .get_session_messages(session_id)?;
             }
             // Convert SearchResult to ConversationEntry-like display
             return self.format_session_from_index(messages, session_id, &args);
@@ -711,7 +776,10 @@ impl McpServer {
             })?);
         }
 
-        let messages: Vec<_> = entries.into_iter().filter(|e| e.is_displayable()).collect();
+        let messages: Vec<_> = entries
+            .into_iter()
+            .filter(|e| e.is_displayable())
+            .collect();
 
         let total = messages.len();
         let project = messages
@@ -724,21 +792,41 @@ impl McpServer {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
-        let center_on = args.get("center_on").and_then(|v| v.as_str());
+        let center_on = args
+            .get("center_on")
+            .and_then(|v| v.as_str());
         let (start, end, center_idx) = if let Some(uuid) = center_on {
             let idx = messages
                 .iter()
-                .position(|m| m.uuid.starts_with(uuid))
+                .position(|m| {
+                    m.uuid
+                        .starts_with(uuid)
+                })
                 .unwrap_or(0);
-            let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(10);
-            let before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
-            let after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+            let context_c = args
+                .get("-C")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10);
+            let before = args
+                .get("-B")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(context_c) as usize;
+            let after = args
+                .get("-A")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(context_c) as usize;
             let start = idx.saturating_sub(before);
             let end = (idx + after + 1).min(total);
             (start, end, Some(idx))
         } else {
-            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let offset = args
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50) as usize;
             let start = offset.min(total);
             let end = (offset + limit).min(total);
             (start, end, None)
@@ -757,25 +845,47 @@ impl McpServer {
             total
         );
 
-        for (i, msg) in page_messages.iter().enumerate() {
+        for (i, msg) in page_messages
+            .iter()
+            .enumerate()
+        {
             let idx = start + i;
-            let time = msg.timestamp.format("%H:%M");
-            let msg_type = msg.message_type.short_name();
+            let time = msg
+                .timestamp
+                .format("%H:%M");
+            let msg_type = msg
+                .message_type
+                .short_name();
             let marker = if center_idx == Some(idx) { "»" } else { " " };
             let content = if truncate_length > 0 {
-                let truncated: String = msg.content.chars().take(truncate_length).collect();
-                let ellipsis = if msg.content.chars().count() > truncate_length {
+                let truncated: String = msg
+                    .content
+                    .chars()
+                    .take(truncate_length)
+                    .collect();
+                let ellipsis = if msg
+                    .content
+                    .chars()
+                    .count()
+                    > truncate_length
+                {
                     "…"
                 } else {
                     ""
                 };
                 format!(
                     "{}{}",
-                    truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                    truncated
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
                     ellipsis
                 )
             } else {
-                msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
+                msg.content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
             };
             output.push_str(&format!(
                 "{}[{}] {} {}: {}\n",
@@ -830,21 +940,41 @@ impl McpServer {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
-        let center_on = args.get("center_on").and_then(|v| v.as_str());
+        let center_on = args
+            .get("center_on")
+            .and_then(|v| v.as_str());
         let (start, end, center_idx) = if let Some(uuid) = center_on {
             let idx = messages
                 .iter()
-                .position(|m| m.uuid.starts_with(uuid))
+                .position(|m| {
+                    m.uuid
+                        .starts_with(uuid)
+                })
                 .unwrap_or(0);
-            let context_c = args.get("-C").and_then(|v| v.as_u64()).unwrap_or(10);
-            let before = args.get("-B").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
-            let after = args.get("-A").and_then(|v| v.as_u64()).unwrap_or(context_c) as usize;
+            let context_c = args
+                .get("-C")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10);
+            let before = args
+                .get("-B")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(context_c) as usize;
+            let after = args
+                .get("-A")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(context_c) as usize;
             let start = idx.saturating_sub(before);
             let end = (idx + after + 1).min(total);
             (start, end, Some(idx))
         } else {
-            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let offset = args
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50) as usize;
             let start = offset.min(total);
             let end = (offset + limit).min(total);
             (start, end, None)
@@ -863,25 +993,45 @@ impl McpServer {
             total
         );
 
-        for (i, msg) in page_messages.iter().enumerate() {
+        for (i, msg) in page_messages
+            .iter()
+            .enumerate()
+        {
             let idx = start + i;
-            let time = msg.timestamp.format("%H:%M");
+            let time = msg
+                .timestamp
+                .format("%H:%M");
             let msg_type = msg.role_display();
             let marker = if center_idx == Some(idx) { "»" } else { " " };
             let content = if truncate_length > 0 {
-                let truncated: String = msg.content.chars().take(truncate_length).collect();
-                let ellipsis = if msg.content.chars().count() > truncate_length {
+                let truncated: String = msg
+                    .content
+                    .chars()
+                    .take(truncate_length)
+                    .collect();
+                let ellipsis = if msg
+                    .content
+                    .chars()
+                    .count()
+                    > truncate_length
+                {
                     "…"
                 } else {
                     ""
                 };
                 format!(
                     "{}{}",
-                    truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                    truncated
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
                     ellipsis
                 )
             } else {
-                msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
+                msg.content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
             };
             output.push_str(&format!(
                 "{}[{}] {} {}: {}\n",
@@ -913,7 +1063,13 @@ impl McpServer {
         let search_engine = &self.search_engine;
         let messages = search_engine.get_session_messages(session_id)?;
         let msg_count = messages.len();
-        let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        let total_chars: usize = messages
+            .iter()
+            .map(|m| {
+                m.content
+                    .len()
+            })
+            .sum();
         let approx_tokens = total_chars / 4; // rough estimate: ~4 chars per token
 
         let safe_limit = (HAIKU_CONTEXT_WINDOW as f64 * CONTEXT_SAFETY_MARGIN) as usize;
@@ -977,8 +1133,12 @@ Task(
         for msg in &messages {
             output.push_str(&format!(
                 "💬 {} 📅 {} [{}]\n{}\n\n",
-                &msg.uuid[..8.min(msg.uuid.len())],
-                msg.timestamp.format("%Y-%m-%d %H:%M"),
+                &msg.uuid[..8.min(
+                    msg.uuid
+                        .len()
+                )],
+                msg.timestamp
+                    .format("%Y-%m-%d %H:%M"),
                 msg.message_type,
                 msg.content
             ));
@@ -1042,18 +1202,26 @@ Task(
 
     async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
-        let full_rebuild = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+        let full_rebuild = args
+            .get("full")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let all_files = discover_jsonl_files()?;
 
         let result = if full_rebuild {
             // Full rebuild - clear and recreate
-            if self.cache_dir.exists() {
+            if self
+                .cache_dir
+                .exists()
+            {
                 std::fs::remove_dir_all(&self.cache_dir)?;
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             cache.update_incremental(&mut indexer, all_files)?;
-            let counts = cache.get_session_counts().clone();
+            let counts = cache
+                .get_session_counts()
+                .clone();
             self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
             "Full rebuild complete".to_string()
         } else {
@@ -1062,7 +1230,9 @@ Task(
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let (stale, new) = cache.quick_health_check(&all_files);
             cache.update_incremental(&mut indexer, all_files)?;
-            let counts = cache.get_session_counts().clone();
+            let counts = cache
+                .get_session_counts()
+                .clone();
             self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
             format!(
                 "Incremental update: {} stale + {} new files reindexed",
@@ -1079,12 +1249,25 @@ Task(
     }
 
     async fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
-        let result = match request.method.as_str() {
-            "initialize" => self.handle_initialize(request.params).await,
-            "tools/list" => self.handle_list_tools().await,
-            "tools/call" => {
-                self.handle_call_tool(request.params.unwrap_or_default())
+        let result = match request
+            .method
+            .as_str()
+        {
+            "initialize" => {
+                self.handle_initialize(request.params)
                     .await
+            }
+            "tools/list" => {
+                self.handle_list_tools()
+                    .await
+            }
+            "tools/call" => {
+                self.handle_call_tool(
+                    request
+                        .params
+                        .unwrap_or_default(),
+                )
+                .await
             }
             _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
         };
@@ -1123,8 +1306,14 @@ pub async fn run_mcp_server() -> Result<()> {
     let mut stdout = tokio::io::stdout();
     let mut reader = AsyncBufReader::new(stdin).lines();
 
-    while let Some(line) = reader.next_line().await? {
-        if line.trim().is_empty() {
+    while let Some(line) = reader
+        .next_line()
+        .await?
+    {
+        if line
+            .trim()
+            .is_empty()
+        {
             continue;
         }
 
@@ -1132,13 +1321,21 @@ pub async fn run_mcp_server() -> Result<()> {
 
         match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(request) => {
-                let response = server.handle_request(request).await;
+                let response = server
+                    .handle_request(request)
+                    .await;
                 let response_json = serde_json::to_string(&response)?;
                 debug!("Sending response: {}", response_json);
 
-                stdout.write_all(response_json.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
+                stdout
+                    .write_all(response_json.as_bytes())
+                    .await?;
+                stdout
+                    .write_all(b"\n")
+                    .await?;
+                stdout
+                    .flush()
+                    .await?;
             }
             Err(e) => {
                 error!("Failed to parse JSON-RPC request: {}", e);
@@ -1153,9 +1350,15 @@ pub async fn run_mcp_server() -> Result<()> {
                     }),
                 };
                 let response_json = serde_json::to_string(&error_response)?;
-                stdout.write_all(response_json.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
+                stdout
+                    .write_all(response_json.as_bytes())
+                    .await?;
+                stdout
+                    .write_all(b"\n")
+                    .await?;
+                stdout
+                    .flush()
+                    .await?;
             }
         }
     }

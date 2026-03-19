@@ -60,7 +60,11 @@ impl CacheManager {
         let file_size = fs::metadata(file_path)?.len();
         let file_modified = file_mtime(file_path)?;
 
-        match self.metadata.indexed_files.get(file_path) {
+        match self
+            .metadata
+            .indexed_files
+            .get(file_path)
+        {
             Some(cached) => {
                 // Check if file has changed using mtime and size
                 Ok(cached.size != file_size || cached.modified != file_modified)
@@ -80,7 +84,12 @@ impl CacheManager {
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
             if !file_path.exists() {
-                if self.metadata.indexed_files.remove(&file_path).is_some() {
+                if self
+                    .metadata
+                    .indexed_files
+                    .remove(&file_path)
+                    .is_some()
+                {
                     debug!("Removed deleted file from cache: {}", file_path.display());
                 }
                 continue;
@@ -109,7 +118,9 @@ impl CacheManager {
             .into_par_iter()
             .filter_map(|file_path| {
                 info!("Processing: {}", file_path.display());
-                let file_size = fs::metadata(&file_path).ok()?.len();
+                let file_size = fs::metadata(&file_path)
+                    .ok()?
+                    .len();
                 let file_modified = file_mtime(&file_path).ok()?;
                 match parser.parse_file(&file_path) {
                     Ok(entries) => Some(ParsedFile {
@@ -131,13 +142,20 @@ impl CacheManager {
         let mut total_entries = 0;
 
         for parsed_file in parsed {
-            let entry_count = parsed_file.entries.len();
+            let entry_count = parsed_file
+                .entries
+                .len();
             total_entries += entry_count;
 
             if entry_count > 0 {
-                if let Some(first) = parsed_file.entries.first() {
+                if let Some(first) = parsed_file
+                    .entries
+                    .first()
+                {
                     indexer.delete_session(&first.session_id)?;
-                    self.metadata.session_counts.remove(&first.session_id);
+                    self.metadata
+                        .session_counts
+                        .remove(&first.session_id);
                 }
 
                 for entry in &parsed_file.entries {
@@ -148,7 +166,11 @@ impl CacheManager {
                         *self
                             .metadata
                             .session_counts
-                            .entry(entry.session_id.clone())
+                            .entry(
+                                entry
+                                    .session_id
+                                    .clone(),
+                            )
                             .or_insert(0) += 1;
                     }
                 }
@@ -157,16 +179,18 @@ impl CacheManager {
                 info!("  Indexed {} entries", entry_count);
             }
 
-            self.metadata.indexed_files.insert(
-                parsed_file.path,
-                FileMetadata {
-                    size_hex: format!("{:x}", parsed_file.file_size),
-                    size: parsed_file.file_size,
-                    modified: parsed_file.file_modified,
-                    indexed_at: Utc::now(),
-                    entry_count,
-                },
-            );
+            self.metadata
+                .indexed_files
+                .insert(
+                    parsed_file.path,
+                    FileMetadata {
+                        size_hex: format!("{:x}", parsed_file.file_size),
+                        size: parsed_file.file_size,
+                        modified: parsed_file.file_modified,
+                        indexed_at: Utc::now(),
+                        entry_count,
+                    },
+                );
             files_processed += 1;
         }
 
@@ -174,8 +198,10 @@ impl CacheManager {
             indexer.commit()?;
         }
 
-        self.metadata.total_entries += total_entries as u64;
-        self.metadata.last_full_scan = Some(Utc::now());
+        self.metadata
+            .total_entries += total_entries as u64;
+        self.metadata
+            .last_full_scan = Some(Utc::now());
         self.save_metadata()?;
 
         if files_processed > 0 {
@@ -191,7 +217,10 @@ impl CacheManager {
     }
 
     pub fn clear_cache(&mut self) -> Result<()> {
-        if self.cache_dir.exists() {
+        if self
+            .cache_dir
+            .exists()
+        {
             fs::remove_dir_all(&self.cache_dir)?;
         }
         fs::create_dir_all(&self.cache_dir)?;
@@ -205,22 +234,35 @@ impl CacheManager {
 
     pub fn get_basic_stats(&self) -> (usize, u64, Option<DateTime<Utc>>) {
         (
-            self.metadata.indexed_files.len(),
-            self.metadata.total_entries,
-            self.metadata.last_full_scan,
+            self.metadata
+                .indexed_files
+                .len(),
+            self.metadata
+                .total_entries,
+            self.metadata
+                .last_full_scan,
         )
     }
 
     /// Get cached session interaction counts
     pub fn get_session_counts(&self) -> &HashMap<String, usize> {
-        &self.metadata.session_counts
+        &self
+            .metadata
+            .session_counts
     }
 
     pub fn get_stats(&self) -> CacheStats {
         CacheStats {
-            total_files: self.metadata.indexed_files.len(),
-            total_entries: self.metadata.total_entries,
-            last_updated: self.metadata.last_full_scan,
+            total_files: self
+                .metadata
+                .indexed_files
+                .len(),
+            total_entries: self
+                .metadata
+                .total_entries,
+            last_updated: self
+                .metadata
+                .last_full_scan,
             cache_size_mb: self.calculate_cache_size_mb(),
             projects: self.get_project_stats(),
         }
@@ -249,19 +291,23 @@ impl CacheManager {
     fn get_project_stats(&self) -> Vec<ProjectStats> {
         let mut projects: HashMap<String, ProjectStats> = HashMap::new();
 
-        for (file_path, file_meta) in &self.metadata.indexed_files {
+        for (file_path, file_meta) in &self
+            .metadata
+            .indexed_files
+        {
             if let Some(parent) = file_path.parent()
-                && let Some(project_name) = parent.file_name().and_then(|n| n.to_str())
+                && let Some(project_name) = parent
+                    .file_name()
+                    .and_then(|n| n.to_str())
             {
-                let stats =
-                    projects
-                        .entry(project_name.to_string())
-                        .or_insert_with(|| ProjectStats {
-                            name: project_name.to_string(),
-                            files: 0,
-                            entries: 0,
-                            last_updated: file_meta.indexed_at,
-                        });
+                let stats = projects
+                    .entry(project_name.to_string())
+                    .or_insert_with(|| ProjectStats {
+                        name: project_name.to_string(),
+                        files: 0,
+                        entries: 0,
+                        last_updated: file_meta.indexed_at,
+                    });
 
                 stats.files += 1;
                 stats.entries += file_meta.entry_count as u64;
@@ -271,8 +317,13 @@ impl CacheManager {
             }
         }
 
-        let mut project_list: Vec<ProjectStats> = projects.into_values().collect();
-        project_list.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
+        let mut project_list: Vec<ProjectStats> = projects
+            .into_values()
+            .collect();
+        project_list.sort_by(|a, b| {
+            b.last_updated
+                .cmp(&a.last_updated)
+        });
         project_list
     }
 }
@@ -319,16 +370,25 @@ impl CacheManager {
     pub fn quick_health_check(&self, all_jsonl_files: &[PathBuf]) -> (usize, usize) {
         let mut stale = 0;
         let mut new_files = 0;
-        for (path, meta) in &self.metadata.indexed_files {
+        for (path, meta) in &self
+            .metadata
+            .indexed_files
+        {
             if let Ok(current_mtime) = file_mtime(path) {
-                let current_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                let current_size = fs::metadata(path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 if current_size != meta.size || current_mtime != meta.modified {
                     stale += 1;
                 }
             }
         }
         for path in all_jsonl_files {
-            if !self.metadata.indexed_files.contains_key(path) {
+            if !self
+                .metadata
+                .indexed_files
+                .contains_key(path)
+            {
                 new_files += 1;
             }
         }
@@ -342,11 +402,16 @@ impl CacheManager {
         let mut new_files = Vec::new();
 
         // Check for stale and missing files
-        for (cached_path, cached_meta) in &self.metadata.indexed_files {
+        for (cached_path, cached_meta) in &self
+            .metadata
+            .indexed_files
+        {
             if !cached_path.exists() {
                 missing_files.push(cached_path.clone());
             } else if let Ok(current_mtime) = file_mtime(cached_path) {
-                let current_size = fs::metadata(cached_path).map(|m| m.len()).unwrap_or(0);
+                let current_size = fs::metadata(cached_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 if current_size != cached_meta.size || current_mtime != cached_meta.modified {
                     stale_files.push(cached_path.clone());
                 }
@@ -355,13 +420,23 @@ impl CacheManager {
 
         // Check for new files not in cache
         for file_path in all_jsonl_files {
-            if !self.metadata.indexed_files.contains_key(file_path) {
+            if !self
+                .metadata
+                .indexed_files
+                .contains_key(file_path)
+            {
                 new_files.push(file_path.clone());
             }
         }
 
         // Determine overall status
-        let status = if missing_files.len() > self.metadata.indexed_files.len() / 2 {
+        let status = if missing_files.len()
+            > self
+                .metadata
+                .indexed_files
+                .len()
+                / 2
+        {
             IndexHealthStatus::NeedsRebuild
         } else if !stale_files.is_empty() || !new_files.is_empty() || !missing_files.is_empty() {
             IndexHealthStatus::NeedsUpdate
@@ -370,9 +445,16 @@ impl CacheManager {
         };
 
         Ok(IndexHealth {
-            total_indexed_files: self.metadata.indexed_files.len(),
-            total_entries: self.metadata.total_entries,
-            last_indexed: self.metadata.last_full_scan,
+            total_indexed_files: self
+                .metadata
+                .indexed_files
+                .len(),
+            total_entries: self
+                .metadata
+                .total_entries,
+            last_indexed: self
+                .metadata
+                .last_full_scan,
             stale_files,
             missing_files,
             new_files,
@@ -396,14 +478,21 @@ impl std::fmt::Display for IndexHealth {
         writeln!(
             f,
             "Stale files: {} (modified since indexed)",
-            self.stale_files.len()
+            self.stale_files
+                .len()
         )?;
         writeln!(
             f,
             "Missing files: {} (deleted from disk)",
-            self.missing_files.len()
+            self.missing_files
+                .len()
         )?;
-        writeln!(f, "New files: {} (not yet indexed)", self.new_files.len())?;
+        writeln!(
+            f,
+            "New files: {} (not yet indexed)",
+            self.new_files
+                .len()
+        )?;
         writeln!(f, "Status: {:?}", self.status)?;
         Ok(())
     }

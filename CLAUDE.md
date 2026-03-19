@@ -87,12 +87,12 @@ cargo build --release
 
 ## Pre-commit Checklist
 
-1. `cargo fmt` (required - pre-commit hook rejects unformatted code)
+1. `cargo fmt --all` (required - pre-commit hook rejects unformatted code)
 2. `cargo clippy --fix --allow-dirty`
 3. `cargo test`
 
 All warnings must be resolved. Remove unused code instead of suppressing.
-Always run `cargo fmt` before `git commit` - the pre-commit hook checks formatting and will reject the commit if code is not formatted.
+Always run `cargo fmt --all` before `git commit` - the pre-commit hook checks formatting and will reject the commit if code is not formatted.
 
 ## Pre-commit Hook
 
@@ -117,4 +117,4 @@ bash hooks/install.sh
 
 Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.
 
-**Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=ours` to always use our version (never merge). Do not stage `Cargo.lock` outside of the release process.
+**Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=union` to avoid spurious merge conflicts. Do not stage `Cargo.lock` outside of the release process.

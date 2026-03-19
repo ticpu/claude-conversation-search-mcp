@@ -228,8 +228,14 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                 exclude_projects: exclude_project,
                 exclude_patterns: exclude_pattern,
                 sort: sort.into(),
-                after: after.as_deref().map(parse_date).transpose()?,
-                before: before.as_deref().map(parse_date).transpose()?,
+                after: after
+                    .as_deref()
+                    .map(parse_date)
+                    .transpose()?,
+                before: before
+                    .as_deref()
+                    .map(parse_date)
+                    .transpose()?,
                 display: DisplayOptions {
                     include_thinking: include.contains(&IncludeArg::Thinking),
                     include_tools: include.contains(&IncludeArg::Tools),
@@ -342,19 +348,38 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
         );
     }
 
-    if !stats.projects.is_empty() {
+    if !stats
+        .projects
+        .is_empty()
+    {
         println!("\nProject breakdown:");
-        for project in stats.projects.iter().take(10) {
+        for project in stats
+            .projects
+            .iter()
+            .take(10)
+        {
             println!(
                 "  {} - {} files, {} entries (updated: {})",
                 project.name,
                 project.files,
                 project.entries,
-                project.last_updated.format("%Y-%m-%d")
+                project
+                    .last_updated
+                    .format("%Y-%m-%d")
             );
         }
-        if stats.projects.len() > 10 {
-            println!("  ... and {} more projects", stats.projects.len() - 10);
+        if stats
+            .projects
+            .len()
+            > 10
+        {
+            println!(
+                "  ... and {} more projects",
+                stats
+                    .projects
+                    .len()
+                    - 10
+            );
         }
     }
 
@@ -388,7 +413,11 @@ fn parse_date(s: &str) -> Result<chrono::DateTime<Utc>> {
         return Ok(dt.with_timezone(&Utc));
     }
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap()));
+        return Ok(Utc.from_utc_datetime(
+            &date
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        ));
     }
     anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
 }
@@ -400,7 +429,10 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     }
 
     let config = shared::get_config();
-    let mut all_exclude_patterns = config.search.exclude_patterns.clone();
+    let mut all_exclude_patterns = config
+        .search
+        .exclude_patterns
+        .clone();
     all_exclude_patterns.extend(opts.exclude_patterns);
 
     let exclude_regexes: Vec<Regex> = all_exclude_patterns
@@ -409,7 +441,12 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
         .collect();
 
     let cache = CacheManager::new(index_path)?;
-    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
+    let search_engine = SearchEngine::new(
+        index_path,
+        cache
+            .get_session_counts()
+            .clone(),
+    )?;
 
     let query = SearchQuery {
         text: opts.query,
@@ -428,10 +465,17 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     let filtered: Vec<_> = results
         .into_iter()
         .filter(|r| {
-            let proj = &r.matched_message.project;
-            let path = &r.matched_message.project_path;
+            let proj = &r
+                .matched_message
+                .project;
+            let path = &r
+                .matched_message
+                .project_path;
 
-            if opts.exclude_projects.contains(proj) {
+            if opts
+                .exclude_projects
+                .contains(proj)
+            {
                 return false;
             }
             for regex in &exclude_regexes {
@@ -439,7 +483,11 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
                     return false;
                 }
             }
-            session_seen.insert(r.matched_message.session_id.clone())
+            session_seen.insert(
+                r.matched_message
+                    .session_id
+                    .clone(),
+            )
         })
         .take(opts.limit)
         .collect();
@@ -456,7 +504,10 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     };
     println!("Found {} results ({}):\n", filtered.len(), ctx_display);
 
-    for (i, result) in filtered.iter().enumerate() {
+    for (i, result) in filtered
+        .iter()
+        .enumerate()
+    {
         print!("{}", result.format_compact_with_options(i, &opts.display));
         if i < filtered.len() - 1 {
             println!();
@@ -473,7 +524,12 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     }
 
     let cache = CacheManager::new(index_path)?;
-    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
+    let search_engine = SearchEngine::new(
+        index_path,
+        cache
+            .get_session_counts()
+            .clone(),
+    )?;
 
     // Get all conversations to analyze topics
     let query = SearchQuery {
@@ -496,7 +552,11 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
 
     for result in &results {
         project_counts
-            .entry(result.project.clone())
+            .entry(
+                result
+                    .project
+                    .clone(),
+            )
             .and_modify(|count| *count += 1)
             .or_insert(1);
 
@@ -534,10 +594,17 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     // Top technologies
     if !tech_counts.is_empty() {
         println!("🔧 Top Technologies:");
-        let mut sorted_tech: Vec<_> = tech_counts.iter().collect();
-        sorted_tech.sort_by(|a, b| b.1.cmp(a.1));
+        let mut sorted_tech: Vec<_> = tech_counts
+            .iter()
+            .collect();
+        sorted_tech.sort_by(|a, b| {
+            b.1.cmp(a.1)
+        });
 
-        for (tech, count) in sorted_tech.iter().take(limit) {
+        for (tech, count) in sorted_tech
+            .iter()
+            .take(limit)
+        {
             println!("   {tech} ({count})");
         }
         println!();
@@ -546,10 +613,17 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     // Top programming languages
     if !lang_counts.is_empty() {
         println!("💻 Top Programming Languages:");
-        let mut sorted_lang: Vec<_> = lang_counts.iter().collect();
-        sorted_lang.sort_by(|a, b| b.1.cmp(a.1));
+        let mut sorted_lang: Vec<_> = lang_counts
+            .iter()
+            .collect();
+        sorted_lang.sort_by(|a, b| {
+            b.1.cmp(a.1)
+        });
 
-        for (lang, count) in sorted_lang.iter().take(limit) {
+        for (lang, count) in sorted_lang
+            .iter()
+            .take(limit)
+        {
             println!("   {lang} ({count})");
         }
         println!();
@@ -558,10 +632,17 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     // Top tools mentioned
     if !tool_counts.is_empty() {
         println!("🔨 Top Tools Mentioned:");
-        let mut sorted_tools: Vec<_> = tool_counts.iter().collect();
-        sorted_tools.sort_by(|a, b| b.1.cmp(a.1));
+        let mut sorted_tools: Vec<_> = tool_counts
+            .iter()
+            .collect();
+        sorted_tools.sort_by(|a, b| {
+            b.1.cmp(a.1)
+        });
 
-        for (tool, count) in sorted_tools.iter().take(limit) {
+        for (tool, count) in sorted_tools
+            .iter()
+            .take(limit)
+        {
             println!("   {tool} ({count})");
         }
         println!();
@@ -570,10 +651,17 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     // Project breakdown (if not filtering by project)
     if project_filter.is_none() && !project_counts.is_empty() {
         println!("📂 Project Activity:");
-        let mut sorted_projects: Vec<_> = project_counts.iter().collect();
-        sorted_projects.sort_by(|a, b| b.1.cmp(a.1));
+        let mut sorted_projects: Vec<_> = project_counts
+            .iter()
+            .collect();
+        sorted_projects.sort_by(|a, b| {
+            b.1.cmp(a.1)
+        });
 
-        for (project, count) in sorted_projects.iter().take(limit) {
+        for (project, count) in sorted_projects
+            .iter()
+            .take(limit)
+        {
             println!("   {project} ({count} conversations)");
         }
     }
@@ -589,7 +677,12 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     let cache_manager = CacheManager::new(index_path)?;
     let cache_stats = cache_manager.get_stats();
-    let search_engine = SearchEngine::new(index_path, cache_manager.get_session_counts().clone())?;
+    let search_engine = SearchEngine::new(
+        index_path,
+        cache_manager
+            .get_session_counts()
+            .clone(),
+    )?;
 
     // Get conversation stats
     let query = SearchQuery {
@@ -619,7 +712,11 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
         total_interactions += result.interaction_count;
 
         session_counts
-            .entry(result.session_id.clone())
+            .entry(
+                result
+                    .session_id
+                    .clone(),
+            )
             .and_modify(|count| *count += 1)
             .or_insert(1);
     }
@@ -680,10 +777,17 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     if !session_counts.is_empty() {
         println!();
         println!("Most Active Sessions:");
-        let mut sorted_sessions: Vec<_> = session_counts.iter().collect();
-        sorted_sessions.sort_by(|a, b| b.1.cmp(a.1));
+        let mut sorted_sessions: Vec<_> = session_counts
+            .iter()
+            .collect();
+        sorted_sessions.sort_by(|a, b| {
+            b.1.cmp(a.1)
+        });
 
-        for (session_id, count) in sorted_sessions.iter().take(5) {
+        for (session_id, count) in sorted_sessions
+            .iter()
+            .take(5)
+        {
             let short_id = if session_id.len() > 12 {
                 format!("{}…", &session_id[..12])
             } else {
@@ -713,7 +817,12 @@ fn view_session(
             "Warning: JSONL file not found, falling back to index (content may be truncated)"
         );
         let cache = CacheManager::new(index_path)?;
-        let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
+        let search_engine = SearchEngine::new(
+            index_path,
+            cache
+                .get_session_counts()
+                .clone(),
+        )?;
         let results = search_engine.get_session_messages(&session_id)?;
         return view_session_from_results(
             results,
@@ -733,7 +842,10 @@ fn view_session(
         return Ok(());
     }
 
-    let displayable: Vec<_> = entries.iter().filter(|e| e.is_displayable()).collect();
+    let displayable: Vec<_> = entries
+        .iter()
+        .filter(|e| e.is_displayable())
+        .collect();
     let total = displayable.len();
 
     if total == 0 {
@@ -745,7 +857,10 @@ fn view_session(
     let (window, center_idx) = if let Some(ref uuid) = center_on {
         let idx = displayable
             .iter()
-            .position(|m| m.uuid.starts_with(uuid.as_str()))
+            .position(|m| {
+                m.uuid
+                    .starts_with(uuid.as_str())
+            })
             .unwrap_or_else(|| {
                 eprintln!("Warning: message {uuid} not found, showing from start");
                 0
@@ -760,8 +875,14 @@ fn view_session(
     let project_path = shared::home_to_tilde(&entries[0].project_path);
     let time_range = format!(
         "{} - {}",
-        entries[0].timestamp.format("%Y-%m-%d %H:%M"),
-        entries.last().unwrap().timestamp.format("%H:%M")
+        entries[0]
+            .timestamp
+            .format("%Y-%m-%d %H:%M"),
+        entries
+            .last()
+            .unwrap()
+            .timestamp
+            .format("%H:%M")
     );
 
     if center_on.is_some() {
@@ -786,19 +907,31 @@ fn view_session(
         let mut has_code = false;
         let mut has_errors = false;
         for e in &entries {
-            techs.extend(e.technologies.iter().cloned());
-            langs.extend(e.code_languages.iter().cloned());
+            techs.extend(
+                e.technologies
+                    .iter()
+                    .cloned(),
+            );
+            langs.extend(
+                e.code_languages
+                    .iter()
+                    .cloned(),
+            );
             has_code |= e.has_code;
             has_errors |= e.has_error;
         }
         let mut tags = Vec::new();
         if !techs.is_empty() {
-            let mut t: Vec<_> = techs.into_iter().collect();
+            let mut t: Vec<_> = techs
+                .into_iter()
+                .collect();
             t.sort();
             tags.push(t.join(","));
         }
         if !langs.is_empty() {
-            let mut l: Vec<_> = langs.into_iter().collect();
+            let mut l: Vec<_> = langs
+                .into_iter()
+                .collect();
             l.sort();
             tags.push(l.join(","));
         }
@@ -815,31 +948,52 @@ fn view_session(
     println!();
 
     for entry in window {
-        let time = entry.timestamp.format("%H:%M:%S");
+        let time = entry
+            .timestamp
+            .format("%H:%M:%S");
         let marker = if center_idx.is_some()
             && Some(&entry.uuid)
-                == center_on.as_ref().and_then(|u| {
-                    if entry.uuid.starts_with(u.as_str()) {
-                        Some(&entry.uuid)
-                    } else {
-                        None
-                    }
-                }) {
+                == center_on
+                    .as_ref()
+                    .and_then(|u| {
+                        if entry
+                            .uuid
+                            .starts_with(u.as_str())
+                        {
+                            Some(&entry.uuid)
+                        } else {
+                            None
+                        }
+                    }) {
             "»"
         } else {
             " "
         };
-        let role = entry.message_type.short_name();
+        let role = entry
+            .message_type
+            .short_name();
         let content = if truncate_length > 0 {
-            let truncated: String = entry.content.chars().take(truncate_length).collect();
-            let ellipsis = if entry.content.chars().count() > truncate_length {
+            let truncated: String = entry
+                .content
+                .chars()
+                .take(truncate_length)
+                .collect();
+            let ellipsis = if entry
+                .content
+                .chars()
+                .count()
+                > truncate_length
+            {
                 "…"
             } else {
                 ""
             };
             format!(
                 "{}{}",
-                truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                truncated
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 ellipsis
             )
         } else {
@@ -855,7 +1009,12 @@ fn view_session(
     if truncate_length > 0
         && window
             .iter()
-            .any(|e| e.content.chars().count() > truncate_length)
+            .any(|e| {
+                e.content
+                    .chars()
+                    .count()
+                    > truncate_length
+            })
     {
         println!("\nUse --full or --truncate 0 for complete content");
     }
@@ -879,13 +1038,19 @@ fn view_session_from_results(
     }
 
     results.sort_by_key(|r| r.timestamp);
-    let displayable: Vec<_> = results.iter().filter(|r| r.is_displayable()).collect();
+    let displayable: Vec<_> = results
+        .iter()
+        .filter(|r| r.is_displayable())
+        .collect();
     let total = displayable.len();
 
     let (window, center_idx) = if let Some(ref uuid) = center_on {
         let idx = displayable
             .iter()
-            .position(|m| m.uuid.starts_with(uuid.as_str()))
+            .position(|m| {
+                m.uuid
+                    .starts_with(uuid.as_str())
+            })
             .unwrap_or(0);
         let start = idx.saturating_sub(context_before);
         let end = (idx + context_after + 1).min(total);
@@ -897,8 +1062,14 @@ fn view_session_from_results(
     let project_path = results[0].project_path_display();
     let time_range = format!(
         "{} - {}",
-        results[0].timestamp.format("%Y-%m-%d %H:%M"),
-        results.last().unwrap().timestamp.format("%H:%M")
+        results[0]
+            .timestamp
+            .format("%Y-%m-%d %H:%M"),
+        results
+            .last()
+            .unwrap()
+            .timestamp
+            .format("%H:%M")
     );
 
     if center_on.is_some() {
@@ -919,26 +1090,43 @@ fn view_session_from_results(
     println!();
 
     for result in window {
-        let time = result.timestamp.format("%H:%M:%S");
+        let time = result
+            .timestamp
+            .format("%H:%M:%S");
         let marker = if center_idx.is_some()
             && center_on
                 .as_ref()
-                .is_some_and(|u| result.uuid.starts_with(u.as_str()))
-        {
+                .is_some_and(|u| {
+                    result
+                        .uuid
+                        .starts_with(u.as_str())
+                }) {
             "»"
         } else {
             " "
         };
         let content = if truncate_length > 0 {
-            let truncated: String = result.content.chars().take(truncate_length).collect();
-            let ellipsis = if result.content.chars().count() > truncate_length {
+            let truncated: String = result
+                .content
+                .chars()
+                .take(truncate_length)
+                .collect();
+            let ellipsis = if result
+                .content
+                .chars()
+                .count()
+                > truncate_length
+            {
                 "…"
             } else {
                 ""
             };
             format!(
                 "{}{}",
-                truncated.split_whitespace().collect::<Vec<_>>().join(" "),
+                truncated
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 ellipsis
             )
         } else {
@@ -964,7 +1152,12 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
     }
 
     let cache = CacheManager::new(index_path)?;
-    let search_engine = SearchEngine::new(index_path, cache.get_session_counts().clone())?;
+    let search_engine = SearchEngine::new(
+        index_path,
+        cache
+            .get_session_counts()
+            .clone(),
+    )?;
     let mut results = search_engine.get_session_messages(&session_id)?;
 
     if results.is_empty() {
@@ -974,12 +1167,19 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
 
     // Sort and filter displayable
     results.sort_by_key(|r| r.sequence_num);
-    let results: Vec<_> = results.into_iter().filter(|r| r.is_displayable()).collect();
+    let results: Vec<_> = results
+        .into_iter()
+        .filter(|r| r.is_displayable())
+        .collect();
 
     // Build conversation text
     let mut conversation = String::new();
     for r in &results {
-        let content: String = r.content.split_whitespace().collect::<Vec<_>>().join(" ");
+        let content: String = r
+            .content
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         conversation.push_str(&format!("{}: {}\n", r.role_display(), content));
     }
 
@@ -1014,7 +1214,10 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
         .stderr(Stdio::inherit())
         .spawn()?;
 
-    if let Some(mut stdin) = child.stdin.take() {
+    if let Some(mut stdin) = child
+        .stdin
+        .take()
+    {
         stdin.write_all(prompt.as_bytes())?;
     }
 

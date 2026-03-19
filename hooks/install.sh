@@ -1,5 +1,8 @@
 #!/bin/bash
 # Install git pre-commit hook
+#
+# Worktree-aware: works correctly when invoked from a git worktree.
+# Creates a relative symlink so the hook tracks the source file.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_DIR="$(git rev-parse --git-dir)" || {
@@ -21,4 +24,4 @@ mkdir -p "$GIT_HOOKS_DIR"
 
 echo "Installing pre-commit hook to $GIT_HOOKS_DIR..."
 ln -sf "$(realpath --relative-to="$GIT_HOOKS_DIR" "$SCRIPT_DIR/pre-commit")" "$GIT_HOOKS_DIR/pre-commit"
-echo "Done!"
+echo "Done."

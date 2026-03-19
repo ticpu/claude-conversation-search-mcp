@@ -26,15 +26,24 @@ pub fn file_mtime(path: &Path) -> Result<DateTime<Utc>> {
 /// Truncate string at UTF-8 character boundary, optionally collapsing whitespace
 pub fn truncate_content(s: &str, max_chars: usize, collapse_whitespace: bool) -> String {
     let processed = if collapse_whitespace {
-        s.split_whitespace().collect::<Vec<_>>().join(" ")
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     } else {
         s.to_string()
     };
 
-    if processed.chars().count() <= max_chars {
+    if processed
+        .chars()
+        .count()
+        <= max_chars
+    {
         processed
     } else {
-        let truncated: String = processed.chars().take(max_chars - 1).collect();
+        let truncated: String = processed
+            .chars()
+            .take(max_chars - 1)
+            .collect();
         format!("{}…", truncated)
     }
 }
@@ -43,7 +52,10 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
     let config = get_config();
 
     // Skip auto-indexing if disabled in config
-    if !config.index.auto_index_on_startup {
+    if !config
+        .index
+        .auto_index_on_startup
+    {
         return Ok(());
     }
 
@@ -59,7 +71,10 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
 
     let mut cache_manager = CacheManager::new(index_path)?;
 
-    let mut indexer = if index_path.join("meta.json").exists() {
+    let mut indexer = if index_path
+        .join("meta.json")
+        .exists()
+    {
         // Check if existing index has correct schema
         match SearchIndexer::validate_schema(index_path) {
             Ok(true) => {

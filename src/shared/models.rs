@@ -70,7 +70,10 @@ impl ConversationEntry {
         matches!(
             self.message_type,
             MessageType::User | MessageType::Assistant | MessageType::Summary
-        ) && self.content.trim() != "Warmup"
+        ) && self
+            .content
+            .trim()
+            != "Warmup"
     }
 
     pub fn project_path_display(&self) -> String {
@@ -144,11 +147,19 @@ impl SearchResult {
     /// Check if message should be displayed (filters noise like Warmup, tool_result dumps)
     pub fn is_displayable(&self) -> bool {
         // Filter by message type
-        if !matches!(self.message_type.as_str(), "User" | "Assistant" | "Summary") {
+        if !matches!(
+            self.message_type
+                .as_str(),
+            "User" | "Assistant" | "Summary"
+        ) {
             return false;
         }
         // Filter internal warmup messages
-        if self.content.trim() == "Warmup" {
+        if self
+            .content
+            .trim()
+            == "Warmup"
+        {
             return false;
         }
         true
@@ -161,7 +172,10 @@ impl SearchResult {
 
     /// Short display name for message type (User, AI, Sum, Sys)
     pub fn role_display(&self) -> &'static str {
-        match self.message_type.as_str() {
+        match self
+            .message_type
+            .as_str()
+        {
             "User" => "User",
             "Assistant" => "AI",
             "Summary" => "Sum",

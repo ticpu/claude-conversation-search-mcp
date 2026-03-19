@@ -31,7 +31,10 @@ impl IndexLock {
     fn try_lock(lock_type: LockType) -> Result<Self> {
         let config = get_config();
 
-        if !config.locking.enabled {
+        if !config
+            .locking
+            .enabled
+        {
             // Create a dummy lock file for consistency
             let lock_path = config.get_lock_file_path()?;
             if let Some(parent) = lock_path.parent() {
@@ -71,7 +74,9 @@ impl IndexLock {
             .open(&lock_path)?;
 
         let result = match lock_type {
-            LockType::Shared => file.try_lock_shared().map_err(std::io::Error::from),
+            LockType::Shared => file
+                .try_lock_shared()
+                .map_err(std::io::Error::from),
             LockType::Exclusive => file.try_lock_exclusive(),
         };
 
@@ -99,8 +104,13 @@ impl IndexLock {
 
 impl Drop for IndexLock {
     fn drop(&mut self) {
-        if get_config().locking.enabled {
-            let _ = self._file.unlock();
+        if get_config()
+            .locking
+            .enabled
+        {
+            let _ = self
+                ._file
+                .unlock();
             debug!("Released {:?} lock on index", self.lock_type);
         }
     }

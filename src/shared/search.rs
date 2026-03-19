@@ -16,7 +16,10 @@ use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term};
 /// so "/path/to/my-project_name" → ["my", "project", "name"].
 fn project_filter_segments(filter: &str) -> Vec<&str> {
     let path = Path::new(filter);
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(filter);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(filter);
     name.split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .collect()
@@ -127,7 +130,9 @@ impl SearchEngine {
     }
 
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
-        let searcher = self.reader.searcher();
+        let searcher = self
+            .reader
+            .searcher();
 
         let query_parser = QueryParser::for_index(
             &self.index,
@@ -147,7 +152,9 @@ impl SearchEngine {
 
         if let Some(ref session_filter) = query.session_filter {
             // Split on hyphens like get_session_messages - TEXT fields tokenize at hyphens
-            let segments: Vec<_> = session_filter.split('-').collect();
+            let segments: Vec<_> = session_filter
+                .split('-')
+                .collect();
             let segment_queries: Vec<_> = segments
                 .iter()
                 .map(|seg| {
@@ -166,7 +173,11 @@ impl SearchEngine {
         let final_query = if final_query_parts.len() > 1 {
             Box::new(BooleanQuery::new(final_query_parts)) as Box<dyn tantivy::query::Query>
         } else {
-            final_query_parts.into_iter().next().unwrap().1
+            final_query_parts
+                .into_iter()
+                .next()
+                .unwrap()
+                .1
         };
 
         let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
@@ -177,7 +188,9 @@ impl SearchEngine {
 
             // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
             if let Some(ref session_filter) = query.session_filter
-                && !result.session_id.starts_with(session_filter.as_str())
+                && !result
+                    .session_id
+                    .starts_with(session_filter.as_str())
             {
                 continue;
             }
@@ -215,7 +228,9 @@ impl SearchEngine {
         context_after: usize,
     ) -> Result<Vec<SearchResultWithContext>> {
         // Save sort order before consuming query
-        let sort_by = query.sort_by.clone();
+        let sort_by = query
+            .sort_by
+            .clone();
 
         // First, get the matching messages
         let matches = self.search(query)?;
@@ -265,7 +280,10 @@ impl SearchEngine {
                 // Filter to displayable messages only, track new match index
                 let mut context_messages = Vec::new();
                 let mut new_match_idx = 0;
-                for (i, msg) in session_messages[start..end].iter().enumerate() {
+                for (i, msg) in session_messages[start..end]
+                    .iter()
+                    .enumerate()
+                {
                     if msg.is_displayable() {
                         if start + i == idx {
                             new_match_idx = context_messages.len();
@@ -303,14 +321,20 @@ impl SearchEngine {
                 results_with_context.sort_by(|a, b| {
                     b.matched_message
                         .timestamp
-                        .cmp(&a.matched_message.timestamp)
+                        .cmp(
+                            &a.matched_message
+                                .timestamp,
+                        )
                 });
             }
             SortOrder::DateAsc => {
                 results_with_context.sort_by(|a, b| {
                     a.matched_message
                         .timestamp
-                        .cmp(&b.matched_message.timestamp)
+                        .cmp(
+                            &b.matched_message
+                                .timestamp,
+                        )
                 });
             }
             SortOrder::Relevance => {
@@ -323,12 +347,16 @@ impl SearchEngine {
 
     /// Get all messages for a session
     pub fn get_session_messages(&self, session_id: &str) -> Result<Vec<SearchResult>> {
-        let searcher = self.reader.searcher();
+        let searcher = self
+            .reader
+            .searcher();
 
         // Use TermQuery on each UUID segment for exact matching
         // Session IDs are UUIDs like "9e1e6a58-cd5a-4651-a9fd-c24c04cb8809"
         // TEXT field tokenizes at hyphens, so we match all segments with AND
-        let segments: Vec<_> = session_id.split('-').collect();
+        let segments: Vec<_> = session_id
+            .split('-')
+            .collect();
         let segment_queries: Vec<_> = segments
             .iter()
             .map(|seg| {
@@ -348,7 +376,11 @@ impl SearchEngine {
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
             // Filter to session_id match - support prefix matching for short IDs
-            if result.session_id == session_id || result.session_id.starts_with(session_id) {
+            if result.session_id == session_id
+                || result
+                    .session_id
+                    .starts_with(session_id)
+            {
                 results.push(result);
             }
         }
@@ -361,12 +393,16 @@ impl SearchEngine {
 
     /// Get specific messages by their UUIDs
     pub fn get_messages_by_uuid(&self, uuids: &[String]) -> Result<Vec<SearchResult>> {
-        let searcher = self.reader.searcher();
+        let searcher = self
+            .reader
+            .searcher();
         let mut results = Vec::new();
 
         for uuid in uuids {
             // UUID is stored as TEXT, tokenized at hyphens
-            let segments: Vec<_> = uuid.split('-').collect();
+            let segments: Vec<_> = uuid
+                .split('-')
+                .collect();
             let segment_queries: Vec<_> = segments
                 .iter()
                 .map(|seg| {
@@ -385,7 +421,11 @@ impl SearchEngine {
             for (score, doc_address) in top_docs {
                 let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
                 // Exact match or prefix match
-                if result.uuid == *uuid || result.uuid.starts_with(uuid) {
+                if result.uuid == *uuid
+                    || result
+                        .uuid
+                        .starts_with(uuid)
+                {
                     results.push(result);
                     break;
                 }
@@ -460,19 +500,31 @@ impl SearchEngine {
         let technologies = doc
             .get_first(self.technologies_field)
             .and_then(|v| v.as_str())
-            .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+            .map(|s| {
+                s.split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let code_languages = doc
             .get_first(self.code_languages_field)
             .and_then(|v| v.as_str())
-            .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+            .map(|s| {
+                s.split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let tools_mentioned = doc
             .get_first(self.tools_mentioned_field)
             .and_then(|v| v.as_str())
-            .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
+            .map(|s| {
+                s.split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let has_code = doc
@@ -527,8 +579,12 @@ impl SearchEngine {
     }
 
     fn generate_snippet(&self, content: &str, query: &str) -> String {
-        let words: Vec<&str> = content.split_whitespace().collect();
-        let query_words: Vec<&str> = query.split_whitespace().collect();
+        let words: Vec<&str> = content
+            .split_whitespace()
+            .collect();
+        let query_words: Vec<&str> = query
+            .split_whitespace()
+            .collect();
 
         if words.len() <= 30 {
             return content.to_string();
@@ -537,7 +593,10 @@ impl SearchEngine {
         let mut best_start = 0;
         let mut best_score = 0;
 
-        for (i, window) in words.windows(30).enumerate() {
+        for (i, window) in words
+            .windows(30)
+            .enumerate()
+        {
             let window_text = window.join(" ");
             let mut score = 0;
 
@@ -581,7 +640,9 @@ impl SearchEngine {
         project_filter: Option<String>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let searcher = self.reader.searcher();
+        let searcher = self
+            .reader
+            .searcher();
 
         let query: Box<dyn tantivy::query::Query> = if let Some(ref project_filter) = project_filter
         {
@@ -677,15 +738,25 @@ impl SearchResultWithContext {
     pub fn format_compact_with_options(&self, index: usize, opts: &DisplayOptions) -> String {
         let mut output = String::new();
 
-        let project_path_full = &self.matched_message.project_path;
-        let project_path_display = self.matched_message.project_path_display();
-        let session_id = &self.matched_message.session_id;
+        let project_path_full = &self
+            .matched_message
+            .project_path;
+        let project_path_display = self
+            .matched_message
+            .project_path_display();
+        let session_id = &self
+            .matched_message
+            .session_id;
 
         let jsonl_path = session_jsonl_path(project_path_full, session_id).unwrap_or_default();
         let jsonl_path_str = jsonl_path.to_string_lossy();
 
         let short_session = short_uuid(session_id);
-        let short_msg = short_uuid(&self.matched_message.uuid);
+        let short_msg = short_uuid(
+            &self
+                .matched_message
+                .uuid,
+        );
 
         let path_link = file_hyperlink(project_path_full, &project_path_display);
         let session_link = file_hyperlink(&jsonl_path_str, short_session);
@@ -697,13 +768,30 @@ impl SearchResultWithContext {
             session_link,
             self.total_session_messages,
             short_msg,
-            self.matched_message.timestamp.format("%Y-%m-%d %H:%M"),
+            self.matched_message
+                .timestamp
+                .format("%Y-%m-%d %H:%M"),
         ));
 
         let mut tags = Vec::new();
-        tags.extend(self.matched_message.technologies.iter().take(3).cloned());
-        tags.extend(self.matched_message.code_languages.iter().take(2).cloned());
-        if self.matched_message.has_error {
+        tags.extend(
+            self.matched_message
+                .technologies
+                .iter()
+                .take(3)
+                .cloned(),
+        );
+        tags.extend(
+            self.matched_message
+                .code_languages
+                .iter()
+                .take(2)
+                .cloned(),
+        );
+        if self
+            .matched_message
+            .has_error
+        {
             tags.push("error".to_string());
         }
         if !tags.is_empty() {
@@ -715,7 +803,11 @@ impl SearchResultWithContext {
     }
 
     fn format_context_messages(&self, output: &mut String, opts: &DisplayOptions) {
-        for (i, msg) in self.context_messages.iter().enumerate() {
+        for (i, msg) in self
+            .context_messages
+            .iter()
+            .enumerate()
+        {
             // Filter content based on options
             if filter_content(&msg.content, opts).is_none() {
                 continue;
@@ -723,7 +815,10 @@ impl SearchResultWithContext {
 
             let prefix = if i == self.match_index { "»  " } else { "   " };
             let content = if opts.truncate_length == 0 {
-                msg.content.split_whitespace().collect::<Vec<_>>().join(" ")
+                msg.content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
             } else {
                 truncate_content(&msg.content, opts.truncate_length, true)
             };
@@ -739,29 +834,63 @@ impl SearchResultWithContext {
         output.push_str(&format!(
             "{}. [{}] {} | {} | score: {:.2}\n",
             index + 1,
-            self.matched_message.project,
-            self.matched_message.timestamp.format("%Y-%m-%d %H:%M"),
-            short_uuid(&self.matched_message.session_id),
-            self.matched_message.score,
+            self.matched_message
+                .project,
+            self.matched_message
+                .timestamp
+                .format("%Y-%m-%d %H:%M"),
+            short_uuid(
+                &self
+                    .matched_message
+                    .session_id
+            ),
+            self.matched_message
+                .score,
         ));
         output.push_str(&format!(
             "   {} msgs in session | uuid: {}\n",
             self.total_session_messages,
-            short_uuid(&self.matched_message.uuid),
+            short_uuid(
+                &self
+                    .matched_message
+                    .uuid
+            ),
         ));
 
         // Metadata tags on one line
         let mut tags = Vec::new();
-        if !self.matched_message.technologies.is_empty() {
-            tags.push(self.matched_message.technologies.join(","));
+        if !self
+            .matched_message
+            .technologies
+            .is_empty()
+        {
+            tags.push(
+                self.matched_message
+                    .technologies
+                    .join(","),
+            );
         }
-        if !self.matched_message.code_languages.is_empty() {
-            tags.push(self.matched_message.code_languages.join(","));
+        if !self
+            .matched_message
+            .code_languages
+            .is_empty()
+        {
+            tags.push(
+                self.matched_message
+                    .code_languages
+                    .join(","),
+            );
         }
-        if self.matched_message.has_code {
+        if self
+            .matched_message
+            .has_code
+        {
             tags.push("code".to_string());
         }
-        if self.matched_message.has_error {
+        if self
+            .matched_message
+            .has_error
+        {
             tags.push("error".to_string());
         }
         if !tags.is_empty() {
@@ -770,7 +899,11 @@ impl SearchResultWithContext {
 
         // Context messages
         let default_opts = DisplayOptions::default();
-        for (i, msg) in self.context_messages.iter().enumerate() {
+        for (i, msg) in self
+            .context_messages
+            .iter()
+            .enumerate()
+        {
             let prefix = if i == self.match_index { ">> " } else { "   " };
             let content = truncate_content(&msg.content, default_opts.truncate_length, true);
             output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
@@ -842,13 +975,19 @@ mod tests {
 
         // Index them
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         // Retrieve with SearchEngine
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
-        let messages = engine.get_session_messages(session_id).unwrap();
+        let messages = engine
+            .get_session_messages(session_id)
+            .unwrap();
 
         assert_eq!(
             messages.len(),
@@ -869,14 +1008,20 @@ mod tests {
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
 
         // Test with short ID (first 8 chars)
-        let messages = engine.get_session_messages("12345678").unwrap();
+        let messages = engine
+            .get_session_messages("12345678")
+            .unwrap();
         assert_eq!(
             messages.len(),
             2,
@@ -951,8 +1096,12 @@ mod tests {
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1031,8 +1180,12 @@ mod tests {
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1064,8 +1217,12 @@ mod tests {
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
@@ -1114,18 +1271,26 @@ mod tests {
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
 
         // Full ID
-        let messages = engine.get_session_messages(session_id).unwrap();
+        let messages = engine
+            .get_session_messages(session_id)
+            .unwrap();
         assert_eq!(messages.len(), 3);
 
         // Short prefix
-        let messages = engine.get_session_messages("aabbccdd").unwrap();
+        let messages = engine
+            .get_session_messages("aabbccdd")
+            .unwrap();
         assert_eq!(
             messages.len(),
             3,
@@ -1133,7 +1298,9 @@ mod tests {
         );
 
         // Non-matching prefix
-        let messages = engine.get_session_messages("xxxxxxxx").unwrap();
+        let messages = engine
+            .get_session_messages("xxxxxxxx")
+            .unwrap();
         assert_eq!(
             messages.len(),
             0,
@@ -1168,15 +1335,24 @@ mod tests {
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer.index_conversations(entries).unwrap();
-        indexer.commit().unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
         drop(indexer);
 
         let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
-        let messages = engine.get_session_messages(session_id).unwrap();
+        let messages = engine
+            .get_session_messages(session_id)
+            .unwrap();
 
         // Count displayable
-        let displayable_count = messages.iter().filter(|m| m.is_displayable()).count();
+        let displayable_count = messages
+            .iter()
+            .filter(|m| m.is_displayable())
+            .count();
         // User, Assistant, Summary are displayable; System is not; "Warmup" content filtered
         assert_eq!(
             displayable_count, 3,

@@ -1,2 +1,1 @@
-# Always use our version of Cargo.lock (never merge)
-Cargo.lock merge=ours
+Cargo.lock merge=union
