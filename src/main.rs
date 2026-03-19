@@ -1,7 +1,7 @@
 use claude_conversation_search::{cli, mcp};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 #[derive(Parser)]
 #[command(name = "claude-conversation-search")]
@@ -32,6 +32,15 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
 
     match args.command {
+        Some(cli::CliCommands::Completions { shell }) => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "claude-conversation-search",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
         Some(cli::CliCommands::Mcp) | None => {
             // Default to MCP server mode when no subcommand provided
             mcp::run_mcp_server().await
