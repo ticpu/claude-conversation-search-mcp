@@ -1321,9 +1321,18 @@ pub async fn run_mcp_server() -> Result<()> {
 
         match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(request) => {
+                // JSON-RPC 2.0: a request without `id` is a notification and
+                // MUST NOT receive a response. Handle it for side effects but
+                // drop the reply, otherwise strict MCP clients (e.g. Claude
+                // Code) reject the `{"id":null,"error":...}` shape and close
+                // the transport.
+                let is_notification = request.id.is_none();
                 let response = server
                     .handle_request(request)
                     .await;
+                if is_notification {
+                    continue;
+                }
                 let response_json = serde_json::to_string(&response)?;
                 debug!("Sending response: {}", response_json);
 
@@ -1338,27 +1347,10 @@ pub async fn run_mcp_server() -> Result<()> {
                     .await?;
             }
             Err(e) => {
+                // JSON-RPC 2.0 permits responding to unparseable input with
+                // `id: null`, but strict MCP clients reject that shape. Log
+                // and drop to keep the transport open.
                 error!("Failed to parse JSON-RPC request: {}", e);
-                let error_response = JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: None,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                let response_json = serde_json::to_string(&error_response)?;
-                stdout
-                    .write_all(response_json.as_bytes())
-                    .await?;
-                stdout
-                    .write_all(b"\n")
-                    .await?;
-                stdout
-                    .flush()
-                    .await?;
             }
         }
     }
