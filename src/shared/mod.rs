@@ -4,7 +4,7 @@ pub mod indexer;
 pub mod lock;
 pub mod metadata;
 pub mod models;
-pub mod parser;
+pub mod parsers;
 pub mod path_utils;
 pub mod search;
 pub mod terminal;

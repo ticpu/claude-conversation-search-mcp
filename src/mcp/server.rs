@@ -738,7 +738,7 @@ impl McpServer {
     }
 
     async fn tool_get_session_messages(&mut self, args: Option<Value>) -> Result<Value> {
-        use crate::shared::parser::JsonlParser;
+        use crate::shared::parsers::JsonlParser;
         use crate::shared::path_utils::find_session_jsonl;
 
         let args = args.unwrap_or_default();

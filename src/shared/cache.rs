@@ -1,6 +1,6 @@
 use super::indexer::SearchIndexer;
 use super::models::MessageType;
-use super::parser::JsonlParser;
+use super::parsers::JsonlParser;
 use super::utils::file_mtime;
 use anyhow::Result;
 use chrono::{DateTime, Utc};

@@ -810,7 +810,7 @@ fn view_session(
 ) -> Result<()> {
     // Read from JSONL directly for full-fidelity content
     let entries = if let Some(jsonl_path) = shared::find_session_jsonl(&session_id)? {
-        shared::parser::JsonlParser::with_full_content().parse_file(&jsonl_path)?
+        shared::parsers::JsonlParser::with_full_content().parse_file(&jsonl_path)?
     } else if index_path.exists() {
         // Fallback to Tantivy index (content may be truncated from indexing)
         eprintln!(
