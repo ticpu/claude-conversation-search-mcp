@@ -69,40 +69,28 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
         }
     };
 
-    let mut cache_manager = CacheManager::new(index_path)?;
-
+    // Build/open the indexer first — a schema-mismatch rebuild wipes index_path,
+    // which also deletes cache-metadata.json (it lives in the same dir). Creating
+    // CacheManager after guarantees a fresh empty metadata when a rebuild occurs,
+    // so the subsequent update_incremental re-indexes everything instead of skipping.
     let mut indexer = if index_path
         .join("meta.json")
         .exists()
     {
-        // Check if existing index has correct schema
         match SearchIndexer::validate_schema(index_path) {
-            Ok(true) => {
-                // Schema is valid, open existing index
-                SearchIndexer::open(index_path)?
-            }
+            Ok(true) => SearchIndexer::open(index_path)?,
             Ok(false) => {
-                // Schema mismatch, rebuild
                 info!("Index schema mismatch detected. Rebuilding index...");
-
-                // Remove the old index
                 if let Err(rm_err) = std::fs::remove_dir_all(index_path) {
                     warn!("Failed to remove old index: {}", rm_err);
                 }
-
-                // Create new index
                 SearchIndexer::new(index_path)?
             }
             Err(e) => {
-                // Failed to validate (corrupted index), rebuild
                 warn!("Failed to validate index: {}. Rebuilding...", e);
-
-                // Remove the corrupted index
                 if let Err(rm_err) = std::fs::remove_dir_all(index_path) {
                     warn!("Failed to remove corrupted index: {}", rm_err);
                 }
-
-                // Create new index
                 SearchIndexer::new(index_path)?
             }
         }
@@ -111,6 +99,7 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
         SearchIndexer::new(index_path)?
     };
 
+    let mut cache_manager = CacheManager::new(index_path)?;
     let all_files = discover_jsonl_files()?;
     cache_manager.update_incremental(&mut indexer, all_files)?;
     Ok(())
