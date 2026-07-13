@@ -5,11 +5,12 @@ use super::utils::truncate_content;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::ops::Bound;
 use std::path::Path;
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Value};
-use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term};
+use tantivy::{Index, IndexReader, Order, ReloadPolicy, TantivyDocument, Term};
 
 /// Extract project name from a path and split into TEXT-tokenizer segments.
 /// Tantivy's default TEXT tokenizer splits on non-alphanumeric characters,
@@ -170,6 +171,27 @@ impl SearchEngine {
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
+        // Push date bounds into the query so BM25 scoring operates only over the
+        // matching time window. Post-hoc filtering on a top-K relevance fetch silently
+        // drops recent docs when high-frequency terms rank old docs above the limit.
+        let lower = query
+            .after
+            .map(|dt| tantivy::DateTime::from_timestamp_millis(dt.timestamp_millis()));
+        let upper = query
+            .before
+            .map(|dt| tantivy::DateTime::from_timestamp_millis(dt.timestamp_millis()));
+        if lower.is_some() || upper.is_some() {
+            let date_query = RangeQuery::new_date_bounds(
+                "timestamp".to_string(),
+                lower.map_or(Bound::Unbounded, Bound::Included),
+                upper.map_or(Bound::Unbounded, Bound::Included),
+            );
+            final_query_parts.push((
+                Occur::Must,
+                Box::new(date_query) as Box<dyn tantivy::query::Query>,
+            ));
+        }
+
         let final_query = if final_query_parts.len() > 1 {
             Box::new(BooleanQuery::new(final_query_parts)) as Box<dyn tantivy::query::Query>
         } else {
@@ -180,44 +202,67 @@ impl SearchEngine {
                 .1
         };
 
-        let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
-
         let mut results = Vec::new();
-        for (score, doc_address) in top_docs {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
 
-            // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
-            if let Some(ref session_filter) = query.session_filter
-                && !result
-                    .session_id
-                    .starts_with(session_filter.as_str())
-            {
-                continue;
+        match &query.sort_by {
+            SortOrder::Relevance => {
+                let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
+                for (score, doc_address) in top_docs {
+                    let result =
+                        self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
+                    if !self.passes_post_filters(&result, &query) {
+                        continue;
+                    }
+                    results.push(result);
+                }
             }
-
-            // Apply project post-filter (Tantivy matches segments, verify full project name)
-            if let Some(ref project_filter) = query.project_filter
-                && !project_matches(&result.project_path, project_filter)
-            {
-                continue;
+            SortOrder::DateDesc => {
+                let collector = TopDocs::with_limit(query.limit)
+                    .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Desc);
+                let top_docs = searcher.search(&*final_query, &collector)?;
+                for (_, doc_address) in top_docs {
+                    let result =
+                        self.doc_to_result(&searcher.doc(doc_address)?, 0.0, &query.text)?;
+                    if !self.passes_post_filters(&result, &query) {
+                        continue;
+                    }
+                    results.push(result);
+                }
             }
-
-            // Apply date range filters
-            if let Some(after) = query.after
-                && result.timestamp < after
-            {
-                continue;
+            SortOrder::DateAsc => {
+                let collector = TopDocs::with_limit(query.limit)
+                    .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Asc);
+                let top_docs = searcher.search(&*final_query, &collector)?;
+                for (_, doc_address) in top_docs {
+                    let result =
+                        self.doc_to_result(&searcher.doc(doc_address)?, 0.0, &query.text)?;
+                    if !self.passes_post_filters(&result, &query) {
+                        continue;
+                    }
+                    results.push(result);
+                }
             }
-            if let Some(before) = query.before
-                && result.timestamp > before
-            {
-                continue;
-            }
-
-            results.push(result);
         }
 
         Ok(results)
+    }
+
+    /// Session and project post-filters: precision checks that Tantivy's segment-based
+    /// queries cannot express (prefix matching, full name equality).
+    fn passes_post_filters(&self, result: &SearchResult, query: &SearchQuery) -> bool {
+        if let Some(ref session_filter) = query.session_filter
+            && !result
+                .session_id
+                .starts_with(session_filter.as_str())
+        {
+            return false;
+        }
+        if let Some(ref project_filter) = query.project_filter
+            && !project_matches(&result.project_path, project_filter)
+        {
+            return false;
+        }
+        true
     }
 
     /// Search with context - returns matches with surrounding messages (grep -C style)
@@ -1357,6 +1402,139 @@ mod tests {
         assert_eq!(
             displayable_count, 3,
             "Should have 3 displayable messages (User, Assistant, Summary)"
+        );
+    }
+
+    fn make_entry_with_timestamp(
+        uuid: &str,
+        session_id: &str,
+        content: &str,
+        seq: usize,
+        timestamp: chrono::DateTime<Utc>,
+    ) -> ConversationEntry {
+        ConversationEntry {
+            uuid: uuid.to_string(),
+            parent_uuid: None,
+            session_id: session_id.to_string(),
+            project_path: "/test/project".to_string(),
+            timestamp,
+            message_type: MessageType::User,
+            content: content.to_string(),
+            model: None,
+            cwd: None,
+            sequence_num: seq,
+            is_sidechain: false,
+            agent_id: None,
+            technologies: vec![],
+            has_code: false,
+            code_languages: vec![],
+            has_error: false,
+            tools_mentioned: vec![],
+        }
+    }
+
+    #[test]
+    fn test_date_filter_pushed_into_query() {
+        // Old doc has high term frequency for "common"; new doc has one occurrence.
+        // Without the date filter in the query, top-1 by BM25 fetches only the old doc
+        // and the post-filter drops it, returning nothing.
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "dddddddd-1111-2222-3333-444444444444";
+        let old_ts = "2025-01-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let new_ts = "2026-07-01T12:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+
+        let old_content = "common ".repeat(20);
+        let entries = vec![
+            make_entry_with_timestamp("old-uuid", session_id, old_content.trim(), 0, old_ts),
+            make_entry_with_timestamp("new-uuid", session_id, "common recent doc", 1, new_ts),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer
+            .index_conversations(entries, "test-source.jsonl")
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        // After filter set to 2026-06-01 — old doc must be excluded from the corpus.
+        let after = "2026-06-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let results = engine
+            .search(SearchQuery {
+                text: "common".to_string(),
+                limit: 1,
+                after: Some(after),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Date filter in query must surface the recent doc even with limit 1; got: {:?}",
+            results
+                .iter()
+                .map(|r| (&r.uuid, r.timestamp))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(results[0].uuid, "new-uuid");
+    }
+
+    #[test]
+    fn test_date_sort_in_collector() {
+        // Without collector-level sort, DateDesc limit=1 could return the high-BM25 old doc.
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let session_id = "eeeeeeee-5555-6666-7777-888888888888";
+        let old_ts = "2025-03-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let new_ts = "2026-07-10T08:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+
+        let old_content = "sort ".repeat(15);
+        let entries = vec![
+            make_entry_with_timestamp("old-sort", session_id, old_content.trim(), 0, old_ts),
+            make_entry_with_timestamp("new-sort", session_id, "sort newer", 1, new_ts),
+        ];
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer
+            .index_conversations(entries, "test-source.jsonl")
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+
+        let results = engine
+            .search(SearchQuery {
+                text: "sort".to_string(),
+                limit: 1,
+                sort_by: SortOrder::DateDesc,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "Should return exactly 1 result");
+        assert_eq!(
+            results[0].uuid, "new-sort",
+            "DateDesc limit=1 must return the newest doc, not the highest-BM25 one"
         );
     }
 }
