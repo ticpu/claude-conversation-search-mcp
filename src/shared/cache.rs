@@ -1,6 +1,6 @@
 use super::indexer::SearchIndexer;
 use super::models::MessageType;
-use super::parsers::JsonlParser;
+use super::parsers::{JsonlParser, SourceKind};
 use super::utils::file_mtime;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -109,6 +109,7 @@ impl CacheManager {
         // Phase 2 (parallel): parse all files concurrently.
         struct ParsedFile {
             path: PathBuf,
+            source_kind: SourceKind,
             file_size: u64,
             file_modified: DateTime<Utc>,
             entries: Vec<super::models::ConversationEntry>,
@@ -118,6 +119,7 @@ impl CacheManager {
             .into_par_iter()
             .filter_map(|file_path| {
                 info!("Processing: {}", file_path.display());
+                let source_kind = SourceKind::classify(&file_path);
                 let file_size = fs::metadata(&file_path)
                     .ok()?
                     .len();
@@ -125,6 +127,7 @@ impl CacheManager {
                 match parser.parse_file(&file_path) {
                     Ok(entries) => Some(ParsedFile {
                         path: file_path,
+                        source_kind,
                         file_size,
                         file_modified,
                         entries,
@@ -148,34 +151,39 @@ impl CacheManager {
             total_entries += entry_count;
 
             if entry_count > 0 {
-                if let Some(first) = parsed_file
-                    .entries
-                    .first()
-                {
-                    indexer.delete_session(&first.session_id)?;
-                    self.metadata
-                        .session_counts
-                        .remove(&first.session_id);
-                }
+                let path_str = parsed_file
+                    .path
+                    .to_string_lossy();
+                indexer.delete_source_file(&path_str)?;
 
-                for entry in &parsed_file.entries {
-                    if matches!(
-                        entry.message_type,
-                        MessageType::User | MessageType::Assistant
-                    ) {
-                        *self
-                            .metadata
+                if matches!(parsed_file.source_kind, SourceKind::MainSession) {
+                    if let Some(first) = parsed_file
+                        .entries
+                        .first()
+                    {
+                        self.metadata
                             .session_counts
-                            .entry(
-                                entry
-                                    .session_id
-                                    .clone(),
-                            )
-                            .or_insert(0) += 1;
+                            .remove(&first.session_id);
+                    }
+                    for entry in &parsed_file.entries {
+                        if matches!(
+                            entry.message_type,
+                            MessageType::User | MessageType::Assistant
+                        ) {
+                            *self
+                                .metadata
+                                .session_counts
+                                .entry(
+                                    entry
+                                        .session_id
+                                        .clone(),
+                                )
+                                .or_insert(0) += 1;
+                        }
                     }
                 }
 
-                indexer.index_conversations(parsed_file.entries)?;
+                indexer.index_conversations(parsed_file.entries, &path_str)?;
                 info!("  Indexed {} entries", entry_count);
             }
 
@@ -495,5 +503,124 @@ impl std::fmt::Display for IndexHealth {
         )?;
         writeln!(f, "Status: {:?}", self.status)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::indexer::SearchIndexer;
+    use crate::shared::search::SearchEngine;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn write_jsonl(path: &std::path::Path, lines: &[&str]) {
+        let content = lines.join("\n") + "\n";
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn test_file_granularity_delete_preserves_main_session() {
+        let tmp = TempDir::new().unwrap();
+        let index_dir = tmp
+            .path()
+            .join("idx");
+
+        let session_id = "aabbccdd-1234-5678-abcd-ef0123456789";
+
+        // Create fake project layout: main JSONL + subagents/agent-x.jsonl
+        let project_dir = tmp
+            .path()
+            .join("project");
+        fs::create_dir_all(project_dir.join("subagents")).unwrap();
+
+        let main_path = project_dir.join(format!("{}.jsonl", session_id));
+        let agent_path = project_dir
+            .join("subagents")
+            .join("agent-tst001.jsonl");
+
+        let main_line = format!(
+            r#"{{"uuid":"main-uuid-001","sessionId":"{}","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"Main session message"}}}}"#,
+            session_id
+        );
+        let agent_line_v1 = format!(
+            r#"{{"uuid":"agent-uuid-001","sessionId":"{}","type":"user","timestamp":"2025-12-28T10:01:00Z","message":{{"role":"user","content":"Agent message v1"}}}}"#,
+            session_id
+        );
+
+        write_jsonl(&main_path, &[&main_line]);
+        write_jsonl(&agent_path, &[&agent_line_v1]);
+
+        // First update_incremental: index both files
+        let mut indexer = SearchIndexer::new(&index_dir).unwrap();
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![main_path.clone(), agent_path.clone()])
+            .unwrap();
+        drop(indexer);
+
+        // Verify both are indexed
+        let engine = SearchEngine::new(&index_dir, HashMap::new()).unwrap();
+        let messages = engine
+            .get_session_messages(session_id)
+            .unwrap();
+        assert_eq!(
+            messages.len(),
+            2,
+            "Both main and agent entries should be indexed"
+        );
+        drop(engine);
+
+        // Verify session_counts counts only the main file's messages
+        let counts = cache.get_session_counts();
+        assert_eq!(
+            *counts
+                .get(session_id)
+                .unwrap_or(&0),
+            1,
+            "session_counts should only count main file's user/assistant messages"
+        );
+
+        // Modify ONLY the agent file (different content → different size → stale)
+        let agent_line_v2 = format!(
+            r#"{{"uuid":"agent-uuid-002","sessionId":"{}","type":"user","timestamp":"2025-12-28T10:02:00Z","message":{{"role":"user","content":"Agent message v2 updated content here"}}}}"#,
+            session_id
+        );
+        write_jsonl(&agent_path, &[&agent_line_v2]);
+
+        // Second update_incremental: only agent file is stale
+        let mut indexer = SearchIndexer::open(&index_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![main_path.clone(), agent_path.clone()])
+            .unwrap();
+        drop(indexer);
+
+        // Main session docs must still be present in the index
+        let engine = SearchEngine::new(&index_dir, HashMap::new()).unwrap();
+        let messages = engine
+            .get_session_messages(session_id)
+            .unwrap();
+
+        let main_present = messages
+            .iter()
+            .any(|m| m.content == "Main session message");
+        assert!(
+            main_present,
+            "Main session docs must survive agent file re-indexing; got: {:?}",
+            messages
+                .iter()
+                .map(|m| &m.content)
+                .collect::<Vec<_>>()
+        );
+
+        // session_counts must still only reflect the main file
+        let counts = cache.get_session_counts();
+        assert_eq!(
+            *counts
+                .get(session_id)
+                .unwrap_or(&0),
+            1,
+            "session_counts must not be affected by agent file re-indexing"
+        );
     }
 }

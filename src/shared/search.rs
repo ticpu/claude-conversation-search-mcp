@@ -976,7 +976,7 @@ mod tests {
         // Index them
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
@@ -1009,7 +1009,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
@@ -1097,7 +1097,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
@@ -1181,7 +1181,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
@@ -1218,7 +1218,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
@@ -1272,7 +1272,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
@@ -1336,7 +1336,7 @@ mod tests {
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
         indexer
-            .index_conversations(entries)
+            .index_conversations(entries, "test-source.jsonl")
             .unwrap();
         indexer
             .commit()
