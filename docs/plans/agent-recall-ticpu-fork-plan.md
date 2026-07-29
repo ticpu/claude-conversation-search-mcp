@@ -35,6 +35,11 @@ issues, and prior decisions remain available.
 - `master` remains an untouched upstream-aligned reference branch.
 - The living migration plan and unchanged-upstream baseline are tracked under
   `docs/plans/` in this repository.
+- Commit `b5dbcdee8307d11d3edbea439dcf6ffc387b6719` is the fork's first
+  post-upstream change and introduced both planning documents.
+- The previous WSL home-directory copies were moved to the WSL trash after the
+  pushed repository copies were verified through GitHub.
+- The legacy repository's `LEGACY.md` links directly to these tracked documents.
 
 ## Migration plan
 
