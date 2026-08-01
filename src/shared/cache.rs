@@ -30,6 +30,15 @@ pub struct FileMetadata {
     pub modified: DateTime<Utc>,
     pub indexed_at: DateTime<Utc>,
     pub entry_count: usize,
+    /// Per-session message counts contributed by this file. Global totals are
+    /// folded from these so they cannot drift as files are reindexed.
+    #[serde(default)]
+    pub conversation_counts: HashMap<String, usize>,
+    /// False for entries deserialized from a cache written before
+    /// `conversation_counts` existed. Distinguishes "not yet reindexed" from
+    /// "reindexed and contributes no counts" (subagent transcripts).
+    #[serde(default)]
+    pub counts_backfilled: bool,
 }
 
 pub struct CacheManager {
@@ -143,7 +152,6 @@ impl CacheManager {
         // Phase 3 (serial): feed into IndexWriter and update cache metadata.
         let mut files_processed = 0;
         let mut total_entries = 0;
-        let mut superseded_entries = 0;
 
         for parsed_file in parsed {
             let entry_count = parsed_file
@@ -151,29 +159,23 @@ impl CacheManager {
                 .len();
             total_entries += entry_count;
 
+            let mut conversation_counts: HashMap<String, usize> = HashMap::new();
+
             if entry_count > 0 {
                 let path_str = parsed_file
                     .path
                     .to_string_lossy();
                 indexer.delete_source_file(&path_str)?;
 
+                // Subagent transcripts share their parent's sessionId; counting
+                // them would double-count the session against its main file.
                 if matches!(parsed_file.source_kind, SourceKind::MainSession) {
-                    if let Some(first) = parsed_file
-                        .entries
-                        .first()
-                    {
-                        self.metadata
-                            .session_counts
-                            .remove(&first.session_id);
-                    }
                     for entry in &parsed_file.entries {
                         if matches!(
                             entry.message_type,
                             MessageType::User | MessageType::Assistant
                         ) {
-                            *self
-                                .metadata
-                                .session_counts
+                            *conversation_counts
                                 .entry(
                                     entry
                                         .session_id
@@ -188,10 +190,7 @@ impl CacheManager {
                 info!("  Indexed {} entries", entry_count);
             }
 
-            // Reindexing a changed file replaces its entries; drop the prior
-            // count so the global total tracks the sum of per-file counts.
-            if let Some(previous) = self
-                .metadata
+            self.metadata
                 .indexed_files
                 .insert(
                     parsed_file.path,
@@ -201,11 +200,10 @@ impl CacheManager {
                         modified: parsed_file.file_modified,
                         indexed_at: Utc::now(),
                         entry_count,
+                        conversation_counts,
+                        counts_backfilled: true,
                     },
-                )
-            {
-                superseded_entries += previous.entry_count;
-            }
+                );
             files_processed += 1;
         }
 
@@ -213,12 +211,7 @@ impl CacheManager {
             indexer.commit()?;
         }
 
-        self.metadata
-            .total_entries = self
-            .metadata
-            .total_entries
-            .saturating_sub(superseded_entries as u64)
-            + total_entries as u64;
+        self.refresh_derived_metadata();
         self.metadata
             .last_full_scan = Some(Utc::now());
         self.save_metadata()?;
@@ -233,6 +226,49 @@ impl CacheManager {
         }
 
         Ok(())
+    }
+
+    /// Recompute global totals as a fold over per-file metadata. Deriving them
+    /// rather than adjusting them in place keeps reindexing from drifting the
+    /// counters, and repairs a cache that already drifted.
+    fn refresh_derived_metadata(&mut self) {
+        self.metadata
+            .total_entries = self
+            .metadata
+            .indexed_files
+            .values()
+            .map(|file| file.entry_count as u64)
+            .sum();
+
+        // Caches written before conversation_counts existed deserialize it as
+        // empty. Folding those in would zero out interaction counts for every
+        // file that has not happened to change since the upgrade, so keep the
+        // stored counts until each file has been reindexed at least once.
+        let backfilled = self
+            .metadata
+            .indexed_files
+            .values()
+            .all(|file| file.counts_backfilled);
+        if !backfilled {
+            return;
+        }
+
+        self.metadata
+            .session_counts
+            .clear();
+        for file in self
+            .metadata
+            .indexed_files
+            .values()
+        {
+            for (session_id, count) in &file.conversation_counts {
+                *self
+                    .metadata
+                    .session_counts
+                    .entry(session_id.clone())
+                    .or_insert(0) += count;
+            }
+        }
     }
 
     pub fn clear_cache(&mut self) -> Result<()> {
@@ -642,15 +678,18 @@ mod tests {
         );
     }
 
-    fn write_transcript(path: &Path, session: &str, count: usize) {
-        let lines: Vec<String> = (0..count)
+    fn transcript_lines(session: &str, count: usize) -> Vec<String> {
+        (0..count)
             .map(|i| {
                 format!(
-                    r#"{{"uuid":"uuid-{i}","sessionId":"{session}","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"message {i}"}}}}"#
+                    r#"{{"uuid":"{session}-uuid-{i}","sessionId":"{session}","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"message {i}"}}}}"#
                 )
             })
-            .collect();
-        fs::write(path, lines.join("\n") + "\n").unwrap();
+            .collect()
+    }
+
+    fn write_transcript(path: &Path, session: &str, count: usize) {
+        fs::write(path, transcript_lines(session, count).join("\n") + "\n").unwrap();
     }
 
     fn sum_of_file_counts(cache: &CacheManager) -> usize {
@@ -710,6 +749,151 @@ mod tests {
                 .metadata
                 .total_entries,
             7
+        );
+    }
+
+    #[test]
+    fn session_counts_do_not_leak_when_a_session_leaves_a_file() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp
+            .path()
+            .join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let transcript = temp
+            .path()
+            .join("mixed.jsonl");
+
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        let mut indexer = SearchIndexer::new(
+            &temp
+                .path()
+                .join("index"),
+        )
+        .unwrap();
+
+        // One file carrying two sessions; session_id is per-line, not per-file.
+        let mut lines = transcript_lines("sess-a", 2);
+        lines.extend(transcript_lines("sess-b", 3));
+        fs::write(&transcript, lines.join("\n") + "\n").unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+        assert_eq!(
+            cache
+                .metadata
+                .session_counts
+                .get("sess-b"),
+            Some(&3)
+        );
+
+        // Rewrite the file with sess-b gone entirely.
+        fs::write(&transcript, transcript_lines("sess-a", 4).join("\n") + "\n").unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+
+        assert_eq!(
+            cache
+                .metadata
+                .session_counts
+                .get("sess-b"),
+            None,
+            "a session no longer present in the file must not linger"
+        );
+        assert_eq!(
+            cache
+                .metadata
+                .session_counts
+                .get("sess-a"),
+            Some(&4)
+        );
+    }
+
+    #[test]
+    fn pre_upgrade_cache_keeps_session_counts_until_reindexed() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp
+            .path()
+            .join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        // Simulate metadata written before conversation_counts existed.
+        cache
+            .metadata
+            .indexed_files
+            .insert(
+                PathBuf::from("/old/session.jsonl"),
+                FileMetadata {
+                    size_hex: "0".to_string(),
+                    size: 0,
+                    modified: Utc::now(),
+                    indexed_at: Utc::now(),
+                    entry_count: 5,
+                    conversation_counts: HashMap::new(),
+                    counts_backfilled: false,
+                },
+            );
+        cache
+            .metadata
+            .session_counts
+            .insert("sess-old".to_string(), 5);
+
+        cache.refresh_derived_metadata();
+
+        assert_eq!(
+            cache
+                .metadata
+                .session_counts
+                .get("sess-old"),
+            Some(&5),
+            "counts from a pre-upgrade cache must survive until reindex"
+        );
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            5
+        );
+    }
+
+    #[test]
+    fn subagent_file_does_not_suppress_the_session_counts_fold() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp
+            .path()
+            .join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let project = temp
+            .path()
+            .join("project");
+        fs::create_dir_all(project.join("subagents")).unwrap();
+
+        let main_path = project.join("sess-a.jsonl");
+        let agent_path = project
+            .join("subagents")
+            .join("agent-tst001.jsonl");
+        write_transcript(&main_path, "sess-a", 4);
+        write_transcript(&agent_path, "sess-a", 3);
+
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        let mut indexer = SearchIndexer::new(
+            &temp
+                .path()
+                .join("index"),
+        )
+        .unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![main_path, agent_path])
+            .unwrap();
+
+        assert_eq!(
+            cache
+                .metadata
+                .session_counts
+                .get("sess-a"),
+            Some(&4),
+            "a subagent file contributes no counts yet must not block the fold"
         );
     }
 
