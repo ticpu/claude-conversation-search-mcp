@@ -704,7 +704,7 @@ impl McpServer {
             ));
         }
 
-        if stale_count > 1 || new_count > 0 {
+        if stale_count > 0 || new_count > 0 {
             output.push_str(&format!(
                 "Note: index is stale ({} modified, {} new files). Call reindex tool for fresher results.\n",
                 stale_count, new_count
@@ -1248,7 +1248,13 @@ Task(
         })?)
     }
 
-    async fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
+    /// Returns `None` for JSON-RPC notifications (no `id`), which must not be
+    /// answered. The method is still dispatched so side effects are not lost.
+    async fn handle_request(&mut self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
+        let is_notification = request
+            .id
+            .is_none();
+
         let result = match request
             .method
             .as_str()
@@ -1272,7 +1278,14 @@ Task(
             _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
         };
 
-        match result {
+        if is_notification {
+            if let Err(e) = result {
+                error!("Notification {} failed: {}", request.method, e);
+            }
+            return None;
+        }
+
+        Some(match result {
             Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
@@ -1289,7 +1302,7 @@ Task(
                     data: None,
                 }),
             },
-        }
+        })
     }
 }
 
@@ -1321,21 +1334,23 @@ pub async fn run_mcp_server() -> Result<()> {
 
         match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(request) => {
-                let response = server
+                if let Some(response) = server
                     .handle_request(request)
-                    .await;
-                let response_json = serde_json::to_string(&response)?;
-                debug!("Sending response: {}", response_json);
+                    .await
+                {
+                    let response_json = serde_json::to_string(&response)?;
+                    debug!("Sending response: {}", response_json);
 
-                stdout
-                    .write_all(response_json.as_bytes())
-                    .await?;
-                stdout
-                    .write_all(b"\n")
-                    .await?;
-                stdout
-                    .flush()
-                    .await?;
+                    stdout
+                        .write_all(response_json.as_bytes())
+                        .await?;
+                    stdout
+                        .write_all(b"\n")
+                        .await?;
+                    stdout
+                        .flush()
+                        .await?;
+                }
             }
             Err(e) => {
                 error!("Failed to parse JSON-RPC request: {}", e);
@@ -1364,4 +1379,37 @@ pub async fn run_mcp_server() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_notification(line: &str) -> bool {
+        serde_json::from_str::<JsonRpcRequest>(line)
+            .unwrap()
+            .id
+            .is_none()
+    }
+
+    #[test]
+    fn requests_without_id_are_notifications() {
+        assert!(is_notification(
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+        ));
+        assert!(is_notification(
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#
+        ));
+    }
+
+    #[test]
+    fn requests_with_id_expect_a_response() {
+        assert!(!is_notification(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#
+        ));
+        // Zero is a valid id, not an absent one.
+        assert!(!is_notification(
+            r#"{"jsonrpc":"2.0","id":0,"method":"tools/list"}"#
+        ));
+    }
 }
