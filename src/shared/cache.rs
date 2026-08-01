@@ -6,7 +6,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -143,6 +143,7 @@ impl CacheManager {
         // Phase 3 (serial): feed into IndexWriter and update cache metadata.
         let mut files_processed = 0;
         let mut total_entries = 0;
+        let mut superseded_entries = 0;
 
         for parsed_file in parsed {
             let entry_count = parsed_file
@@ -187,7 +188,10 @@ impl CacheManager {
                 info!("  Indexed {} entries", entry_count);
             }
 
-            self.metadata
+            // Reindexing a changed file replaces its entries; drop the prior
+            // count so the global total tracks the sum of per-file counts.
+            if let Some(previous) = self
+                .metadata
                 .indexed_files
                 .insert(
                     parsed_file.path,
@@ -198,7 +202,10 @@ impl CacheManager {
                         indexed_at: Utc::now(),
                         entry_count,
                     },
-                );
+                )
+            {
+                superseded_entries += previous.entry_count;
+            }
             files_processed += 1;
         }
 
@@ -207,7 +214,11 @@ impl CacheManager {
         }
 
         self.metadata
-            .total_entries += total_entries as u64;
+            .total_entries = self
+            .metadata
+            .total_entries
+            .saturating_sub(superseded_entries as u64)
+            + total_entries as u64;
         self.metadata
             .last_full_scan = Some(Utc::now());
         self.save_metadata()?;
@@ -378,10 +389,19 @@ impl CacheManager {
     pub fn quick_health_check(&self, all_jsonl_files: &[PathBuf]) -> (usize, usize) {
         let mut stale = 0;
         let mut new_files = 0;
+        // Only files the caller passed count as stale; excluding a path (such as
+        // the always-being-written active session) must suppress its warning.
+        let considered: HashSet<&Path> = all_jsonl_files
+            .iter()
+            .map(|p| p.as_path())
+            .collect();
         for (path, meta) in &self
             .metadata
             .indexed_files
         {
+            if !considered.contains(path.as_path()) {
+                continue;
+            }
             if let Ok(current_mtime) = file_mtime(path) {
                 let current_size = fs::metadata(path)
                     .map(|m| m.len())
@@ -509,12 +529,10 @@ impl std::fmt::Display for IndexHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::indexer::SearchIndexer;
     use crate::shared::search::SearchEngine;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
-    fn write_jsonl(path: &std::path::Path, lines: &[&str]) {
+    fn write_jsonl(path: &Path, lines: &[&str]) {
         let content = lines.join("\n") + "\n";
         fs::write(path, content).unwrap();
     }
@@ -621,6 +639,115 @@ mod tests {
                 .unwrap_or(&0),
             1,
             "session_counts must not be affected by agent file re-indexing"
+        );
+    }
+
+    fn write_transcript(path: &Path, session: &str, count: usize) {
+        let lines: Vec<String> = (0..count)
+            .map(|i| {
+                format!(
+                    r#"{{"uuid":"uuid-{i}","sessionId":"{session}","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"message {i}"}}}}"#
+                )
+            })
+            .collect();
+        fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    fn sum_of_file_counts(cache: &CacheManager) -> usize {
+        cache
+            .metadata
+            .indexed_files
+            .values()
+            .map(|m| m.entry_count)
+            .sum()
+    }
+
+    #[test]
+    fn reindexing_changed_file_does_not_inflate_total() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp
+            .path()
+            .join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let transcript = temp
+            .path()
+            .join("session.jsonl");
+
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        let mut indexer = SearchIndexer::new(
+            &temp
+                .path()
+                .join("index"),
+        )
+        .unwrap();
+
+        write_transcript(&transcript, "sess-a", 6);
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            6
+        );
+
+        // Replace the 6-entry session with a 7-entry version.
+        write_transcript(&transcript, "sess-a", 7);
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries as usize,
+            sum_of_file_counts(&cache),
+            "global total must track the sum of per-file counts"
+        );
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            7
+        );
+    }
+
+    #[test]
+    fn quick_health_check_ignores_files_not_passed_by_caller() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp
+            .path()
+            .join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let transcript = temp
+            .path()
+            .join("active.jsonl");
+
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        let mut indexer = SearchIndexer::new(
+            &temp
+                .path()
+                .join("index"),
+        )
+        .unwrap();
+
+        write_transcript(&transcript, "sess-a", 3);
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+
+        // Modify it so it is genuinely stale against the cached size/mtime.
+        write_transcript(&transcript, "sess-a", 5);
+
+        let (stale, new) = cache.quick_health_check(std::slice::from_ref(&transcript));
+        assert_eq!((stale, new), (1, 0), "included file counts as stale");
+
+        let (stale, new) = cache.quick_health_check(&[]);
+        assert_eq!(
+            (stale, new),
+            (0, 0),
+            "excluded file must not count as stale"
         );
     }
 }
