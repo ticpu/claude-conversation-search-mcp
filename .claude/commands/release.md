@@ -22,4 +22,4 @@ Version lives ONLY in Cargo.toml. If $ARGUMENTS names a version or bump level (p
    - `cd ~/.cache/paru/clone/claude-conversation-search-bin/ && ./update-pkg.sh`
 
    Each should print the new version; troubleshoot only if it fails. AUR commits get no Co-Authored-By trailer.
-10. `git push` in **each** AUR clone — `update-pkg.sh` commits but does not push, so the release is not on AUR until this runs. Verify with `git status -sb` showing no ahead count, or `curl -s 'https://aur.archlinux.org/rpc/v5/search/claude-conversation-search?by=name' | jq -r '.results[] | "\(.Name) \(.Version)"'` reporting the new version for both.
+10. `git push` in **each** AUR clone — `update-pkg.sh` commits but does not push, so the release is not on AUR until this runs. Verify with `git status -sb` showing no ahead count. Do not poll the AUR RPC index to confirm: it refreshes minutes behind the push and will report the old version well after the release is live.
