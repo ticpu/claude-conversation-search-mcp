@@ -11,7 +11,7 @@ Version lives ONLY in Cargo.toml. If $ARGUMENTS names a version or bump level (p
 4. Commit as `release: vX.Y.Z`, staging Cargo.toml and Cargo.lock explicitly.
 5. `git push`, then WAIT for CI to pass on master (`gh run watch`).
 6. `git tag -as vX.Y.Z` — changelog goes in the tag message: features, fixes, API changes for someone not following development. No commit lists or hashes.
-7. `git push --tags`, then WAIT for the Release workflow to complete successfully (`gh run watch`). It leaves the release a **draft** — step 8 publishes it.
+7. `git push --tags`, then WAIT for the Release workflow to complete successfully (`gh run watch`). It leaves the release a **draft** — step 8 publishes it. Check the draft carries both `.deb` assets before signing: apt.ticpu.net ingests them from the release, so a draft missing them strands the archive on the previous version, and immutability means they cannot be added after publishing.
 8. `./sign-release.sh` — detach-signs every asset with the key from `git config user.signingkey`, uploads the `.asc` files, then publishes the draft. `--dry-run` signs and verifies without uploading. Nothing may be published unsigned: both AUR PKGBUILDs carry `validpgpkeys` and fail without the signatures, and with release immutability enabled a published release's assets can no longer be added to.
 9. Update **both** AUR packages — the from-source one and the `-bin` one, which repackages this release's binaries. Releases may have been cut from another machine, so bring each clone up to date first; if one is missing entirely, clone it:
    - `git clone ssh://aur@aur.archlinux.org/claude-conversation-search.git ~/.cache/paru/clone/claude-conversation-search`

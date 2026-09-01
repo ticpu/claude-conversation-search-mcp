@@ -120,18 +120,8 @@ join point: the deb recipe runs natively and reads nothing else from the build.
 
 ## Release Process
 
-1. Update version in `Cargo.toml`
-2. Run `cargo update` (update all dependencies)
-3. Run `cargo clippy -- -D warnings` (CI uses `-D warnings`)
-4. Run `cargo test`
-5. Run `cargo build --release` (verify build succeeds)
-6. Run `make deb` and check `dpkg-deb -I` on both packages: the `Depends:` line must carry a glibc floor and no unsubstituted placeholder
-7. Add Cargo.lock: `git add -f Cargo.lock` (force-add despite .gitignore history)
-8. Commit: `git commit -m "bump: Version X.Y.Z"`
-9. Push and **wait for CI to pass**: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
-10. **Only after CI passes**: Tag: `git tag -as vX.Y.Z` (annotated + signed)
-11. Push tag: `git push --tags`
-12. CI leaves the release a draft. Sign and publish with `./sign-release.sh vX.Y.Z` — assets cannot be added once a release is published.
+The procedure lives in `.claude/commands/release.md` and is the only copy — a second numbered list
+here went stale and contradicted it on the lockfile step and the commit subject.
 
 Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries and
 `.deb` packages. The packages are what https://apt.ticpu.net ingests, so a release missing them
