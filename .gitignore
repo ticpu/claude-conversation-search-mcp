@@ -2,6 +2,11 @@
 /target/
 /scratch/
 
+# Packaging
+/dist/
+/package.tmp/
+*.deb
+
 # IDE
 .vscode/
 .idea/

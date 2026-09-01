@@ -1,0 +1,14 @@
+Package: claude-conversation-search
+Version: 0.0.0-replaced-by-makefile
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: replaced-by-makefile
+Maintainer: Jérôme Poulin <jeromepoulin@gmail.com>
+Homepage: https://github.com/ticpu/claude-conversation-search-mcp
+Description: Full-text search over Claude Code conversation history
+ Indexes the JSONL transcripts Claude Code writes under ~/.claude/projects
+ with Tantivy and searches them by BM25 relevance, with grep-style -A/-B/-C
+ context around each match, tag and project filters, and date ranges. The
+ same binary runs as an MCP server, which lets Claude search its own past
+ sessions during a conversation. Ships bash, zsh and fish completions.
