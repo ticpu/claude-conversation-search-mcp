@@ -66,6 +66,19 @@ Claude Code stores conversations as JSONL files in `~/.claude/projects/`. This t
 
 ## Quick Start
 
+### Debian / Ubuntu
+
+Packages for amd64 and arm64 are served from [apt.ticpu.net](https://apt.ticpu.net). This is a single portable binary, so the `generic` suite works on any Debian or Ubuntu — the per-codename suites (bookworm, trixie, noble, resolute) carry the same packages.
+
+```bash
+curl -fsSLO https://apt.ticpu.net/ticpu-archive-keyring.deb
+sudo dpkg -i ticpu-archive-keyring.deb
+echo 'deb [signed-by=/usr/share/keyrings/ticpu-archive-keyring.gpg] https://apt.ticpu.net generic main' | sudo tee /etc/apt/sources.list.d/ticpu.list
+sudo apt update && sudo apt install claude-conversation-search
+```
+
+The package ships the binary and bash/zsh/fish completions. Registering the MCP server with Claude Code stays a user action — run `claude-conversation-search install` afterwards.
+
 ### One-Line Install
 
 ```bash
