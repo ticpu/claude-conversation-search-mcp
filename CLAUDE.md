@@ -55,6 +55,10 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 
 **Active session exclusion**: MCP `search_conversations` excludes the currently-written JSONL from stale checks via `active_session_jsonl(cwd)` in `path_utils`. This walks up from the process cwd to find the matching `.claude/projects/<dir>/` entry, same algorithm as `claude-session-uuid`.
 
+**Derived package dependencies**: the `.deb`'s `Depends:` is read off the binaries in the build container, never written into `packaging/control`. The glibc floor moves with the base image, and a floor set too low installs cleanly then dies at exec on a symbol version. The `DT_NEEDED` soname list is derived the same way and mapped to packages; an unrecognized soname fails the build rather than shipping an under-declared package.
+
+**`Install` is a user action, not a packaging one**: the `Install` subcommand registers the MCP server into the invoking user's Claude Code config. It never runs from a maintainer script. The package ships the binary, shell completions and a copyright file, nothing else.
+
 **File-granularity index replacement**: `update_incremental` deletes and re-adds documents per source JSONL file (via exact match on the raw `source_file` STRING field), not per session. Main session files and subagent transcripts (`<uuid>/subagents/**/agent-*.jsonl`) share the same `sessionId`; deleting by session wiped all sibling files' documents whenever any one file was re-indexed.
 
 ## CLI/MCP Feature Parity
@@ -104,6 +108,16 @@ A pre-commit hook lives in `hooks/pre-commit` (runs fmt, clippy, tests). Install
 bash hooks/install.sh
 ```
 
+## Packaging
+
+`make deb` builds `claude-conversation-search_<version>_{amd64,arm64}.deb`. One container pass
+cross-compiles both Linux triples and writes the binaries, the per-arch glibc floor, the per-arch
+derived dependency list and the three shell completions into `dist/`. That directory is the only
+join point: the deb recipe runs natively and reads nothing else from the build.
+
+`packaging/control` is a template. The Makefile rewrites its `Version:`, `Architecture:` and
+`Depends:` lines; the placeholders are self-describing so an unsubstituted control file is obvious.
+
 ## Release Process
 
 1. Update version in `Cargo.toml`
@@ -111,12 +125,16 @@ bash hooks/install.sh
 3. Run `cargo clippy -- -D warnings` (CI uses `-D warnings`)
 4. Run `cargo test`
 5. Run `cargo build --release` (verify build succeeds)
-6. Add Cargo.lock: `git add -f Cargo.lock` (force-add despite .gitignore history)
-7. Commit: `git commit -m "bump: Version X.Y.Z"`
-8. Push and **wait for CI to pass**: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
-9. **Only after CI passes**: Tag: `git tag -as vX.Y.Z` (annotated + signed)
-10. Push tag: `git push --tags`
+6. Run `make deb` and check `dpkg-deb -I` on both packages: the `Depends:` line must carry a glibc floor and no unsubstituted placeholder
+7. Add Cargo.lock: `git add -f Cargo.lock` (force-add despite .gitignore history)
+8. Commit: `git commit -m "bump: Version X.Y.Z"`
+9. Push and **wait for CI to pass**: `gh run list -L1 --json databaseId -q '.[0].databaseId' | xargs gh run watch --exit-status`
+10. **Only after CI passes**: Tag: `git tag -as vX.Y.Z` (annotated + signed)
+11. Push tag: `git push --tags`
+12. CI leaves the release a draft. Sign and publish with `./sign-release.sh vX.Y.Z` — assets cannot be added once a release is published.
 
-Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.
+Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries and
+`.deb` packages. The packages are what https://apt.ticpu.net ingests, so a release missing them
+leaves the archive on the previous version.
 
 **Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=union` to avoid spurious merge conflicts. Do not stage `Cargo.lock` outside of the release process.
