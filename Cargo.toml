@@ -2,6 +2,14 @@
 name = "claude-conversation-search"
 version = "1.5.1"
 edition = "2024"
+authors = ["Jérôme Poulin <jeromepoulin@gmail.com>"]
+license = "GPL-3.0-only"
+description = "Full-text search over Claude Code conversation history, as a CLI and as an MCP server"
+repository = "https://github.com/ticpu/claude-conversation-search-mcp"
+homepage = "https://github.com/ticpu/claude-conversation-search-mcp"
+readme = "README.md"
+keywords = ["claude", "mcp", "search", "tantivy", "cli"]
+categories = ["command-line-utilities", "text-processing"]
 
 [features]
 default = []
