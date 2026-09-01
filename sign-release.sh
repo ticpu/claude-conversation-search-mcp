@@ -21,7 +21,8 @@ done
 
 TAG="${TAG:-v$(grep -Po '^version = "\K[^"]+' Cargo.toml)}"
 
-KEY=$(git config user.signingkey)
+# set -e would kill the script on git config's exit 1, before the message below
+KEY=$(git config user.signingkey || true)
 if [[ -z "$KEY" ]]; then
     echo "git config user.signingkey is unset: refusing to guess a signing key" >&2
     exit 1
