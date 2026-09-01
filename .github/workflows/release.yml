@@ -20,46 +20,39 @@ env:
 
 jobs:
   linux-binaries:
-    name: Build ${{ matrix.target }}
+    name: Build Linux binaries
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            artifact_name: claude-conversation-search-linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            artifact_name: claude-conversation-search-linux-aarch64
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Build binary in Debian container
-        run: |
-          docker build -f Containerfile --build-arg TARGET=${{ matrix.target }} -t ccs-build .
-          container=$(docker create ccs-build)
-          docker cp "$container:/out/claude-conversation-search" ${{ matrix.artifact_name }}
-          docker rm "$container"
+      # podman is preinstalled and takes --output type=local without buildx.
+      # Pinned rather than probed so CI cannot silently pick another runtime.
+      - name: Cross-compile both targets in a Debian container
+        run: make dist
         env:
-          DOCKER_BUILDKIT: 1
+          CONTAINER: podman
 
       - name: Check glibc floor
         run: |
-          max=$(readelf -V ${{ matrix.artifact_name }} | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
-          echo "highest glibc symbol version required: ${max:-none}"
-          if [ "$(printf '%s\n%s\n' "$max" "$GLIBC_MAX" | sort -V | tail -1)" != "$GLIBC_MAX" ]; then
-            echo "binary requires glibc newer than $GLIBC_MAX" >&2
-            exit 1
-          fi
+          for floor in dist/glibc-floor.*; do
+            max=$(cat "$floor")
+            echo "${floor##*/}: $max"
+            if [ "$(printf '%s\n%s\n' "$max" "$GLIBC_MAX" | sort -V | tail -1)" != "$GLIBC_MAX" ]; then
+              echo "binary requires glibc newer than $GLIBC_MAX" >&2
+              exit 1
+            fi
+          done
 
       - name: Smoke-test binary
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: ./${{ matrix.artifact_name }} --version
+        run: ./dist/claude-conversation-search.amd64 --version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}
+          name: linux-dist
+          path: dist/
+          if-no-files-found: error
 
   other-binaries:
     name: Build ${{ matrix.target }}
@@ -109,31 +102,58 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # Full history: the Makefile derives the package version from the tag,
+      # and a shallow checkout would stamp every .deb X.Y.Z+<sha>.
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Create tarball
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           git archive --format=tar --prefix="claude-conversation-search-${VERSION}/" HEAD | xz -c > "claude-conversation-search-${VERSION}.tar.xz"
 
-      - name: Download binaries
+      - name: Download Linux build
         uses: actions/download-artifact@v8
         with:
+          name: linux-dist
+          path: dist
+
+      - name: Download other binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: claude-conversation-search-*
           path: artifacts
+          merge-multiple: true
+
+      # The artifact loses mtimes, so make would otherwise refire the container
+      # build here. -exec reaches the completions, which dist/* does not.
+      - name: Build packages
+        run: |
+          find dist -exec touch {} +
+          make deb
+          mv dist/claude-conversation-search.amd64 claude-conversation-search-linux-x86_64
+          mv dist/claude-conversation-search.arm64 claude-conversation-search-linux-aarch64
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
             claude-conversation-search-*.tar.xz
-            artifacts/*/*
+            claude-conversation-search-linux-x86_64
+            claude-conversation-search-linux-aarch64
+            artifacts/claude-conversation-search-windows-x86_64.exe
+            artifacts/claude-conversation-search-macos-aarch64
+            claude-conversation-search_*.deb
           draft: true
           prerelease: false
           generate_release_notes: true
           append_body: true
           body: |
-            The Linux binaries are built on Debian 10 (glibc 2.28), so they run on
-            Debian 10+, Ubuntu 18.10+, RHEL 8+ and anything newer.
+            The Linux binaries and the `.deb` packages are built on Debian 10
+            (glibc 2.28), so they run on Debian 10+, Ubuntu 18.10+, RHEL 8+ and
+            anything newer. The packages are also available from
+            https://apt.ticpu.net.
 
             Release assets are signed; each has a detached `.asc` alongside it.
