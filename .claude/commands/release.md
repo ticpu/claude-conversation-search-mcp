@@ -23,3 +23,4 @@ Version lives ONLY in Cargo.toml. If $ARGUMENTS names a version or bump level (p
 
    Each should print the new version; troubleshoot only if it fails. AUR commits get no Co-Authored-By trailer.
 10. `git push` in **each** AUR clone — `update-pkg.sh` commits but does not push, so the release is not on AUR until this runs. Verify with `git status -sb` showing no ahead count. Do not poll the AUR RPC index to confirm: it refreshes minutes behind the push and will report the old version well after the release is live.
+11. Send the tag to whoever maintains https://apt.ticpu.net (source: github.com/ticpu/apt-ticpu-net) — ingest pulls the `.debs` from the published release and does not watch for new tags, so the archive stays on the previous version until told. Re-ingesting a tag already carried is a no-op, so a duplicate message costs nothing.
