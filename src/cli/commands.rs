@@ -1,12 +1,12 @@
 use crate::cli::index;
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Subcommand, ValueEnum};
 use std::collections::HashMap;
 use std::path::Path;
-use tracing::Level;
+use tracing::{Level, debug, error};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Subcommand)]
@@ -302,9 +302,15 @@ fn install(project_scope: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Invalid exe path"))?;
     let scope = if project_scope { "project" } else { "user" };
 
-    let _ = Command::new("claude")
+    match Command::new("claude")
         .args(["mcp", "remove", "-s", scope, "claude-conversation-search"])
-        .status();
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        // Nothing registered yet is the common case, so this is not an error.
+        Ok(status) => debug!("claude mcp remove exited with {}", status),
+        Err(e) => error!("Could not run claude mcp remove: {}", e),
+    }
 
     let status = Command::new("claude")
         .args([
@@ -315,7 +321,8 @@ fn install(project_scope: bool) -> Result<()> {
             "claude-conversation-search",
             exe_path,
         ])
-        .status()?;
+        .status()
+        .context("running claude mcp add")?;
 
     if !status.success() {
         anyhow::bail!("claude mcp add failed");
