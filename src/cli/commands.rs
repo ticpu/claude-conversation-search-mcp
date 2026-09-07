@@ -2,7 +2,7 @@ use crate::cli::index;
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder};
 use anyhow::Result;
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::Utc;
 use clap::{Subcommand, ValueEnum};
 use regex::Regex;
 use std::collections::HashMap;
@@ -237,11 +237,11 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                 sort: sort.into(),
                 after: after
                     .as_deref()
-                    .map(parse_date)
+                    .map(shared::parse_date)
                     .transpose()?,
                 before: before
                     .as_deref()
-                    .map(parse_date)
+                    .map(shared::parse_date)
                     .transpose()?,
                 display: DisplayOptions {
                     include_thinking: include.contains(&IncludeArg::Thinking),
@@ -416,20 +416,6 @@ struct SearchOpts {
     after: Option<chrono::DateTime<Utc>>,
     before: Option<chrono::DateTime<Utc>>,
     display: DisplayOptions,
-}
-
-fn parse_date(s: &str) -> Result<chrono::DateTime<Utc>> {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(Utc.from_utc_datetime(
-            &date
-                .and_hms_opt(0, 0, 0)
-                .unwrap(),
-        ));
-    }
-    anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
 }
 
 fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {

@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,8 +9,8 @@ use tracing::{debug, error};
 use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{
-    CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir,
-    get_config,
+    self, CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index,
+    get_cache_dir, get_config,
 };
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
@@ -31,22 +30,6 @@ fn json_strings(value: Option<&Value>) -> Vec<String> {
 }
 
 /// Parse date string: YYYY-MM-DD (as start of day UTC) or full ISO 8601
-fn parse_date(s: &str) -> Result<DateTime<Utc>, String> {
-    // Try full ISO 8601 first
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-    // Try YYYY-MM-DD
-    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(Utc.from_utc_datetime(
-            &date
-                .and_hms_opt(0, 0, 0)
-                .unwrap(),
-        ));
-    }
-    Err(format!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s))
-}
-
 // MCP Protocol Structures
 #[derive(Debug, Serialize, Deserialize)]
 struct JsonRpcRequest {
@@ -533,13 +516,13 @@ impl McpServer {
             .get("after")
             .and_then(|v| v.as_str())
         {
-            match parse_date(s) {
+            match shared::parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
                     return Ok(serde_json::to_value(CallToolResponse {
                         content: vec![ToolResult {
                             result_type: "text".to_string(),
-                            text: e,
+                            text: e.to_string(),
                         }],
                         is_error: Some(true),
                     })?);
@@ -553,13 +536,13 @@ impl McpServer {
             .get("before")
             .and_then(|v| v.as_str())
         {
-            match parse_date(s) {
+            match shared::parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
                     return Ok(serde_json::to_value(CallToolResponse {
                         content: vec![ToolResult {
                             result_type: "text".to_string(),
-                            text: e,
+                            text: e.to_string(),
                         }],
                         is_error: Some(true),
                     })?);

@@ -4,13 +4,28 @@ use super::indexer::SearchIndexer;
 use super::lock::ExclusiveIndexAccess;
 use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
+}
+
+/// Parse a date as full ISO 8601 or YYYY-MM-DD
+pub fn parse_date(s: &str) -> Result<DateTime<Utc>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(Utc.from_utc_datetime(
+            &date
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        ));
+    }
+    anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
 }
 
 /// Get file modification time as DateTime<Utc>
