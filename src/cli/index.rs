@@ -9,7 +9,6 @@ pub fn show_status(index_path: &Path) -> Result<()> {
     println!("Index Status");
     println!("============");
 
-    // Check lock status
     if ExclusiveIndexAccess::is_available() {
         println!("Lock Status: Available");
     } else if SharedIndexAccess::is_available() {
@@ -23,7 +22,6 @@ pub fn show_status(index_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Try to acquire shared lock to read stats
     let _lock = match SharedIndexAccess::acquire() {
         Ok(lock) => lock,
         Err(e) => {
@@ -68,7 +66,6 @@ pub fn show_status(index_path: &Path) -> Result<()> {
 pub fn rebuild(index_path: &Path) -> Result<()> {
     info!("Starting index rebuild...");
 
-    // Acquire exclusive lock
     let _lock = ExclusiveIndexAccess::acquire()?;
 
     let mut cache_manager = CacheManager::new(index_path)?;
@@ -87,7 +84,6 @@ pub fn rebuild(index_path: &Path) -> Result<()> {
 pub fn vacuum(index_path: &Path) -> Result<()> {
     info!("Starting index vacuum operation...");
 
-    // Acquire exclusive lock
     let _lock = ExclusiveIndexAccess::acquire()?;
 
     if !index_path.exists() {
@@ -95,9 +91,6 @@ pub fn vacuum(index_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // For now, vacuum is essentially a rebuild since Tantivy doesn't have
-    // built-in vacuum. In the future, we could implement a more sophisticated
-    // approach that only removes deleted entries.
     println!("Vacuuming index by rebuilding...");
     rebuild(index_path)?;
 

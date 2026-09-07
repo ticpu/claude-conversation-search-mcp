@@ -51,7 +51,6 @@ pub fn truncate_content(s: &str, max_chars: usize, collapse_whitespace: bool) ->
 pub fn auto_index(index_path: &Path) -> Result<()> {
     let config = get_config();
 
-    // Skip auto-indexing if disabled in config
     if !config
         .index
         .auto_index_on_startup
@@ -59,7 +58,6 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Try to acquire exclusive lock for indexing
     let _lock = match ExclusiveIndexAccess::acquire() {
         Ok(lock) => lock,
         Err(_) => {

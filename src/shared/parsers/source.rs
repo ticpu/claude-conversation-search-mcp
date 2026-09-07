@@ -78,7 +78,6 @@ mod tests {
 
     #[test]
     fn test_non_agent_in_subagents_dir() {
-        // A file in subagents/ that isn't named agent-*.jsonl is still MainSession
         let path = PathBuf::from(
             "/home/user/.claude/projects/-home-user-GIT-myproject/abc12345/subagents/summary.jsonl",
         );

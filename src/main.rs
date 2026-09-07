@@ -18,7 +18,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Set up panic hook to handle broken pipe errors gracefully
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let panic_message = format!("{panic_info}");

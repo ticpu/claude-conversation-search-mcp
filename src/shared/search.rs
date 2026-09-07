@@ -55,8 +55,6 @@ fn project_matches(project_path: &str, filter: &str) -> bool {
 }
 
 /// Maximum messages to retrieve per session.
-/// Claude Code sessions rarely exceed 1000 messages; this limit prevents
-/// runaway queries while covering all realistic session sizes.
 const MAX_SESSION_MESSAGES: usize = 5000;
 
 pub struct SearchEngine {

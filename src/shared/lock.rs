@@ -35,7 +35,6 @@ impl IndexLock {
             .locking
             .enabled
         {
-            // Create a dummy lock file for consistency
             let lock_path = config.get_lock_file_path()?;
             if let Some(parent) = lock_path.parent() {
                 std::fs::create_dir_all(parent)?;
