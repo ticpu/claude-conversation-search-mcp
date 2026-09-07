@@ -2,7 +2,7 @@ use super::indexer::SearchIndexer;
 use super::models::MessageType;
 use super::parsers::{JsonlParser, SourceKind};
 use super::utils::file_mtime;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -59,8 +59,10 @@ impl CacheManager {
         let metadata_file = cache_dir.join("cache-metadata.json");
 
         let metadata = if metadata_file.exists() {
-            let content = fs::read_to_string(&metadata_file)?;
-            serde_json::from_str(&content).unwrap_or_default()
+            let content = fs::read_to_string(&metadata_file)
+                .with_context(|| format!("reading {}", metadata_file.display()))?;
+            serde_json::from_str(&content)
+                .with_context(|| format!("parsing {}", metadata_file.display()))?
         } else {
             CacheMetadata::default()
         };
