@@ -399,7 +399,7 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
 fn clear_cache(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
-    println!("Cache cleared successfully. Run 'claude-search index' to rebuild.");
+    println!("Cache cleared successfully. Run 'claude-conversation-search index' to rebuild.");
     Ok(())
 }
 
@@ -420,7 +420,7 @@ struct SearchOpts {
 
 fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'claude-conversation-search index' first.");
         return Ok(());
     }
 
@@ -525,7 +525,7 @@ fn print_topic_section(
 
 fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) -> Result<()> {
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'claude-conversation-search index' first.");
         return Ok(());
     }
 
@@ -623,7 +623,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
 
 fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'claude-conversation-search index' first.");
         return Ok(());
     }
 

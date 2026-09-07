@@ -287,7 +287,7 @@ impl McpServer {
                 },
             },
             server_info: ServerInfo {
-                name: "claude-search-mcp".to_string(),
+                name: "claude-conversation-search".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         };
