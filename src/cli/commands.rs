@@ -181,6 +181,7 @@ pub fn setup_logging(verbose: u8) {
     };
 
     FmtSubscriber::builder()
+        .with_writer(std::io::stderr)
         .with_max_level(level)
         .with_target(false)
         .with_file(false)
