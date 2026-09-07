@@ -61,6 +61,34 @@ fn hyphenated_term_query(field: Field, value: &str) -> BooleanQuery {
     BooleanQuery::new(segment_queries)
 }
 
+fn doc_str_opt(doc: &TantivyDocument, field: Field) -> Option<&str> {
+    doc.get_first(field)
+        .and_then(|v| v.as_str())
+}
+
+fn doc_str(doc: &TantivyDocument, field: Field) -> String {
+    doc_str_opt(doc, field)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn doc_bool(doc: &TantivyDocument, field: Field) -> bool {
+    doc.get_first(field)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Space-separated list field, as stored by the indexer.
+fn doc_str_list(doc: &TantivyDocument, field: Field) -> Vec<String> {
+    doc_str_opt(doc, field)
+        .map(|s| {
+            s.split_whitespace()
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn project_matches(project_path: &str, filter: &str) -> bool {
     let filter_name = Path::new(filter)
         .file_name()
@@ -449,35 +477,13 @@ impl SearchEngine {
     }
 
     fn doc_to_result(&self, doc: &TantivyDocument) -> Result<SearchResult> {
-        let uuid = doc
-            .get_first(self.uuid_field)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let content = doc
-            .get_first(self.content_field)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let project = doc
-            .get_first(self.project_field)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let project_path = doc
-            .get_first(self.cwd_field)
-            .and_then(|v| v.as_str())
+        let uuid = doc_str(doc, self.uuid_field);
+        let content = doc_str(doc, self.content_field);
+        let project = doc_str(doc, self.project_field);
+        let project_path = doc_str_opt(doc, self.cwd_field)
             .unwrap_or(&project)
             .to_string();
-
-        let session_id = doc
-            .get_first(self.session_field)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let session_id = doc_str(doc, self.session_field);
 
         let timestamp = doc
             .get_first(self.timestamp_field)
@@ -487,52 +493,16 @@ impl SearchEngine {
             })
             .unwrap_or_else(Utc::now);
 
-        let stored_type = doc
-            .get_first(self.message_type_field)
-            .and_then(|v| v.as_str())
+        let stored_type = doc_str_opt(doc, self.message_type_field)
             .ok_or_else(|| anyhow!("document {uuid} has no message_type field"))?;
         let message_type = MessageType::from_str(stored_type)
             .with_context(|| format!("document {uuid} carries an unindexable message type"))?;
 
-        let technologies = doc
-            .get_first(self.technologies_field)
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                s.split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let code_languages = doc
-            .get_first(self.code_languages_field)
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                s.split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let tools_mentioned = doc
-            .get_first(self.tools_mentioned_field)
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                s.split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let has_code = doc
-            .get_first(self.has_code_field)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let has_error = doc
-            .get_first(self.has_error_field)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let technologies = doc_str_list(doc, self.technologies_field);
+        let code_languages = doc_str_list(doc, self.code_languages_field);
+        let tools_mentioned = doc_str_list(doc, self.tools_mentioned_field);
+        let has_code = doc_bool(doc, self.has_code_field);
+        let has_error = doc_bool(doc, self.has_error_field);
 
         let sequence_num = doc
             .get_first(self.sequence_num_field)
