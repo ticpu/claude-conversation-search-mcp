@@ -1,4 +1,5 @@
 use crate::cli::search::index_exists_or_notify;
+use crate::shared::cache_stats::CacheStats;
 use crate::shared::{self, SearchQuery, SortOrder};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -130,18 +131,24 @@ pub(crate) fn show_topics(
     Ok(())
 }
 
-pub(crate) fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
-    if !index_exists_or_notify(index_path) {
-        return Ok(());
-    }
+/// Aggregated numbers behind `show_stats`: cache totals plus per-conversation
+/// counts over the sampled search results.
+struct StatsAggregate {
+    cache_stats: CacheStats,
+    sampled: usize,
+    code_conversations: i32,
+    error_conversations: i32,
+    total_interactions: usize,
+    session_counts: HashMap<String, i32>,
+}
 
+fn aggregate_stats(index_path: &Path, project_filter: Option<String>) -> Result<StatsAggregate> {
     let (cache_manager, search_engine) = shared::open_search_engine(index_path)?;
     let cache_stats = cache_manager.get_stats();
 
-    // Get conversation stats
     let query = SearchQuery {
         text: "*".to_string(),
-        project_filter: project_filter.clone(),
+        project_filter,
         session_filter: None,
         limit: 1_000_000,
         sort_by: SortOrder::default(),
@@ -175,6 +182,23 @@ pub(crate) fn show_stats(index_path: &Path, project_filter: Option<String>) -> R
             .or_insert(1);
     }
 
+    Ok(StatsAggregate {
+        cache_stats,
+        sampled: results.len(),
+        code_conversations,
+        error_conversations,
+        total_interactions,
+        session_counts,
+    })
+}
+
+pub(crate) fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
+    if !index_exists_or_notify(index_path) {
+        return Ok(());
+    }
+
+    let stats = aggregate_stats(index_path, project_filter.clone())?;
+
     if let Some(ref project) = project_filter {
         println!("📊 Statistics for project: {project}\n");
     } else {
@@ -182,10 +206,23 @@ pub(crate) fn show_stats(index_path: &Path, project_filter: Option<String>) -> R
     }
 
     println!("Cache Information:");
-    println!("  📁 Total files indexed: {}", cache_stats.total_files);
-    println!("  💾 Cache size: {:.2} MB", cache_stats.cache_size_mb);
+    println!(
+        "  📁 Total files indexed: {}",
+        stats
+            .cache_stats
+            .total_files
+    );
+    println!(
+        "  💾 Cache size: {:.2} MB",
+        stats
+            .cache_stats
+            .cache_size_mb
+    );
 
-    if let Some(last_updated) = cache_stats.last_updated {
+    if let Some(last_updated) = stats
+        .cache_stats
+        .last_updated
+    {
         println!(
             "  🕒 Last updated: {}",
             last_updated.format("%Y-%m-%d %H:%M UTC")
@@ -194,12 +231,19 @@ pub(crate) fn show_stats(index_path: &Path, project_filter: Option<String>) -> R
 
     println!();
 
-    let total_indexed = cache_stats.total_entries as usize;
-    let sampled = results.len();
+    let total_indexed = stats
+        .cache_stats
+        .total_entries as usize;
+    let sampled = stats.sampled;
 
     println!("Conversation Analysis:");
     println!("  💬 Total messages indexed: {}", total_indexed);
-    println!("  🏗️ Unique sessions: {}", session_counts.len());
+    println!(
+        "  🏗️ Unique sessions: {}",
+        stats
+            .session_counts
+            .len()
+    );
     if sampled < total_indexed {
         println!(
             "  📊 Sampled for stats: {} ({:.1}%)",
@@ -209,29 +253,32 @@ pub(crate) fn show_stats(index_path: &Path, project_filter: Option<String>) -> R
     }
     println!(
         "  📝 Messages with code: {} ({:.1}%)",
-        code_conversations,
-        (code_conversations as f64 / sampled as f64) * 100.0
+        stats.code_conversations,
+        (stats.code_conversations as f64 / sampled as f64) * 100.0
     );
     println!(
         "  🚨 Messages with errors: {} ({:.1}%)",
-        error_conversations,
-        (error_conversations as f64 / sampled as f64) * 100.0
+        stats.error_conversations,
+        (stats.error_conversations as f64 / sampled as f64) * 100.0
     );
     println!(
         "  💬 Total interactions: {} (avg: {} per conversation)",
-        total_interactions,
-        if !results.is_empty() {
-            total_interactions / results.len()
-        } else {
-            0
-        }
+        stats.total_interactions,
+        stats
+            .total_interactions
+            .checked_div(sampled)
+            .unwrap_or(0)
     );
 
     // Show most active sessions
-    if !session_counts.is_empty() {
+    if !stats
+        .session_counts
+        .is_empty()
+    {
         println!();
         println!("Most Active Sessions:");
-        let mut sorted_sessions: Vec<_> = session_counts
+        let mut sorted_sessions: Vec<_> = stats
+            .session_counts
             .iter()
             .collect();
         sorted_sessions.sort_by(|a, b| {
