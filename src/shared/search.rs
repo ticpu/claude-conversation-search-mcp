@@ -43,6 +43,24 @@ fn build_project_query(project_field: Field, filter: &str) -> Box<dyn tantivy::q
     Box::new(BooleanQuery::new(segment_queries))
 }
 
+/// Build a Boolean AND of TermQuery per hyphen segment of `value`.
+/// The TEXT field tokenizes at hyphens, so a UUID or session id must be
+/// matched segment by segment rather than as a single term.
+fn hyphenated_term_query(field: Field, value: &str) -> BooleanQuery {
+    let segment_queries: Vec<_> = value
+        .split('-')
+        .map(|seg| {
+            let term = Term::from_field_text(field, seg);
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+                    as Box<dyn tantivy::query::Query>,
+            )
+        })
+        .collect();
+    BooleanQuery::new(segment_queries)
+}
+
 fn project_matches(project_path: &str, filter: &str) -> bool {
     let filter_name = Path::new(filter)
         .file_name()
@@ -142,22 +160,7 @@ impl SearchEngine {
         }
 
         if let Some(ref session_filter) = query.session_filter {
-            // Split on hyphens like get_session_messages - TEXT fields tokenize at hyphens
-            let segments: Vec<_> = session_filter
-                .split('-')
-                .collect();
-            let segment_queries: Vec<_> = segments
-                .iter()
-                .map(|seg| {
-                    let term = Term::from_field_text(self.session_field, seg);
-                    (
-                        Occur::Must,
-                        Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                            as Box<dyn tantivy::query::Query>,
-                    )
-                })
-                .collect();
-            let session_query = BooleanQuery::new(segment_queries);
+            let session_query = hyphenated_term_query(self.session_field, session_filter);
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
@@ -383,24 +386,7 @@ impl SearchEngine {
             .reader
             .searcher();
 
-        // Use TermQuery on each UUID segment for exact matching
-        // Session IDs are UUIDs like "9e1e6a58-cd5a-4651-a9fd-c24c04cb8809"
-        // TEXT field tokenizes at hyphens, so we match all segments with AND
-        let segments: Vec<_> = session_id
-            .split('-')
-            .collect();
-        let segment_queries: Vec<_> = segments
-            .iter()
-            .map(|seg| {
-                let term = Term::from_field_text(self.session_field, seg);
-                (
-                    Occur::Must,
-                    Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                        as Box<dyn tantivy::query::Query>,
-                )
-            })
-            .collect();
-        let query = BooleanQuery::new(segment_queries);
+        let query = hyphenated_term_query(self.session_field, session_id);
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
 
@@ -431,22 +417,7 @@ impl SearchEngine {
         let mut results = Vec::new();
 
         for uuid in uuids {
-            // UUID is stored as TEXT, tokenized at hyphens
-            let segments: Vec<_> = uuid
-                .split('-')
-                .collect();
-            let segment_queries: Vec<_> = segments
-                .iter()
-                .map(|seg| {
-                    let term = Term::from_field_text(self.uuid_field, seg);
-                    (
-                        Occur::Must,
-                        Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                            as Box<dyn tantivy::query::Query>,
-                    )
-                })
-                .collect();
-            let query = BooleanQuery::new(segment_queries);
+            let query = hyphenated_term_query(self.uuid_field, uuid);
 
             let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
 
