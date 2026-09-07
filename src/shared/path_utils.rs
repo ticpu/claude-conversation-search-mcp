@@ -1,7 +1,9 @@
 use super::config::get_config;
 use anyhow::Result;
 use glob::glob;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// Extract first 8 characters of a UUID for display
 pub fn short_uuid(uuid: &str) -> &str {
@@ -75,21 +77,10 @@ pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Find the JSONL file for the currently active Claude session by walking up from `cwd`
-/// until a matching `.claude/projects/<dir>/` is found.
-/// Returns the most-recently-modified JSONL in that project directory.
-///
-/// Note: this is only reliable when `cwd` reflects the actual current project.
-/// For long-lived daemons whose cwd is fixed at startup, use
-/// [`globally_active_session_jsonl`] instead.
-pub fn active_session_jsonl(cwd: &Path) -> Option<PathBuf> {
-    let projects = projects_dir().ok()?;
-    find_session_in_projects(cwd, &projects)
-}
-
 /// Walk up from `cwd` through `projects`, returning the most-recently-modified
 /// JSONL for the first matching project directory found.
-pub(crate) fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<PathBuf> {
+#[cfg(test)]
+fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<PathBuf> {
     let mut current = cwd;
     loop {
         let dir_name = project_dir_name(&current.to_string_lossy());
@@ -159,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_active_session_jsonl_finds_session() {
+    fn test_find_session_in_projects_finds_session() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -179,8 +170,6 @@ mod tests {
         let session_file = project_dir.join("abc123.jsonl");
         fs::write(&session_file, b"{}").unwrap();
 
-        // active_session_jsonl uses projects_dir() which goes through config,
-        // so test the walk-up logic directly with a known projects base.
         let found = find_session_in_projects(
             &cwd,
             &root
@@ -191,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_active_session_jsonl_walks_up() {
+    fn test_find_session_in_projects_walks_up() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
 
@@ -223,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_active_session_jsonl_not_found() {
+    fn test_find_session_in_projects_not_found() {
         let tmp = TempDir::new().unwrap();
         let cwd = tmp
             .path()
