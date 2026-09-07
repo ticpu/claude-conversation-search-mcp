@@ -162,8 +162,12 @@ When resuming a session:
 
 ### Across Files (Resumed Sessions)
 - Same `uuid` appearing in different files indicates session resume
-- Detection: UUID set intersection between files
-- Strategy: Skip messages with already-indexed UUIDs
+- The indexer does not deduplicate by `uuid` at index time: replacement is per source file
+  (`delete_source_file` deletes and re-adds all documents for one JSONL path, keyed on the exact
+  `source_file` field), so a duplicated message in a resumed session's new file is indexed
+  alongside the original in the old file
+- Search results are deduplicated by session (one hit per `session_id` in a result page), which
+  hides most of the visible effect without removing the duplicate index entries
 
 ## Agent Files
 
@@ -212,11 +216,11 @@ All assistant messages include:
 ### Index (SIGNAL)
 - `text` content blocks - full
 - `thinking` blocks - full (valuable reasoning)
-- `tool_use` - name field only, truncate input to 200 chars
+- `tool_use` - name field only, input truncated to `limits.tool_input_max_chars` (default 200)
 - `summary` type messages
 
 ### Skip (NOISE)
-- `tool_result` content - truncate to 500 chars, preserve `is_error` flag
+- `tool_result` content - truncated to `limits.tool_result_max_chars` (default 2000), preserve `is_error` flag
 - `file-history-snapshot` - no searchable content
 - `queue-operation` - internal administrative
 
