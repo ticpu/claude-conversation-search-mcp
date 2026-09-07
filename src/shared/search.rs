@@ -679,40 +679,6 @@ impl SearchEngine {
             .copied()
             .unwrap_or(0)
     }
-
-    pub fn get_all_documents(
-        &self,
-        project_filter: Option<String>,
-        limit: usize,
-    ) -> Result<Vec<SearchResult>> {
-        let searcher = self
-            .reader
-            .searcher();
-
-        let query: Box<dyn tantivy::query::Query> = if let Some(ref project_filter) = project_filter
-        {
-            build_project_query(self.project_field, project_filter)
-        } else {
-            Box::new(tantivy::query::AllQuery)
-        };
-
-        let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit))?;
-
-        let mut results = Vec::new();
-        for (_score, doc_address) in top_docs {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?, 1.0, "")?;
-
-            if let Some(ref project_filter) = project_filter
-                && !project_matches(&result.project_path, project_filter)
-            {
-                continue;
-            }
-
-            results.push(result);
-        }
-
-        Ok(results)
-    }
 }
 
 /// Search result with surrounding context messages
@@ -770,15 +736,6 @@ fn filter_content(s: &str, opts: &DisplayOptions) -> Option<String> {
 }
 
 impl SearchResultWithContext {
-    /// Format as grep -C style output - compact and dense
-    /// Format: N. 📁 ~/path 🗒️ session (M msgs) 💬 msg_uuid
-    ///            User: content preview...
-    ///         »  AI: matched content...
-    ///            User: content...
-    pub fn format_compact(&self, index: usize) -> String {
-        self.format_compact_with_options(index, &DisplayOptions::default())
-    }
-
     /// Format with display options
     pub fn format_compact_with_options(&self, index: usize, opts: &DisplayOptions) -> String {
         let mut output = String::new();
@@ -870,91 +827,6 @@ impl SearchResultWithContext {
 
             output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
         }
-    }
-
-    /// Format with more detail for verbose output
-    pub fn format_verbose(&self, index: usize) -> String {
-        let mut output = String::new();
-
-        output.push_str(&format!(
-            "{}. [{}] {} | {} | score: {:.2}\n",
-            index + 1,
-            self.matched_message
-                .project,
-            self.matched_message
-                .timestamp
-                .format("%Y-%m-%d %H:%M"),
-            short_uuid(
-                &self
-                    .matched_message
-                    .session_id
-            ),
-            self.matched_message
-                .score,
-        ));
-        output.push_str(&format!(
-            "   {} msgs in session | uuid: {}\n",
-            self.total_session_messages,
-            short_uuid(
-                &self
-                    .matched_message
-                    .uuid
-            ),
-        ));
-
-        // Metadata tags on one line
-        let mut tags = Vec::new();
-        if !self
-            .matched_message
-            .technologies
-            .is_empty()
-        {
-            tags.push(
-                self.matched_message
-                    .technologies
-                    .join(","),
-            );
-        }
-        if !self
-            .matched_message
-            .code_languages
-            .is_empty()
-        {
-            tags.push(
-                self.matched_message
-                    .code_languages
-                    .join(","),
-            );
-        }
-        if self
-            .matched_message
-            .has_code
-        {
-            tags.push("code".to_string());
-        }
-        if self
-            .matched_message
-            .has_error
-        {
-            tags.push("error".to_string());
-        }
-        if !tags.is_empty() {
-            output.push_str(&format!("   tags: {}\n", tags.join(" ")));
-        }
-
-        // Context messages
-        let default_opts = DisplayOptions::default();
-        for (i, msg) in self
-            .context_messages
-            .iter()
-            .enumerate()
-        {
-            let prefix = if i == self.match_index { ">> " } else { "   " };
-            let content = truncate_content(&msg.content, default_opts.truncate_length, true);
-            output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
-        }
-
-        output
     }
 }
 
@@ -1195,58 +1067,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 0, "Should find 0 results for wrong project");
-    }
-
-    #[test]
-    fn test_project_filter_get_all_documents() {
-        let temp_dir = TempDir::new().unwrap();
-        let index_path = temp_dir.path();
-
-        let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        let entries = vec![
-            make_entry_with_project(
-                "uuid-1",
-                session_id,
-                MessageType::User,
-                "hello",
-                0,
-                "freeswitch-database_utils",
-                "/mnt/bcachefs/@home/user/GIT/freeswitch-database_utils",
-            ),
-            make_entry_with_project(
-                "uuid-2",
-                session_id,
-                MessageType::User,
-                "world",
-                1,
-                "claude-conversation-search-mcp",
-                "/mnt/bcachefs/@home/user/GIT/claude-conversation-search-mcp",
-            ),
-        ];
-
-        let mut indexer = SearchIndexer::new(index_path).unwrap();
-        indexer
-            .index_conversations(entries, "test-source.jsonl")
-            .unwrap();
-        indexer
-            .commit()
-            .unwrap();
-        drop(indexer);
-
-        let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
-
-        let results = engine
-            .get_all_documents(
-                Some("/mnt/bcachefs/@home/user/GIT/freeswitch-database_utils".to_string()),
-                10,
-            )
-            .unwrap();
-
-        assert_eq!(
-            results.len(),
-            1,
-            "Should find 1 document for freeswitch-database_utils"
-        );
     }
 
     #[test]
