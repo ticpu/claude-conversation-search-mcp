@@ -1,9 +1,9 @@
 use crate::cli::args::{CacheAction, CliCommands, IncludeArg, IndexAction, setup_logging};
 use crate::cli::index;
+use crate::cli::search::{SearchOpts, index_exists_or_notify, search_conversations};
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder};
 use anyhow::{Context, Result};
-use chrono::Utc;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::{debug, error};
@@ -210,94 +210,6 @@ fn clear_cache(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
     println!("Cache cleared successfully. Run 'claude-conversation-search index' to rebuild.");
-    Ok(())
-}
-
-struct SearchOpts {
-    query: String,
-    project: Option<String>,
-    session: Option<String>,
-    limit: usize,
-    context_before: usize,
-    context_after: usize,
-    exclude_projects: Vec<String>,
-    exclude_patterns: Vec<String>,
-    sort: SortOrder,
-    after: Option<chrono::DateTime<Utc>>,
-    before: Option<chrono::DateTime<Utc>>,
-    display: DisplayOptions,
-}
-
-/// True if the index exists; otherwise prints the standard "not found" message.
-fn index_exists_or_notify(index_path: &Path) -> bool {
-    if index_path.exists() {
-        return true;
-    }
-    println!("Index not found. Please run 'claude-conversation-search index' first.");
-    false
-}
-
-fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
-    if !index_exists_or_notify(index_path) {
-        return Ok(());
-    }
-
-    let config = shared::get_config();
-    let mut all_exclude_patterns = config
-        .search
-        .exclude_patterns
-        .clone();
-    all_exclude_patterns.extend(opts.exclude_patterns);
-
-    let exclude_regexes = shared::compile_exclude_patterns(&all_exclude_patterns)?;
-
-    let (_cache, search_engine) = shared::open_search_engine(index_path)?;
-
-    let query = SearchQuery {
-        text: opts.query,
-        project_filter: opts.project,
-        session_filter: opts.session,
-        limit: opts.limit * 3,
-        sort_by: opts.sort,
-        after: opts.after,
-        before: opts.before,
-    };
-
-    let results =
-        search_engine.search_with_context(query, opts.context_before, opts.context_after)?;
-
-    let filtered = shared::apply_search_filters(
-        results,
-        &shared::ResultFilter {
-            exclude_projects: opts.exclude_projects,
-            exclude_regexes,
-            active_session: None,
-            limit: opts.limit,
-        },
-    );
-
-    if filtered.is_empty() {
-        println!("No results found.");
-        return Ok(());
-    }
-
-    let ctx_display = if opts.context_before == opts.context_after {
-        format!("-C {}", opts.context_before)
-    } else {
-        format!("-B {} -A {}", opts.context_before, opts.context_after)
-    };
-    println!("Found {} results ({}):\n", filtered.len(), ctx_display);
-
-    for (i, result) in filtered
-        .iter()
-        .enumerate()
-    {
-        print!("{}", result.format_compact_with_options(i, &opts.display));
-        if i < filtered.len() - 1 {
-            println!();
-        }
-    }
-
     Ok(())
 }
 
