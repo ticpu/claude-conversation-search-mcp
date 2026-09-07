@@ -566,6 +566,60 @@ pub struct SearchResultWithContext {
     pub total_session_messages: usize,
 }
 
+/// Post-search filtering: excluded projects, excluded path/project regexes,
+/// an optional session to drop (the one currently being written), and the
+/// result cap applied after dedup.
+#[derive(Debug, Default)]
+pub struct ResultFilter {
+    pub exclude_projects: Vec<String>,
+    pub exclude_regexes: Vec<regex::Regex>,
+    pub active_session: Option<String>,
+    pub limit: usize,
+}
+
+/// Drop excluded projects/patterns and the active session (if set), then
+/// deduplicate by session id and cap at `filter.limit`.
+pub fn apply_search_filters(
+    results: Vec<SearchResultWithContext>,
+    filter: &ResultFilter,
+) -> Vec<SearchResultWithContext> {
+    let mut session_seen = std::collections::HashSet::new();
+    results
+        .into_iter()
+        .filter(|r| {
+            let proj = &r
+                .matched_message
+                .project;
+            let path = &r
+                .matched_message
+                .project_path;
+            let session = &r
+                .matched_message
+                .session_id;
+
+            if let Some(ref active) = filter.active_session
+                && session == active
+            {
+                return false;
+            }
+
+            if filter
+                .exclude_projects
+                .contains(proj)
+            {
+                return false;
+            }
+            for regex in &filter.exclude_regexes {
+                if regex.is_match(proj) || regex.is_match(path) {
+                    return false;
+                }
+            }
+            session_seen.insert(session.clone())
+        })
+        .take(filter.limit)
+        .collect()
+}
+
 /// Options for what to include in search result display
 #[derive(Debug, Clone)]
 pub struct DisplayOptions {

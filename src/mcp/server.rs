@@ -595,41 +595,15 @@ impl McpServer {
         let results_with_context =
             search_engine.search_with_context(query, context_before, context_after)?;
 
-        // Filter and deduplicate
-        let mut session_seen = std::collections::HashSet::new();
-        let filtered: Vec<_> = results_with_context
-            .into_iter()
-            .filter(|r| {
-                let proj = &r
-                    .matched_message
-                    .project;
-                let path = &r
-                    .matched_message
-                    .project_path;
-                let session = &r
-                    .matched_message
-                    .session_id;
-
-                // Exclude current session unless explicitly included
-                if let Some(ref current) = current_session_id
-                    && session == current
-                {
-                    return false;
-                }
-
-                if exclude_projects.contains(proj) {
-                    return false;
-                }
-                for regex in &exclude_regexes {
-                    if regex.is_match(proj) || regex.is_match(path) {
-                        return false;
-                    }
-                }
-                // Deduplicate by session
-                session_seen.insert(session.clone())
-            })
-            .take(limit)
-            .collect();
+        let filtered = shared::apply_search_filters(
+            results_with_context,
+            &shared::ResultFilter {
+                exclude_projects: exclude_projects.clone(),
+                exclude_regexes,
+                active_session: current_session_id.clone(),
+                limit,
+            },
+        );
 
         let mut output = String::new();
 

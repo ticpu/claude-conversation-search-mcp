@@ -457,36 +457,15 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     let results =
         search_engine.search_with_context(query, opts.context_before, opts.context_after)?;
 
-    let mut session_seen = std::collections::HashSet::new();
-    let filtered: Vec<_> = results
-        .into_iter()
-        .filter(|r| {
-            let proj = &r
-                .matched_message
-                .project;
-            let path = &r
-                .matched_message
-                .project_path;
-
-            if opts
-                .exclude_projects
-                .contains(proj)
-            {
-                return false;
-            }
-            for regex in &exclude_regexes {
-                if regex.is_match(proj) || regex.is_match(path) {
-                    return false;
-                }
-            }
-            session_seen.insert(
-                r.matched_message
-                    .session_id
-                    .clone(),
-            )
-        })
-        .take(opts.limit)
-        .collect();
+    let filtered = shared::apply_search_filters(
+        results,
+        &shared::ResultFilter {
+            exclude_projects: opts.exclude_projects,
+            exclude_regexes,
+            active_session: None,
+            limit: opts.limit,
+        },
+    );
 
     if filtered.is_empty() {
         println!("No results found.");
