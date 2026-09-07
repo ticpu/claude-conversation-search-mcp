@@ -1,9 +1,10 @@
 use super::config::get_config;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use glob::glob;
-#[cfg(test)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use tracing::error;
 
 /// Extract first 8 characters of a UUID for display
 pub fn short_uuid(uuid: &str) -> &str {
@@ -52,27 +53,134 @@ pub fn session_jsonl_path(project_path: &str, session_id: &str) -> Option<PathBu
     )
 }
 
+/// Counts the entries a walk could not read and reports them as one line when
+/// the walk ends: one unreadable directory among thousands must neither fail
+/// the walk nor bury its result under a line per path.
+struct SkipTally {
+    root: PathBuf,
+    skipped: usize,
+    first: Option<String>,
+}
+
+impl SkipTally {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            skipped: 0,
+            first: None,
+        }
+    }
+
+    fn keep_readable(&mut self, entry: glob::GlobResult) -> Option<PathBuf> {
+        match entry {
+            Ok(path) => Some(path),
+            Err(e) => {
+                if first_report_of(e.path()) {
+                    self.skipped += 1;
+                    self.first
+                        .get_or_insert_with(|| {
+                            format!(
+                                "{}: {}",
+                                e.path()
+                                    .display(),
+                                e.error()
+                            )
+                        });
+                }
+                None
+            }
+        }
+    }
+}
+
+impl Drop for SkipTally {
+    fn drop(&mut self) {
+        let Some(first) = self
+            .first
+            .as_deref()
+        else {
+            return;
+        };
+        if self.skipped == 1 {
+            error!(
+                "Skipped one unreadable path under {}: {}",
+                self.root
+                    .display(),
+                first
+            );
+        } else {
+            error!(
+                "Skipped {} unreadable paths under {} (first: {})",
+                self.skipped,
+                self.root
+                    .display(),
+                first
+            );
+        }
+    }
+}
+
+/// True the first time this process meets `path`. Several walks cross the same
+/// unreadable directory, and repeating it once per walk tells nobody anything.
+fn first_report_of(path: &Path) -> bool {
+    static REPORTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    REPORTED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut reported| reported.insert(path.to_path_buf()))
+        .unwrap_or(true)
+}
+
 /// Find a session's JSONL file by session ID (prefix match).
 /// Searches all project directories for a file named `<session_id>.jsonl`.
 pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
-    let pattern = projects_dir()?.join("**/*.jsonl");
-    for path in glob(&pattern.to_string_lossy())?.flatten() {
-        if let Some(stem) = path
+    let root = projects_dir()?;
+    let pattern = root.join("**/*.jsonl");
+    let mut tally = SkipTally::new(&root);
+    let mut prefix_matches: Vec<PathBuf> = Vec::new();
+    for path in glob(&pattern.to_string_lossy())?.filter_map(|e| tally.keep_readable(e)) {
+        let Some(stem) = path
             .file_stem()
             .and_then(|s| s.to_str())
-            && (stem == session_id || stem.starts_with(session_id))
-        {
+        else {
+            continue;
+        };
+        if stem == session_id {
             return Ok(Some(path));
         }
+        if stem.starts_with(session_id) {
+            prefix_matches.push(path);
+        }
     }
-    Ok(None)
+
+    match prefix_matches.len() {
+        0 => Ok(None),
+        1 => Ok(prefix_matches.pop()),
+        _ => {
+            let candidates: Vec<String> = prefix_matches
+                .iter()
+                .map(|p| {
+                    p.display()
+                        .to_string()
+                })
+                .collect();
+            bail!(
+                "session id '{}' matches {} files: {}",
+                session_id,
+                candidates.len(),
+                candidates.join(", ")
+            )
+        }
+    }
 }
 
 /// Discover all JSONL session files under `.claude/projects/`.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
-    let pattern = projects_dir()?.join("**/*.jsonl");
+    let root = projects_dir()?;
+    let pattern = root.join("**/*.jsonl");
+    let mut tally = SkipTally::new(&root);
     let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?
-        .flatten()
+        .filter_map(|e| tally.keep_readable(e))
         .collect();
     Ok(files)
 }
@@ -86,13 +194,14 @@ fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<PathBuf> {
         let dir_name = project_dir_name(&current.to_string_lossy());
         let project_dir = projects.join(&dir_name);
         if project_dir.exists() {
+            let mut tally = SkipTally::new(&project_dir);
             let best = glob(
                 &project_dir
                     .join("*.jsonl")
                     .to_string_lossy(),
             )
             .ok()?
-            .flatten()
+            .filter_map(|e| tally.keep_readable(e))
             .max_by_key(|p| {
                 p.metadata()
                     .and_then(|m| m.modified())
@@ -113,12 +222,12 @@ fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<PathBuf> {
 /// Used by long-lived processes (e.g. MCP server) whose cwd does not reflect
 /// the currently active Claude session.
 pub fn globally_active_session_jsonl() -> Option<PathBuf> {
-    let pattern = projects_dir()
-        .ok()?
-        .join("**/*.jsonl");
+    let root = projects_dir().ok()?;
+    let pattern = root.join("**/*.jsonl");
+    let mut tally = SkipTally::new(&root);
     glob(&pattern.to_string_lossy())
         .ok()?
-        .flatten()
+        .filter_map(|e| tally.keep_readable(e))
         .max_by_key(|p| {
             p.metadata()
                 .and_then(|m| m.modified())
