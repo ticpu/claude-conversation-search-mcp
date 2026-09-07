@@ -786,15 +786,17 @@ fn run_summary_subprocess(prompt: &str) -> Result<()> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    // Jail directory in temp dir (XDG_RUNTIME_DIR on Unix, %TEMP% on Windows)
     #[cfg(unix)]
     let temp_dir = std::env::var("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
     #[cfg(windows)]
     let temp_dir = std::env::temp_dir();
-    let jail_dir = temp_dir.join("claude-summary-jail");
-    std::fs::create_dir_all(&jail_dir)?;
+    let jail = tempfile::Builder::new()
+        .prefix("claude-summary-jail-")
+        .tempdir_in(&temp_dir)
+        .with_context(|| format!("creating a jail directory in {}", temp_dir.display()))?;
+    let jail_dir = jail.path();
 
     let mut child = Command::new("claude")
         .args([
@@ -805,7 +807,7 @@ fn run_summary_subprocess(prompt: &str) -> Result<()> {
             "--model",
             "haiku",
         ])
-        .current_dir(&jail_dir)
+        .current_dir(jail_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
