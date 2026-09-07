@@ -171,8 +171,7 @@ impl SearchArgs {
 
         let debug_mode = args
             .get("debug")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "true")
+            .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         let project_filter = args
