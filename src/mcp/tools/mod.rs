@@ -1,7 +1,9 @@
 pub(crate) mod schema;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::path::PathBuf;
 use tracing::error;
 
 use super::protocol::{tool_err, tool_ok};
@@ -151,63 +153,155 @@ impl SearchArgs {
     }
 }
 
+/// Active-session file plus staleness counts against the on-disk index.
+/// Excludes the active session from the check itself (it is always being
+/// written to), found via `globally_active_session_jsonl` since the MCP
+/// server's cwd is fixed at startup and does not track the caller's
+/// current project.
+struct StalenessProbe {
+    current_session_file: Option<PathBuf>,
+    health: shared::FileHealthCounts,
+}
+
+fn probe_staleness(config: &shared::Config) -> Result<StalenessProbe> {
+    let all_files = discover_jsonl_files()?;
+    let current_session_file = globally_active_session_jsonl();
+    let current_session_file_ref = current_session_file.as_deref();
+    let files_for_stale_check: Vec<_> = all_files
+        .iter()
+        .filter(|f| Some(f.as_path()) != current_session_file_ref)
+        .cloned()
+        .collect();
+
+    let cache = CacheManager::new(&config.get_cache_dir()?)?;
+    let health = cache.quick_health_check(&files_for_stale_check);
+
+    Ok(StalenessProbe {
+        current_session_file,
+        health,
+    })
+}
+
+/// Merge configured and request-supplied exclude patterns and compile them,
+/// refusing an invalid pattern rather than searching unfiltered.
+fn compile_excludes(
+    config: &shared::Config,
+    extra: &[String],
+) -> Result<(Vec<String>, Vec<regex::Regex>)> {
+    let mut all_exclude_patterns = config
+        .search
+        .exclude_patterns
+        .clone();
+    all_exclude_patterns.extend(
+        extra
+            .iter()
+            .cloned(),
+    );
+    let exclude_regexes = shared::compile_exclude_patterns(&all_exclude_patterns)?;
+    Ok((all_exclude_patterns, exclude_regexes))
+}
+
+type DateBounds = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
+/// Parse the optional after/before bounds. A malformed date is reported to
+/// the caller as tool content (isError), not a protocol-level error, so the
+/// caller decides how to surface this function's `Err`.
+fn parse_date_bounds(search_args: &SearchArgs) -> Result<DateBounds> {
+    let after = search_args
+        .after
+        .as_deref()
+        .map(shared::parse_date)
+        .transpose()?;
+    let before = search_args
+        .before
+        .as_deref()
+        .map(shared::parse_date)
+        .transpose()?;
+    Ok((after, before))
+}
+
+/// Render the tool response body: optional debug line, exclude/staleness
+/// notes, then the compact result list.
+fn render_search_response(
+    raw_args: &Value,
+    search_args: &SearchArgs,
+    all_exclude_patterns: &[String],
+    health: &shared::FileHealthCounts,
+    filtered: &[shared::SearchResultWithContext],
+    display_opts: &DisplayOptions,
+) -> String {
+    let mut output = String::new();
+
+    if search_args.debug_mode {
+        output.push_str(&format!(
+            "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
+            raw_args.get("query"),
+            search_args.context_before,
+            search_args.context_after,
+            search_args.limit,
+            search_args.exclude_projects,
+            all_exclude_patterns
+        ));
+    }
+
+    if !search_args
+        .exclude_projects
+        .is_empty()
+        || !all_exclude_patterns.is_empty()
+    {
+        output.push_str(&format!(
+            "Excluding: {} projects, {} patterns\n",
+            search_args
+                .exclude_projects
+                .len(),
+            all_exclude_patterns.len()
+        ));
+    }
+
+    if health.stale > 0 || health.new_files > 0 {
+        output.push_str(&format!(
+            "Note: index is stale ({} modified, {} new files). Call reindex tool for fresher results.\n",
+            health.stale, health.new_files
+        ));
+    }
+
+    if filtered.is_empty() {
+        output.push_str("No results found.\n");
+    } else {
+        for (i, result) in filtered
+            .iter()
+            .enumerate()
+        {
+            output.push_str(&result.format_compact_with_options(i, display_opts));
+            if i < filtered.len() - 1 {
+                output.push('\n');
+            }
+        }
+        if filtered.len() == search_args.limit {
+            output.push_str(&format!("\n+more: limit={}\n", search_args.limit));
+        }
+    }
+
+    output
+}
+
 impl McpServer {
     pub(crate) async fn tool_search_conversations(&self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let search_args = SearchArgs::from_json(&args)?;
 
         let config = get_config();
-        let all_files = discover_jsonl_files()?;
+        let probe = probe_staleness(config)?;
 
-        // Exclude the active session from stale checks (it is always being written to).
-        // Use globally_active_session_jsonl since the MCP server cwd is fixed at startup
-        // and does not reflect the currently active project.
-        let current_session_file = globally_active_session_jsonl();
-        let current_session_file_ref = current_session_file.as_deref();
-        let files_for_stale_check: Vec<_> = all_files
-            .iter()
-            .filter(|f| Some(f.as_path()) != current_session_file_ref)
-            .cloned()
-            .collect();
+        let (all_exclude_patterns, exclude_regexes) =
+            match compile_excludes(config, &search_args.exclude_patterns) {
+                Ok(v) => v,
+                Err(e) => return tool_err(format!("{e:#}")),
+            };
 
-        let cache = CacheManager::new(&config.get_cache_dir()?)?;
-        let health = cache.quick_health_check(&files_for_stale_check);
-
-        let mut all_exclude_patterns = config
-            .search
-            .exclude_patterns
-            .clone();
-        all_exclude_patterns.extend(
-            search_args
-                .exclude_patterns
-                .clone(),
-        );
-
-        let exclude_regexes = match shared::compile_exclude_patterns(&all_exclude_patterns) {
-            Ok(regexes) => regexes,
-            Err(e) => return tool_err(format!("{e:#}")),
-        };
-
-        let after = if let Some(ref s) = search_args.after {
-            match shared::parse_date(s) {
-                Ok(dt) => Some(dt),
-                Err(e) => {
-                    return tool_err(e.to_string());
-                }
-            }
-        } else {
-            None
-        };
-
-        let before = if let Some(ref s) = search_args.before {
-            match shared::parse_date(s) {
-                Ok(dt) => Some(dt),
-                Err(e) => {
-                    return tool_err(e.to_string());
-                }
-            }
-        } else {
-            None
+        let (after, before) = match parse_date_bounds(&search_args) {
+            Ok(bounds) => bounds,
+            Err(e) => return tool_err(e.to_string()),
         };
 
         let display_opts = DisplayOptions {
@@ -226,7 +320,8 @@ impl McpServer {
 
         // Get current session ID from file detected earlier
         let current_session_id: Option<String> = if !include_current_session {
-            current_session_file
+            probe
+                .current_session_file
                 .as_ref()
                 .and_then(|p| {
                     p.file_stem()
@@ -238,11 +333,19 @@ impl McpServer {
         };
 
         let query = SearchQuery {
-            text: search_args.query_text,
-            project_filter: search_args.project_filter,
-            session_filter: search_args.session_filter,
+            text: search_args
+                .query_text
+                .clone(),
+            project_filter: search_args
+                .project_filter
+                .clone(),
+            session_filter: search_args
+                .session_filter
+                .clone(),
             limit: search_args.limit * 3,
-            sort_by: search_args.sort_by,
+            sort_by: search_args
+                .sort_by
+                .clone(),
             after,
             before,
         };
@@ -266,59 +369,14 @@ impl McpServer {
             },
         );
 
-        let mut output = String::new();
-
-        if search_args.debug_mode {
-            output.push_str(&format!(
-                "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
-                args.get("query"),
-                search_args.context_before,
-                search_args.context_after,
-                search_args.limit,
-                search_args.exclude_projects,
-                all_exclude_patterns
-            ));
-        }
-
-        if !search_args
-            .exclude_projects
-            .is_empty()
-            || !all_exclude_patterns.is_empty()
-        {
-            output.push_str(&format!(
-                "Excluding: {} projects, {} patterns\n",
-                search_args
-                    .exclude_projects
-                    .len(),
-                all_exclude_patterns.len()
-            ));
-        }
-
-        if health.stale > 0 || health.new_files > 0 {
-            output.push_str(&format!(
-                "Note: index is stale ({} modified, {} new files). Call reindex tool for fresher results.\n",
-                health.stale, health.new_files
-            ));
-        }
-
-        if filtered.is_empty() {
-            output.push_str("No results found.\n");
-        } else {
-            for (i, result) in filtered
-                .iter()
-                .enumerate()
-            {
-                output.push_str(&result.format_compact_with_options(i, &display_opts));
-                if i < filtered.len() - 1 {
-                    output.push('\n');
-                }
-            }
-            if filtered.len() == search_args.limit {
-                output.push_str(&format!("\n+more: limit={}\n", search_args.limit));
-            }
-        }
-
-        tool_ok(output)
+        tool_ok(render_search_response(
+            &args,
+            &search_args,
+            &all_exclude_patterns,
+            &probe.health,
+            &filtered,
+            &display_opts,
+        ))
     }
 
     pub(crate) async fn tool_get_session_messages(&self, args: Option<Value>) -> Result<Value> {
