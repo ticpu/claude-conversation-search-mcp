@@ -17,12 +17,10 @@ pub struct RawJsonlMessage {
     pub agent_id: Option<String>,
     // Summary type fields
     pub summary: Option<String>,
-    pub leaf_uuid: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RawMessage {
-    pub role: Option<String>,
     pub content: Option<serde_json::Value>,
     pub model: Option<String>,
 }
