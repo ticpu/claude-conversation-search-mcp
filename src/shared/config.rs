@@ -4,18 +4,12 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WebServerConfig {
-    pub path: String,
-    pub url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct IndexConfig {
     #[serde(default = "IndexConfig::default_auto_index")]
     pub auto_index_on_startup: bool,
     #[serde(default = "IndexConfig::default_writer_heap_mb")]
     pub writer_heap_mb: u32,
-    #[serde(default)]
+    #[serde(default = "IndexConfig::default_enable_tagging")]
     pub enable_tagging: bool,
     pub cache_dir: Option<PathBuf>,
     pub claude_dir: Option<PathBuf>,
@@ -29,6 +23,10 @@ impl IndexConfig {
     fn default_writer_heap_mb() -> u32 {
         512
     }
+
+    fn default_enable_tagging() -> bool {
+        true
+    }
 }
 
 impl Default for IndexConfig {
@@ -36,7 +34,7 @@ impl Default for IndexConfig {
         Self {
             auto_index_on_startup: true,
             writer_heap_mb: Self::default_writer_heap_mb(),
-            enable_tagging: false,
+            enable_tagging: true,
             cache_dir: None,
             claude_dir: None,
         }
@@ -67,8 +65,6 @@ impl Default for LockingConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LimitsConfig {
-    #[serde(default = "LimitsConfig::default_per_file_chars")]
-    pub per_file_chars: usize,
     #[serde(default = "LimitsConfig::default_tool_result_max_chars")]
     pub tool_result_max_chars: usize,
     #[serde(default = "LimitsConfig::default_tool_input_max_chars")]
@@ -76,9 +72,6 @@ pub struct LimitsConfig {
 }
 
 impl LimitsConfig {
-    fn default_per_file_chars() -> usize {
-        150_000
-    }
     fn default_tool_result_max_chars() -> usize {
         2000
     }
@@ -90,7 +83,6 @@ impl LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
-            per_file_chars: 150_000,
             tool_result_max_chars: 2000,
             tool_input_max_chars: 200,
         }
@@ -105,7 +97,6 @@ pub struct SearchConfig {
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
-    pub web_server: Option<WebServerConfig>,
     #[serde(default)]
     pub index: IndexConfig,
     #[serde(default)]
