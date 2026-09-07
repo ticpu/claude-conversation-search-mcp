@@ -1,4 +1,5 @@
 use crate::cli::index;
+use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder};
 use anyhow::Result;
 use chrono::{NaiveDate, TimeZone, Utc};
@@ -97,6 +98,12 @@ pub enum CliCommands {
         /// Characters shown per message (0 = full content)
         #[arg(long, default_value = "200")]
         truncate: usize,
+        /// Skip this many messages before displaying
+        #[arg(long, default_value = "0")]
+        offset: usize,
+        /// Messages shown (0 = all)
+        #[arg(long, default_value = "0")]
+        limit: usize,
     },
     /// Summarize a session using Claude (runs in jailed empty dir)
     Summary {
@@ -264,21 +271,24 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             before,
             after,
             truncate,
+            offset,
+            limit,
         } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
-            let ctx_before = before.unwrap_or(context);
-            let ctx_after = after.unwrap_or(context);
-            let max_content = if full { 0 } else { truncate };
-            view_session(
-                &index_path,
+            let opts = SessionViewOpts {
                 session_id,
-                max_content,
-                center,
-                ctx_before,
-                ctx_after,
-            )?;
+                truncate_length: if full { 0 } else { truncate },
+                window: Window {
+                    center,
+                    before: before.unwrap_or(context),
+                    after: after.unwrap_or(context),
+                    offset,
+                    limit,
+                },
+            };
+            view_session(&index_path, &opts)?;
         }
         CliCommands::Summary { session_id } => {
             let config = shared::get_config();
@@ -800,348 +810,24 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn view_session(
-    index_path: &Path,
-    session_id: String,
-    truncate_length: usize,
-    center_on: Option<String>,
-    context_before: usize,
-    context_after: usize,
-) -> Result<()> {
-    // Read from JSONL directly for full-fidelity content
-    let entries = if let Some(jsonl_path) = shared::find_session_jsonl(&session_id)? {
-        shared::parsers::JsonlParser::with_full_content().parse_file(&jsonl_path)?
-    } else if index_path.exists() {
-        // Fallback to Tantivy index (content may be truncated from indexing)
-        eprintln!(
-            "Warning: JSONL file not found, falling back to index (content may be truncated)"
-        );
-        let cache = CacheManager::new(index_path)?;
-        let search_engine = SearchEngine::new(
-            index_path,
-            cache
-                .get_session_counts()
-                .clone(),
-        )?;
-        let results = search_engine.get_session_messages(&session_id)?;
-        return view_session_from_results(
-            results,
-            &session_id,
-            truncate_length,
-            center_on,
-            context_before,
-            context_after,
-        );
-    } else {
-        println!("No JSONL file or index found for session: {session_id}");
-        return Ok(());
-    };
-
+fn view_session(index_path: &Path, opts: &SessionViewOpts) -> Result<()> {
+    let (entries, source) = session_view::load_session(index_path, &opts.session_id)?;
     if entries.is_empty() {
-        println!("No messages found for session: {session_id}");
-        return Ok(());
+        anyhow::bail!("no messages found for session {}", opts.session_id);
     }
 
-    let displayable: Vec<_> = entries
-        .iter()
-        .filter(|e| e.is_displayable())
-        .collect();
-    let total = displayable.len();
-
-    if total == 0 {
-        println!("No displayable messages for session: {session_id}");
-        return Ok(());
-    }
-
-    // Determine window: center_on mode vs full session
-    let (window, center_idx) = if let Some(ref uuid) = center_on {
-        let idx = displayable
-            .iter()
-            .position(|m| {
-                m.uuid
-                    .starts_with(uuid.as_str())
-            })
-            .unwrap_or_else(|| {
-                eprintln!("Warning: message {uuid} not found, showing from start");
-                0
-            });
-        let start = idx.saturating_sub(context_before);
-        let end = (idx + context_after + 1).min(total);
-        (&displayable[start..end], Some(idx))
-    } else {
-        (&displayable[..], None)
+    let display = DisplayOptions {
+        include_thinking: true,
+        include_tools: true,
+        truncate_length: opts.truncate_length,
     };
-
-    let project_path = shared::home_to_tilde(&entries[0].project_path);
-    let time_range = format!(
-        "{} - {}",
-        entries[0]
-            .timestamp
-            .format("%Y-%m-%d %H:%M"),
-        entries
-            .last()
-            .unwrap()
-            .timestamp
-            .format("%H:%M")
+    print!(
+        "{}",
+        session_view::render(&entries, &source, opts, &display)
     );
 
-    if center_on.is_some() {
-        println!(
-            "📁 {} 🗒️ {} ({}/{} msgs) ⏱️ {}",
-            project_path,
-            session_id,
-            window.len(),
-            total,
-            time_range
-        );
-    } else {
-        println!(
-            "📁 {} 🗒️ {} ({} msgs) ⏱️ {}",
-            project_path, session_id, total, time_range
-        );
-    }
-
-    if center_on.is_none() {
-        let mut techs = std::collections::HashSet::new();
-        let mut langs = std::collections::HashSet::new();
-        let mut has_code = false;
-        let mut has_errors = false;
-        for e in &entries {
-            techs.extend(
-                e.technologies
-                    .iter()
-                    .cloned(),
-            );
-            langs.extend(
-                e.code_languages
-                    .iter()
-                    .cloned(),
-            );
-            has_code |= e.has_code;
-            has_errors |= e.has_error;
-        }
-        let mut tags = Vec::new();
-        if !techs.is_empty() {
-            let mut t: Vec<_> = techs
-                .into_iter()
-                .collect();
-            t.sort();
-            tags.push(t.join(","));
-        }
-        if !langs.is_empty() {
-            let mut l: Vec<_> = langs
-                .into_iter()
-                .collect();
-            l.sort();
-            tags.push(l.join(","));
-        }
-        if has_code {
-            tags.push("code".to_string());
-        }
-        if has_errors {
-            tags.push("error".to_string());
-        }
-        if !tags.is_empty() {
-            println!("tags: {}", tags.join(" "));
-        }
-    }
-    println!();
-
-    for entry in window {
-        let time = entry
-            .timestamp
-            .format("%H:%M:%S");
-        let marker = if center_idx.is_some()
-            && Some(&entry.uuid)
-                == center_on
-                    .as_ref()
-                    .and_then(|u| {
-                        if entry
-                            .uuid
-                            .starts_with(u.as_str())
-                        {
-                            Some(&entry.uuid)
-                        } else {
-                            None
-                        }
-                    }) {
-            "»"
-        } else {
-            " "
-        };
-        let role = entry
-            .message_type
-            .short_name();
-        let content = if truncate_length > 0 {
-            let truncated: String = entry
-                .content
-                .chars()
-                .take(truncate_length)
-                .collect();
-            let ellipsis = if entry
-                .content
-                .chars()
-                .count()
-                > truncate_length
-            {
-                "…"
-            } else {
-                ""
-            };
-            format!(
-                "{}{}",
-                truncated
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                ellipsis
-            )
-        } else {
-            entry
-                .content
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        println!("{marker} [{time}] {role}: {content}");
-    }
-
-    if truncate_length > 0
-        && window
-            .iter()
-            .any(|e| {
-                e.content
-                    .chars()
-                    .count()
-                    > truncate_length
-            })
-    {
+    if opts.truncate_length > 0 {
         println!("\nUse --full or --truncate 0 for complete content");
-    }
-
-    Ok(())
-}
-
-/// Fallback: display session from Tantivy SearchResult objects (pre-truncated content)
-fn view_session_from_results(
-    mut results: Vec<shared::SearchResult>,
-    session_id: &str,
-    truncate_length: usize,
-    center_on: Option<String>,
-    context_before: usize,
-    context_after: usize,
-) -> Result<()> {
-    if results.is_empty() {
-        println!("No messages found for session: {session_id}");
-        println!("Tip: Use 'claude-search stats' to see available session IDs");
-        return Ok(());
-    }
-
-    results.sort_by_key(|r| r.timestamp);
-    let displayable: Vec<_> = results
-        .iter()
-        .filter(|r| r.is_displayable())
-        .collect();
-    let total = displayable.len();
-
-    let (window, center_idx) = if let Some(ref uuid) = center_on {
-        let idx = displayable
-            .iter()
-            .position(|m| {
-                m.uuid
-                    .starts_with(uuid.as_str())
-            })
-            .unwrap_or(0);
-        let start = idx.saturating_sub(context_before);
-        let end = (idx + context_after + 1).min(total);
-        (&displayable[start..end], Some(idx))
-    } else {
-        (&displayable[..], None)
-    };
-
-    let project_path = shared::home_to_tilde(&results[0].project_path);
-    let time_range = format!(
-        "{} - {}",
-        results[0]
-            .timestamp
-            .format("%Y-%m-%d %H:%M"),
-        results
-            .last()
-            .unwrap()
-            .timestamp
-            .format("%H:%M")
-    );
-
-    if center_on.is_some() {
-        println!(
-            "📁 {} 🗒️ {} ({}/{} msgs) ⏱️ {}",
-            project_path,
-            session_id,
-            window.len(),
-            total,
-            time_range
-        );
-    } else {
-        println!(
-            "📁 {} 🗒️ {} ({} msgs) ⏱️ {}",
-            project_path, session_id, total, time_range
-        );
-    }
-    println!();
-
-    for result in window {
-        let time = result
-            .timestamp
-            .format("%H:%M:%S");
-        let marker = if center_idx.is_some()
-            && center_on
-                .as_ref()
-                .is_some_and(|u| {
-                    result
-                        .uuid
-                        .starts_with(u.as_str())
-                }) {
-            "»"
-        } else {
-            " "
-        };
-        let content = if truncate_length > 0 {
-            let truncated: String = result
-                .content
-                .chars()
-                .take(truncate_length)
-                .collect();
-            let ellipsis = if result
-                .content
-                .chars()
-                .count()
-                > truncate_length
-            {
-                "…"
-            } else {
-                ""
-            };
-            format!(
-                "{}{}",
-                truncated
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                ellipsis
-            )
-        } else {
-            result
-                .content
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        println!(
-            "{marker} [{time}] {}: {content}",
-            result
-                .message_type
-                .short_name()
-        );
     }
 
     Ok(())

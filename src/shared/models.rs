@@ -70,10 +70,6 @@ impl ConversationEntry {
     pub fn is_displayable(&self) -> bool {
         displayable(&self.message_type, &self.content)
     }
-
-    pub fn project_path_display(&self) -> String {
-        super::path_utils::home_to_tilde(&self.project_path)
-    }
 }
 
 /// Filters noise: non-conversational message types and internal warmup messages.

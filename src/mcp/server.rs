@@ -5,12 +5,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
+use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{
     CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir,
-    get_config, short_uuid,
+    get_config,
 };
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
@@ -156,41 +157,6 @@ impl McpServer {
             search_engine,
             cache_dir,
         })
-    }
-
-    /// Check if a session's source JSONL is stale and reindex if needed.
-    /// Returns true if reindexing occurred.
-    fn ensure_session_fresh(&mut self, session_id: &str, project_path: &str) -> Result<bool> {
-        use crate::shared::path_utils::session_jsonl_path;
-
-        let jsonl_path = match session_jsonl_path(project_path, session_id) {
-            Some(p) if p.exists() => p,
-            _ => return Ok(false),
-        };
-
-        let cache = CacheManager::new(&self.cache_dir)?;
-        if !cache.needs_indexing(&jsonl_path)? {
-            return Ok(false);
-        }
-
-        info!(
-            "Session {} is stale, reindexing {}",
-            session_id,
-            jsonl_path.display()
-        );
-
-        // Reindex just this file
-        let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
-        let mut cache = CacheManager::new(&self.cache_dir)?;
-        cache.update_incremental(&mut indexer, vec![jsonl_path])?;
-
-        // Reload search engine
-        let counts = cache
-            .get_session_counts()
-            .clone();
-        self.search_engine = SearchEngine::new(&self.cache_dir, counts)?;
-
-        Ok(true)
     }
 
     async fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
@@ -737,35 +703,48 @@ impl McpServer {
         })?)
     }
 
-    async fn tool_get_session_messages(&mut self, args: Option<Value>) -> Result<Value> {
-        use crate::shared::parsers::JsonlParser;
-        use crate::shared::path_utils::find_session_jsonl;
-
+    async fn tool_get_session_messages(&self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let session_id = args
             .get("session_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
-        // Read from JSONL directly for full-fidelity content
-        let entries = if let Some(jsonl_path) = find_session_jsonl(session_id)? {
-            JsonlParser::with_full_content().parse_file(&jsonl_path)?
-        } else {
-            // Fallback to Tantivy index
-            let mut messages = self
-                .search_engine
-                .get_session_messages(session_id)?;
-            if let Some(first) = messages.first()
-                && self.ensure_session_fresh(session_id, &first.project_path)?
-            {
-                messages = self
-                    .search_engine
-                    .get_session_messages(session_id)?;
-            }
-            // Convert SearchResult to ConversationEntry-like display
-            return self.format_session_from_index(messages, session_id, &args);
+        let context_c = args
+            .get("-C")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10);
+        let opts = SessionViewOpts {
+            session_id: session_id.to_string(),
+            truncate_length: args
+                .get("truncate_length")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize,
+            window: Window {
+                center: args
+                    .get("center_on")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                before: args
+                    .get("-B")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(context_c) as usize,
+                after: args
+                    .get("-A")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(context_c) as usize,
+                offset: args
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
+                limit: args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50) as usize,
+            },
         };
 
+        let (entries, source) = session_view::load_session(&self.cache_dir, session_id)?;
         if entries.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {
                 content: vec![ToolResult {
@@ -776,279 +755,16 @@ impl McpServer {
             })?);
         }
 
-        let messages: Vec<_> = entries
-            .into_iter()
-            .filter(|e| e.is_displayable())
-            .collect();
-
-        let total = messages.len();
-        let project = messages
-            .first()
-            .map(|m| m.project_path_display())
-            .unwrap_or_default();
-        let short_session = short_uuid(session_id);
-        let truncate_length = args
-            .get("truncate_length")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-
-        let center_on = args
-            .get("center_on")
-            .and_then(|v| v.as_str());
-        let (start, end, center_idx) = if let Some(uuid) = center_on {
-            let idx = messages
-                .iter()
-                .position(|m| {
-                    m.uuid
-                        .starts_with(uuid)
-                })
-                .unwrap_or(0);
-            let context_c = args
-                .get("-C")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(10);
-            let before = args
-                .get("-B")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(context_c) as usize;
-            let after = args
-                .get("-A")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(context_c) as usize;
-            let start = idx.saturating_sub(before);
-            let end = (idx + after + 1).min(total);
-            (start, end, Some(idx))
-        } else {
-            let offset = args
-                .get("offset")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
-            let limit = args
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(50) as usize;
-            let start = offset.min(total);
-            let end = (offset + limit).min(total);
-            (start, end, None)
+        let display = DisplayOptions {
+            include_thinking: true,
+            include_tools: true,
+            truncate_length: opts.truncate_length,
         };
-
-        let page_messages = &messages[start..end];
-        let has_more = end < total;
-
-        let mut output = format!(
-            "📁 {} 🗒️ {} ({} msgs) [{}-{}/{}]\n\n",
-            project,
-            short_session,
-            total,
-            start,
-            end.saturating_sub(1),
-            total
-        );
-
-        for (i, msg) in page_messages
-            .iter()
-            .enumerate()
-        {
-            let idx = start + i;
-            let time = msg
-                .timestamp
-                .format("%H:%M");
-            let msg_type = msg
-                .message_type
-                .short_name();
-            let marker = if center_idx == Some(idx) { "»" } else { " " };
-            let content = if truncate_length > 0 {
-                let truncated: String = msg
-                    .content
-                    .chars()
-                    .take(truncate_length)
-                    .collect();
-                let ellipsis = if msg
-                    .content
-                    .chars()
-                    .count()
-                    > truncate_length
-                {
-                    "…"
-                } else {
-                    ""
-                };
-                format!(
-                    "{}{}",
-                    truncated
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    ellipsis
-                )
-            } else {
-                msg.content
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            output.push_str(&format!(
-                "{}[{}] {} {}: {}\n",
-                marker, idx, time, msg_type, content
-            ));
-        }
-
-        if has_more {
-            output.push_str(&format!("\n+more: offset={}\n", end));
-        }
 
         Ok(serde_json::to_value(CallToolResponse {
             content: vec![ToolResult {
                 result_type: "text".to_string(),
-                text: output,
-            }],
-            is_error: None,
-        })?)
-    }
-
-    /// Fallback: format session from Tantivy SearchResult objects (pre-truncated content)
-    fn format_session_from_index(
-        &self,
-        mut messages: Vec<crate::shared::SearchResult>,
-        session_id: &str,
-        args: &Value,
-    ) -> Result<Value> {
-        if messages.is_empty() {
-            return Ok(serde_json::to_value(CallToolResponse {
-                content: vec![ToolResult {
-                    result_type: "text".to_string(),
-                    text: format!("No messages found for session {}", session_id),
-                }],
-                is_error: Some(true),
-            })?);
-        }
-
-        messages.sort_by_key(|m| m.sequence_num);
-        let messages: Vec<_> = messages
-            .into_iter()
-            .filter(|m| m.is_displayable())
-            .collect();
-
-        let total = messages.len();
-        let project = messages
-            .first()
-            .map(|m| crate::shared::home_to_tilde(&m.project_path))
-            .unwrap_or_default();
-        let short_session = short_uuid(session_id);
-        let truncate_length = args
-            .get("truncate_length")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-
-        let center_on = args
-            .get("center_on")
-            .and_then(|v| v.as_str());
-        let (start, end, center_idx) = if let Some(uuid) = center_on {
-            let idx = messages
-                .iter()
-                .position(|m| {
-                    m.uuid
-                        .starts_with(uuid)
-                })
-                .unwrap_or(0);
-            let context_c = args
-                .get("-C")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(10);
-            let before = args
-                .get("-B")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(context_c) as usize;
-            let after = args
-                .get("-A")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(context_c) as usize;
-            let start = idx.saturating_sub(before);
-            let end = (idx + after + 1).min(total);
-            (start, end, Some(idx))
-        } else {
-            let offset = args
-                .get("offset")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
-            let limit = args
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(50) as usize;
-            let start = offset.min(total);
-            let end = (offset + limit).min(total);
-            (start, end, None)
-        };
-
-        let page_messages = &messages[start..end];
-        let has_more = end < total;
-
-        let mut output = format!(
-            "📁 {} 🗒️ {} ({} msgs, from index) [{}-{}/{}]\n\n",
-            project,
-            short_session,
-            total,
-            start,
-            end.saturating_sub(1),
-            total
-        );
-
-        for (i, msg) in page_messages
-            .iter()
-            .enumerate()
-        {
-            let idx = start + i;
-            let time = msg
-                .timestamp
-                .format("%H:%M");
-            let msg_type = msg
-                .message_type
-                .short_name();
-            let marker = if center_idx == Some(idx) { "»" } else { " " };
-            let content = if truncate_length > 0 {
-                let truncated: String = msg
-                    .content
-                    .chars()
-                    .take(truncate_length)
-                    .collect();
-                let ellipsis = if msg
-                    .content
-                    .chars()
-                    .count()
-                    > truncate_length
-                {
-                    "…"
-                } else {
-                    ""
-                };
-                format!(
-                    "{}{}",
-                    truncated
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    ellipsis
-                )
-            } else {
-                msg.content
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            output.push_str(&format!(
-                "{}[{}] {} {}: {}\n",
-                marker, idx, time, msg_type, content
-            ));
-        }
-
-        if has_more {
-            output.push_str(&format!("\n+more: offset={}\n", end));
-        }
-
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: output,
+                text: session_view::render(&entries, &source, &opts, &display),
             }],
             is_error: None,
         })?)
