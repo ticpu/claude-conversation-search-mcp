@@ -1,3 +1,4 @@
+mod protocol;
 pub mod server;
 
-pub use server::run_mcp_server;
+pub use protocol::run_mcp_server;
