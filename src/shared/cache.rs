@@ -387,7 +387,7 @@ pub struct ProjectStats {
 impl CacheManager {
     /// Quick health check - just counts stale/new files without full scan
     /// Returns (stale_count, new_count) for passive reporting
-    pub fn quick_health_check(&self, all_jsonl_files: &[PathBuf]) -> (usize, usize) {
+    pub fn quick_health_check(&self, all_jsonl_files: &[PathBuf]) -> FileHealthCounts {
         let mut stale = 0;
         let mut new_files = 0;
         // Only files the caller passed count as stale; excluding a path (such as
@@ -421,8 +421,15 @@ impl CacheManager {
                 new_files += 1;
             }
         }
-        (stale, new_files)
+        FileHealthCounts { stale, new_files }
     }
+}
+
+/// Counts from `quick_health_check`: named, since two same-typed counts in
+/// positional order are swap-prone.
+pub struct FileHealthCounts {
+    pub stale: usize,
+    pub new_files: usize,
 }
 
 #[cfg(test)]
@@ -786,12 +793,16 @@ mod tests {
         // Modify it so it is genuinely stale against the cached size/mtime.
         write_transcript(&transcript, "sess-a", 5);
 
-        let (stale, new) = cache.quick_health_check(std::slice::from_ref(&transcript));
-        assert_eq!((stale, new), (1, 0), "included file counts as stale");
-
-        let (stale, new) = cache.quick_health_check(&[]);
+        let health = cache.quick_health_check(std::slice::from_ref(&transcript));
         assert_eq!(
-            (stale, new),
+            (health.stale, health.new_files),
+            (1, 0),
+            "included file counts as stale"
+        );
+
+        let health = cache.quick_health_check(&[]);
+        assert_eq!(
+            (health.stale, health.new_files),
             (0, 0),
             "excluded file must not count as stale"
         );

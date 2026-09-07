@@ -572,7 +572,7 @@ impl McpServer {
             .collect();
 
         let cache = CacheManager::new(&config.get_cache_dir()?)?;
-        let (stale_count, new_count) = cache.quick_health_check(&files_for_stale_check);
+        let health = cache.quick_health_check(&files_for_stale_check);
 
         let mut all_exclude_patterns = config
             .search
@@ -695,10 +695,10 @@ impl McpServer {
             ));
         }
 
-        if stale_count > 0 || new_count > 0 {
+        if health.stale > 0 || health.new_files > 0 {
             output.push_str(&format!(
                 "Note: index is stale ({} modified, {} new files). Call reindex tool for fresher results.\n",
-                stale_count, new_count
+                health.stale, health.new_files
             ));
         }
 
@@ -911,12 +911,12 @@ Task(
             // Incremental update
             let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
-            let (stale, new) = cache.quick_health_check(&all_files);
+            let health = cache.quick_health_check(&all_files);
             cache.update_incremental(&mut indexer, all_files)?;
             self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
             format!(
                 "Incremental update: {} stale + {} new files reindexed",
-                stale, new
+                health.stale, health.new_files
             )
         };
         tool_ok(result)
