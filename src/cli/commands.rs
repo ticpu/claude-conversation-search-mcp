@@ -1,6 +1,7 @@
 use crate::cli::args::{CacheAction, CliCommands, IncludeArg, IndexAction, setup_logging};
 use crate::cli::index;
 use crate::cli::search::{SearchOpts, index_exists_or_notify, search_conversations};
+use crate::cli::session::view_session;
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder};
 use anyhow::{Context, Result};
@@ -454,29 +455,6 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
             };
             println!("  {short_id} ({count} messages)");
         }
-    }
-
-    Ok(())
-}
-
-fn view_session(index_path: &Path, opts: &SessionViewOpts) -> Result<()> {
-    let (entries, source) = session_view::load_session(index_path, &opts.session_id)?;
-    if entries.is_empty() {
-        anyhow::bail!("no messages found for session {}", opts.session_id);
-    }
-
-    let display = DisplayOptions {
-        include_thinking: true,
-        include_tools: true,
-        truncate_length: opts.truncate_length,
-    };
-    print!(
-        "{}",
-        session_view::render(&entries, &source, opts, &display)
-    );
-
-    if opts.truncate_length > 0 {
-        println!("\nUse --full or --truncate 0 for complete content");
     }
 
     Ok(())
