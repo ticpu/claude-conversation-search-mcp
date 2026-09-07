@@ -72,6 +72,70 @@ impl ConversationEntry {
     }
 }
 
+#[cfg(test)]
+pub struct EntryBuilder(ConversationEntry);
+
+#[cfg(test)]
+impl EntryBuilder {
+    pub fn new(uuid: &str, session_id: &str) -> Self {
+        Self(ConversationEntry {
+            uuid: uuid.to_string(),
+            parent_uuid: None,
+            session_id: session_id.to_string(),
+            project_path: "/test/project".to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::User,
+            content: String::new(),
+            model: None,
+            cwd: None,
+            sequence_num: 0,
+            is_sidechain: false,
+            agent_id: None,
+            technologies: vec![],
+            has_code: false,
+            code_languages: vec![],
+            has_error: false,
+            tools_mentioned: vec![],
+        })
+    }
+
+    pub fn message_type(mut self, message_type: MessageType) -> Self {
+        self.0
+            .message_type = message_type;
+        self
+    }
+
+    pub fn content(mut self, content: &str) -> Self {
+        self.0
+            .content = content.to_string();
+        self
+    }
+
+    pub fn sequence_num(mut self, sequence_num: usize) -> Self {
+        self.0
+            .sequence_num = sequence_num;
+        self
+    }
+
+    pub fn timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+        self.0
+            .timestamp = timestamp;
+        self
+    }
+
+    pub fn project(mut self, project_path: &str, cwd: &str) -> Self {
+        self.0
+            .project_path = project_path.to_string();
+        self.0
+            .cwd = Some(cwd.to_string());
+        self
+    }
+
+    pub fn build(self) -> ConversationEntry {
+        self.0
+    }
+}
+
 /// Filters noise: non-conversational message types and internal warmup messages.
 pub fn displayable(kind: &MessageType, content: &str) -> bool {
     matches!(

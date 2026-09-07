@@ -743,37 +743,9 @@ impl SearchResultWithContext {
 mod tests {
     use super::*;
     use crate::shared::indexer::SearchIndexer;
-    use crate::shared::models::{ConversationEntry, MessageType};
+    use crate::shared::models::{EntryBuilder, MessageType};
     use chrono::Utc;
     use tempfile::TempDir;
-
-    fn make_entry(
-        uuid: &str,
-        session_id: &str,
-        msg_type: MessageType,
-        content: &str,
-        seq: usize,
-    ) -> ConversationEntry {
-        ConversationEntry {
-            uuid: uuid.to_string(),
-            parent_uuid: None,
-            session_id: session_id.to_string(),
-            project_path: "/test/project".to_string(),
-            timestamp: Utc::now(),
-            message_type: msg_type,
-            content: content.to_string(),
-            model: None,
-            cwd: None,
-            sequence_num: seq,
-            is_sidechain: false,
-            agent_id: None,
-            technologies: vec![],
-            has_code: false,
-            code_languages: vec![],
-            has_error: false,
-            tools_mentioned: vec![],
-        }
-    }
 
     #[test]
     fn test_get_session_messages_returns_all_indexed() {
@@ -789,13 +761,11 @@ mod tests {
                 } else {
                     MessageType::Assistant
                 };
-                make_entry(
-                    &format!("uuid-{:04}", i),
-                    session_id,
-                    msg_type,
-                    &format!("Message {}", i),
-                    i,
-                )
+                EntryBuilder::new(&format!("uuid-{:04}", i), session_id)
+                    .message_type(msg_type)
+                    .content(&format!("Message {}", i))
+                    .sequence_num(i)
+                    .build()
             })
             .collect();
 
@@ -829,8 +799,14 @@ mod tests {
 
         let session_id = "12345678-abcd-efgh-ijkl-mnopqrstuvwx";
         let entries = vec![
-            make_entry("uuid-1", session_id, MessageType::User, "Hello", 0),
-            make_entry("uuid-2", session_id, MessageType::Assistant, "Hi there", 1),
+            EntryBuilder::new("uuid-1", session_id)
+                .content("Hello")
+                .build(),
+            EntryBuilder::new("uuid-2", session_id)
+                .message_type(MessageType::Assistant)
+                .content("Hi there")
+                .sequence_num(1)
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
@@ -855,36 +831,6 @@ mod tests {
         );
     }
 
-    fn make_entry_with_project(
-        uuid: &str,
-        session_id: &str,
-        msg_type: MessageType,
-        content: &str,
-        seq: usize,
-        project_name: &str,
-        cwd: &str,
-    ) -> ConversationEntry {
-        ConversationEntry {
-            uuid: uuid.to_string(),
-            parent_uuid: None,
-            session_id: session_id.to_string(),
-            project_path: project_name.to_string(),
-            timestamp: Utc::now(),
-            message_type: msg_type,
-            content: content.to_string(),
-            model: None,
-            cwd: Some(cwd.to_string()),
-            sequence_num: seq,
-            is_sidechain: false,
-            agent_id: None,
-            technologies: vec![],
-            has_code: false,
-            code_languages: vec![],
-            has_error: false,
-            tools_mentioned: vec![],
-        }
-    }
-
     #[test]
     fn test_project_filter_with_full_path() {
         let temp_dir = TempDir::new().unwrap();
@@ -892,33 +838,21 @@ mod tests {
 
         let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         let entries = vec![
-            make_entry_with_project(
-                "uuid-1",
-                session_id,
-                MessageType::User,
-                "hello world",
-                0,
-                "my-cool-project",
-                "/home/user/GIT/my-cool-project",
-            ),
-            make_entry_with_project(
-                "uuid-2",
-                session_id,
-                MessageType::Assistant,
-                "hi there",
-                1,
-                "my-cool-project",
-                "/home/user/GIT/my-cool-project",
-            ),
-            make_entry_with_project(
-                "uuid-3",
-                session_id,
-                MessageType::User,
-                "other stuff",
-                2,
-                "other-project",
-                "/home/user/GIT/other-project",
-            ),
+            EntryBuilder::new("uuid-1", session_id)
+                .content("hello world")
+                .project("my-cool-project", "/home/user/GIT/my-cool-project")
+                .build(),
+            EntryBuilder::new("uuid-2", session_id)
+                .message_type(MessageType::Assistant)
+                .content("hi there")
+                .sequence_num(1)
+                .project("my-cool-project", "/home/user/GIT/my-cool-project")
+                .build(),
+            EntryBuilder::new("uuid-3", session_id)
+                .content("other stuff")
+                .sequence_num(2)
+                .project("other-project", "/home/user/GIT/other-project")
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
@@ -986,8 +920,12 @@ mod tests {
         let session_a = "aaaaaaaa-1111-2222-3333-444444444444";
         let session_b = "bbbbbbbb-5555-6666-7777-888888888888";
         let entries = vec![
-            make_entry("uuid-1", session_a, MessageType::User, "hello world", 0),
-            make_entry("uuid-2", session_b, MessageType::User, "hello world", 0),
+            EntryBuilder::new("uuid-1", session_a)
+                .content("hello world")
+                .build(),
+            EntryBuilder::new("uuid-2", session_b)
+                .content("hello world")
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
@@ -1039,9 +977,18 @@ mod tests {
 
         let session_id = "aabbccdd-1122-3344-5566-778899001122";
         let entries = vec![
-            make_entry("uuid-1", session_id, MessageType::User, "first", 0),
-            make_entry("uuid-2", session_id, MessageType::Assistant, "second", 1),
-            make_entry("uuid-3", session_id, MessageType::User, "third", 2),
+            EntryBuilder::new("uuid-1", session_id)
+                .content("first")
+                .build(),
+            EntryBuilder::new("uuid-2", session_id)
+                .message_type(MessageType::Assistant)
+                .content("second")
+                .sequence_num(1)
+                .build(),
+            EntryBuilder::new("uuid-3", session_id)
+                .content("third")
+                .sequence_num(2)
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
@@ -1089,23 +1036,28 @@ mod tests {
 
         let session_id = "testtest-1234-5678-abcd-ef0123456789";
         let entries = vec![
-            make_entry("uuid-1", session_id, MessageType::User, "User message", 0),
-            make_entry(
-                "uuid-2",
-                session_id,
-                MessageType::Assistant,
-                "Assistant message",
-                1,
-            ),
-            make_entry(
-                "uuid-3",
-                session_id,
-                MessageType::System,
-                "System message",
-                2,
-            ),
-            make_entry("uuid-4", session_id, MessageType::Summary, "Summary", 3),
-            make_entry("uuid-5", session_id, MessageType::User, "Warmup", 4), // Should be filtered
+            EntryBuilder::new("uuid-1", session_id)
+                .content("User message")
+                .build(),
+            EntryBuilder::new("uuid-2", session_id)
+                .message_type(MessageType::Assistant)
+                .content("Assistant message")
+                .sequence_num(1)
+                .build(),
+            EntryBuilder::new("uuid-3", session_id)
+                .message_type(MessageType::System)
+                .content("System message")
+                .sequence_num(2)
+                .build(),
+            EntryBuilder::new("uuid-4", session_id)
+                .message_type(MessageType::Summary)
+                .content("Summary")
+                .sequence_num(3)
+                .build(),
+            EntryBuilder::new("uuid-5", session_id)
+                .content("Warmup")
+                .sequence_num(4)
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
@@ -1134,34 +1086,6 @@ mod tests {
         );
     }
 
-    fn make_entry_with_timestamp(
-        uuid: &str,
-        session_id: &str,
-        content: &str,
-        seq: usize,
-        timestamp: chrono::DateTime<Utc>,
-    ) -> ConversationEntry {
-        ConversationEntry {
-            uuid: uuid.to_string(),
-            parent_uuid: None,
-            session_id: session_id.to_string(),
-            project_path: "/test/project".to_string(),
-            timestamp,
-            message_type: MessageType::User,
-            content: content.to_string(),
-            model: None,
-            cwd: None,
-            sequence_num: seq,
-            is_sidechain: false,
-            agent_id: None,
-            technologies: vec![],
-            has_code: false,
-            code_languages: vec![],
-            has_error: false,
-            tools_mentioned: vec![],
-        }
-    }
-
     #[test]
     fn test_date_filter_pushed_into_query() {
         // Old doc has high term frequency for "common"; new doc has one occurrence.
@@ -1180,8 +1104,15 @@ mod tests {
 
         let old_content = "common ".repeat(20);
         let entries = vec![
-            make_entry_with_timestamp("old-uuid", session_id, old_content.trim(), 0, old_ts),
-            make_entry_with_timestamp("new-uuid", session_id, "common recent doc", 1, new_ts),
+            EntryBuilder::new("old-uuid", session_id)
+                .content(old_content.trim())
+                .timestamp(old_ts)
+                .build(),
+            EntryBuilder::new("new-uuid", session_id)
+                .content("common recent doc")
+                .sequence_num(1)
+                .timestamp(new_ts)
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();
@@ -1236,8 +1167,15 @@ mod tests {
 
         let old_content = "sort ".repeat(15);
         let entries = vec![
-            make_entry_with_timestamp("old-sort", session_id, old_content.trim(), 0, old_ts),
-            make_entry_with_timestamp("new-sort", session_id, "sort newer", 1, new_ts),
+            EntryBuilder::new("old-sort", session_id)
+                .content(old_content.trim())
+                .timestamp(old_ts)
+                .build(),
+            EntryBuilder::new("new-sort", session_id)
+                .content("sort newer")
+                .sequence_num(1)
+                .timestamp(new_ts)
+                .build(),
         ];
 
         let mut indexer = SearchIndexer::new(index_path).unwrap();

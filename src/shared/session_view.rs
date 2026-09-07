@@ -300,31 +300,20 @@ fn tag_line(entries: &[ConversationEntry]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::models::MessageType;
+    use crate::shared::models::{EntryBuilder, MessageType};
     use chrono::{TimeZone, Utc};
 
     fn entry(uuid: &str, seq: usize, kind: MessageType, content: &str) -> ConversationEntry {
-        ConversationEntry {
-            uuid: uuid.to_string(),
-            parent_uuid: None,
-            session_id: "session-1".to_string(),
-            project_path: "project-name".to_string(),
-            timestamp: Utc
-                .timestamp_opt(1_700_000_000 + seq as i64, 0)
-                .unwrap(),
-            message_type: kind,
-            content: content.to_string(),
-            model: None,
-            cwd: Some("/home/user/GIT/project-name".to_string()),
-            sequence_num: seq,
-            is_sidechain: false,
-            agent_id: None,
-            technologies: vec![],
-            has_code: false,
-            code_languages: vec![],
-            has_error: false,
-            tools_mentioned: vec![],
-        }
+        EntryBuilder::new(uuid, "session-1")
+            .message_type(kind)
+            .content(content)
+            .sequence_num(seq)
+            .timestamp(
+                Utc.timestamp_opt(1_700_000_000 + seq as i64, 0)
+                    .unwrap(),
+            )
+            .project("project-name", "/home/user/GIT/project-name")
+            .build()
     }
 
     fn full_display() -> DisplayOptions {
