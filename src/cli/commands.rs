@@ -748,9 +748,6 @@ fn view_session(index_path: &Path, opts: &SessionViewOpts) -> Result<()> {
 }
 
 fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
     let (entries, _) = session_view::load_session(index_path, &session_id)?;
     if entries.is_empty() {
         anyhow::bail!("no messages found for session {session_id}");
@@ -772,7 +769,21 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
         ));
     }
 
-    // Create jail directory in temp dir (XDG_RUNTIME_DIR on Unix, %TEMP% on Windows)
+    let prompt = format!(
+        "Summarize this conversation concisely. Include: topic, key decisions, outcome.\n\n{}",
+        conversation
+    );
+
+    run_summary_subprocess(&prompt)
+}
+
+/// Run `claude --print` in a jailed, empty directory with no tools, feeding
+/// `prompt` on stdin and using haiku for cost.
+fn run_summary_subprocess(prompt: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Jail directory in temp dir (XDG_RUNTIME_DIR on Unix, %TEMP% on Windows)
     #[cfg(unix)]
     let temp_dir = std::env::var("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
@@ -782,12 +793,6 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
     let jail_dir = temp_dir.join("claude-summary-jail");
     std::fs::create_dir_all(&jail_dir)?;
 
-    let prompt = format!(
-        "Summarize this conversation concisely. Include: topic, key decisions, outcome.\n\n{}",
-        conversation
-    );
-
-    // Run claude --print in jailed directory with no tools, using haiku for cost
     let mut child = Command::new("claude")
         .args([
             "--print",
