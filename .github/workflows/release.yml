@@ -151,9 +151,6 @@ jobs:
           generate_release_notes: true
           append_body: true
           body: |
-            The Linux binaries and the `.deb` packages are built on Debian 10
-            (glibc 2.28), so they run on Debian 10+, Ubuntu 18.10+, RHEL 8+ and
-            anything newer. The packages are also available from
-            https://apt.ticpu.net.
+            The Linux binaries and the `.deb` packages are built on Debian 10 (glibc 2.28), so they run on Debian 10+, Ubuntu 18.10+, RHEL 8+ and anything newer. The packages are also available from https://apt.ticpu.net.
 
             Release assets are signed; each has a detached `.asc` alongside it.

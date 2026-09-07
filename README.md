@@ -262,7 +262,7 @@ The tool works out of the box, but you can customize behavior:
 
 ### Environment Variables
 - `CLAUDE_CONFIG_DIR` - Override Claude Code directory location
-- `CLAUDE_SEARCH_CACHE` - Custom cache directory location  
+- `CLAUDE_SEARCH_CACHE` - Custom cache directory location
 - `RUST_LOG` - Control logging verbosity (`error`, `warn`, `info`, `debug`, `trace`)
 
 ### Config File
