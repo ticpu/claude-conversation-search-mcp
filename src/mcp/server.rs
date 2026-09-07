@@ -876,15 +876,13 @@ Task(
     #[cfg(unix)]
     async fn tool_respawn(&self) -> Result<Value> {
         // Try to find the release binary first, fallback to current_exe
-        let current_dir = std::env::current_dir()
-            .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
+        let current_dir = std::env::current_dir().context("getting the current directory")?;
 
         let release_path = current_dir.join("target/release/claude-conversation-search");
         let exe_path = if release_path.exists() {
             release_path
         } else {
-            std::env::current_exe()
-                .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?
+            std::env::current_exe().context("getting the current executable path")?
         };
 
         // Schedule respawn after a short delay to allow response to be sent
@@ -894,7 +892,7 @@ Task(
             // Replace current process with new instance using exec
             let args: Vec<String> = std::env::args().collect();
             let err = exec::execvp(&exe_path, &args);
-            eprintln!("Failed to exec with {}: {}", exe_path.display(), err);
+            error!("Failed to exec with {}: {}", exe_path.display(), err);
         });
 
         tool_ok("Respawning MCP server...")

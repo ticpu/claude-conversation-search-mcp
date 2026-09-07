@@ -167,7 +167,7 @@ impl SearchIndexer {
     /// Delete all documents from a specific source JSONL file before re-indexing.
     /// Uses exact match on the raw STRING field — unambiguous even when multiple
     /// files share the same sessionId (main + subagent transcripts).
-    pub fn delete_source_file(&mut self, source_file: &str) -> Result<()> {
+    pub fn delete_source_file(&mut self, source_file: &str) {
         let term = Term::from_field_text(
             self.fields
                 .source_file_field,
@@ -175,7 +175,6 @@ impl SearchIndexer {
         );
         self.writer
             .delete_term(term);
-        Ok(())
     }
 
     pub fn index_conversations(

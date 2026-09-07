@@ -72,8 +72,14 @@ fn query_terminal_da1() -> bool {
         }
     })();
 
-    // Restore terminal settings
-    let _ = nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &orig_termios);
+    if let Err(e) =
+        nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &orig_termios)
+    {
+        tracing::error!(
+            "Failed to restore terminal attributes, the terminal may be left in raw mode: {}",
+            e
+        );
+    }
 
     result.unwrap_or(false)
 }

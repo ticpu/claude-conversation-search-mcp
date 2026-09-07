@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use super::config::get_config;
 
@@ -135,10 +135,16 @@ impl Drop for IndexLock {
             .locking
             .enabled
         {
-            let _ = self
+            match self
                 ._file
-                .unlock();
-            debug!("Released {:?} lock on index", self.lock_type);
+                .unlock()
+            {
+                Ok(()) => debug!("Released {:?} lock on index", self.lock_type),
+                Err(e) => error!(
+                    "Failed to release {:?} lock on index: {}",
+                    self.lock_type, e
+                ),
+            }
         }
     }
 }

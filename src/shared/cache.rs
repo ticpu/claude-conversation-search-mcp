@@ -209,7 +209,7 @@ impl CacheManager {
                 let path_str = parsed_file
                     .path
                     .to_string_lossy();
-                indexer.delete_source_file(&path_str)?;
+                indexer.delete_source_file(&path_str);
 
                 // Subagent transcripts share their parent's sessionId; counting
                 // them would double-count the session against its main file.
