@@ -5,9 +5,6 @@ use std::path::Path;
 use tantivy::schema::{FAST, Field, INDEXED, STORED, STRING, Schema, SchemaBuilder, TEXT};
 use tantivy::{Index, IndexWriter, Term, doc};
 
-/// Current schema version - increment when schema changes to trigger rebuild
-pub const SCHEMA_VERSION: u32 = 3;
-
 pub struct IndexFields {
     pub uuid_field: Field,
     pub parent_uuid_field: Field,
