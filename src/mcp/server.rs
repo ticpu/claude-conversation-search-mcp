@@ -118,6 +118,134 @@ pub struct ToolResult {
     pub text: String,
 }
 
+/// Parsed arguments for the search_conversations tool.
+/// `after`/`before` are kept as raw strings: date parsing failures are
+/// reported as tool content (isError), not a protocol-level error, so
+/// parsing them stays in the caller alongside that response building.
+struct SearchArgs {
+    query_text: String,
+    debug_mode: bool,
+    project_filter: Option<String>,
+    session_filter: Option<String>,
+    context_before: usize,
+    context_after: usize,
+    exclude_projects: Vec<String>,
+    exclude_patterns: Vec<String>,
+    limit: usize,
+    sort_by: SortOrder,
+    after: Option<String>,
+    before: Option<String>,
+    include: Vec<String>,
+    truncate_length: usize,
+}
+
+impl SearchArgs {
+    fn from_json(args: &Value) -> Result<SearchArgs> {
+        let query_text = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?
+            .to_string();
+
+        let debug_mode = args
+            .get("debug")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "true")
+            .unwrap_or(false);
+
+        let project_filter = args
+            .get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let session_filter = args
+            .get("session")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Parse grep-style context: -C (both), -B (before), -A (after)
+        let context_c = args
+            .get("-C")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2);
+        let context_before = args
+            .get("-B")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(context_c) as usize;
+        let context_after = args
+            .get("-A")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(context_c) as usize;
+
+        let exclude_projects = json_strings(args.get("exclude_projects"));
+
+        let exclude_patterns: Vec<String> = args
+            .get("exclude_patterns")
+            .map(|v| {
+                if let Some(arr) = v.as_array() {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                } else if let Some(s) = v.as_str() {
+                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
+
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        let sort_by = match args
+            .get("sort_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("relevance")
+        {
+            "date_desc" => SortOrder::DateDesc,
+            "date_asc" => SortOrder::DateAsc,
+            _ => SortOrder::Relevance,
+        };
+
+        let after = args
+            .get("after")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let before = args
+            .get("before")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let include = json_strings(args.get("include"));
+
+        let truncate_length = args
+            .get("truncate_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300) as usize;
+
+        Ok(SearchArgs {
+            query_text,
+            debug_mode,
+            project_filter,
+            session_filter,
+            context_before,
+            context_after,
+            exclude_projects,
+            exclude_patterns,
+            limit,
+            sort_by,
+            after,
+            before,
+            include,
+            truncate_length,
+        })
+    }
+}
+
 pub struct McpServer {
     search_engine: SearchEngine,
     cache_dir: std::path::PathBuf,
@@ -415,59 +543,7 @@ impl McpServer {
 
     async fn tool_search_conversations(&self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
-        let query_text = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?
-            .to_string();
-
-        let debug_mode = args
-            .get("debug")
-            .and_then(|v| v.as_str())
-            .map(|s| s == "true")
-            .unwrap_or(false);
-
-        let project_filter = args
-            .get("project")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let session_filter = args
-            .get("session")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // Parse grep-style context: -C (both), -B (before), -A (after)
-        let context_c = args
-            .get("-C")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2);
-        let context_before = args
-            .get("-B")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(context_c) as usize;
-        let context_after = args
-            .get("-A")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(context_c) as usize;
-
-        let exclude_projects = json_strings(args.get("exclude_projects"));
-
-        let exclude_patterns: Vec<String> = args
-            .get("exclude_patterns")
-            .map(|v| {
-                if let Some(arr) = v.as_array() {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .collect()
-                } else if let Some(s) = v.as_str() {
-                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            })
-            .unwrap_or_default();
+        let search_args = SearchArgs::from_json(&args)?;
 
         let config = get_config();
         let all_files = discover_jsonl_files()?;
@@ -490,32 +566,18 @@ impl McpServer {
             .search
             .exclude_patterns
             .clone();
-        all_exclude_patterns.extend(exclude_patterns.clone());
+        all_exclude_patterns.extend(
+            search_args
+                .exclude_patterns
+                .clone(),
+        );
 
         let exclude_regexes: Vec<Regex> = all_exclude_patterns
             .iter()
             .filter_map(|p| Regex::new(p).ok())
             .collect();
 
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-
-        let sort_by = match args
-            .get("sort_by")
-            .and_then(|v| v.as_str())
-            .unwrap_or("relevance")
-        {
-            "date_desc" => SortOrder::DateDesc,
-            "date_asc" => SortOrder::DateAsc,
-            _ => SortOrder::Relevance,
-        };
-
-        let after = if let Some(s) = args
-            .get("after")
-            .and_then(|v| v.as_str())
-        {
+        let after = if let Some(ref s) = search_args.after {
             match shared::parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
@@ -532,10 +594,7 @@ impl McpServer {
             None
         };
 
-        let before = if let Some(s) = args
-            .get("before")
-            .and_then(|v| v.as_str())
-        {
+        let before = if let Some(ref s) = search_args.before {
             match shared::parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
@@ -551,22 +610,20 @@ impl McpServer {
         } else {
             None
         };
-
-        // Parse include parameter
-        let include = json_strings(args.get("include"));
-
-        let truncate_length = args
-            .get("truncate_length")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(300) as usize;
 
         let display_opts = DisplayOptions {
-            include_thinking: include.contains(&"thinking".to_string()),
-            include_tools: include.contains(&"tools".to_string()),
-            truncate_length,
+            include_thinking: search_args
+                .include
+                .contains(&"thinking".to_string()),
+            include_tools: search_args
+                .include
+                .contains(&"tools".to_string()),
+            truncate_length: search_args.truncate_length,
         };
 
-        let include_current_session = include.contains(&"current_session".to_string());
+        let include_current_session = search_args
+            .include
+            .contains(&"current_session".to_string());
 
         // Get current session ID from file detected earlier
         let current_session_id: Option<String> = if !include_current_session {
@@ -582,47 +639,58 @@ impl McpServer {
         };
 
         let query = SearchQuery {
-            text: query_text,
-            project_filter,
-            session_filter,
-            limit: limit * 3,
-            sort_by,
+            text: search_args.query_text,
+            project_filter: search_args.project_filter,
+            session_filter: search_args.session_filter,
+            limit: search_args.limit * 3,
+            sort_by: search_args.sort_by,
             after,
             before,
         };
 
         let search_engine = &self.search_engine;
-        let results_with_context =
-            search_engine.search_with_context(query, context_before, context_after)?;
+        let results_with_context = search_engine.search_with_context(
+            query,
+            search_args.context_before,
+            search_args.context_after,
+        )?;
 
         let filtered = shared::apply_search_filters(
             results_with_context,
             &shared::ResultFilter {
-                exclude_projects: exclude_projects.clone(),
+                exclude_projects: search_args
+                    .exclude_projects
+                    .clone(),
                 exclude_regexes,
                 active_session: current_session_id.clone(),
-                limit,
+                limit: search_args.limit,
             },
         );
 
         let mut output = String::new();
 
-        if debug_mode {
+        if search_args.debug_mode {
             output.push_str(&format!(
                 "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
                 args.get("query"),
-                context_before,
-                context_after,
-                limit,
-                exclude_projects,
+                search_args.context_before,
+                search_args.context_after,
+                search_args.limit,
+                search_args.exclude_projects,
                 all_exclude_patterns
             ));
         }
 
-        if !exclude_projects.is_empty() || !all_exclude_patterns.is_empty() {
+        if !search_args
+            .exclude_projects
+            .is_empty()
+            || !all_exclude_patterns.is_empty()
+        {
             output.push_str(&format!(
                 "Excluding: {} projects, {} patterns\n",
-                exclude_projects.len(),
+                search_args
+                    .exclude_projects
+                    .len(),
                 all_exclude_patterns.len()
             ));
         }
@@ -646,8 +714,8 @@ impl McpServer {
                     output.push('\n');
                 }
             }
-            if filtered.len() == limit {
-                output.push_str(&format!("\n+more: limit={}\n", limit));
+            if filtered.len() == search_args.limit {
+                output.push_str(&format!("\n+more: limit={}\n", search_args.limit));
             }
         }
 
