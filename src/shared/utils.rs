@@ -1,13 +1,13 @@
 use super::cache::CacheManager;
 use super::config::get_config;
 use super::indexer::SearchIndexer;
-use super::lock::ExclusiveIndexAccess;
+use super::lock::{ExclusiveIndexAccess, is_index_busy};
 use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
@@ -75,9 +75,12 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
 
     let _lock = match ExclusiveIndexAccess::acquire() {
         Ok(lock) => lock,
-        Err(_) => {
-            // Another process is already indexing, skip
+        Err(e) if is_index_busy(&e) => {
             info!("Skipping auto-index: another process is currently indexing");
+            return Ok(());
+        }
+        Err(e) => {
+            error!("Skipping auto-index, the index lock is unusable: {e:#}");
             return Ok(());
         }
     };

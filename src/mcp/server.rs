@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +27,29 @@ fn json_strings(value: Option<&Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Empty the index directory for a full rebuild, keeping the lock file: removing
+/// it would drop the exclusive access this rebuild is running under.
+fn clear_index_dir(dir: &std::path::Path) -> Result<()> {
+    let lock_file = get_config().get_lock_file_path()?;
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading index directory {}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("listing index directory {}", dir.display()))?
+            .path();
+        if path == lock_file {
+            continue;
+        }
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        removed.with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Parse date string: YYYY-MM-DD (as start of day UTC) or full ISO 8601
@@ -893,13 +916,22 @@ Task(
             .unwrap_or(false);
         let all_files = discover_jsonl_files()?;
 
+        let _lock = match crate::shared::ExclusiveIndexAccess::acquire() {
+            Ok(lock) => lock,
+            Err(e) if crate::shared::is_index_busy(&e) => {
+                return tool_err("Another process is indexing, reindex was not run");
+            }
+            Err(e) => {
+                return tool_err(format!("Reindex could not lock the index: {e:#}"));
+            }
+        };
+
         let result = if full_rebuild {
-            // Full rebuild - clear and recreate
             if self
                 .cache_dir
                 .exists()
             {
-                std::fs::remove_dir_all(&self.cache_dir)?;
+                clear_index_dir(&self.cache_dir)?;
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;

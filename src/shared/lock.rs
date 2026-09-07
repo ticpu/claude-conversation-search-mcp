@@ -1,9 +1,35 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result};
 use fs2::FileExt;
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use tracing::{debug, info};
 
 use super::config::get_config;
+
+/// Lock held by another process. Callers downcast to it to tell contention
+/// apart from a lock file they could not open at all.
+#[derive(Debug)]
+pub struct IndexBusy {
+    pub lock_type: LockType,
+}
+
+impl fmt::Display for IndexBusy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "another process holds the {:?} index lock",
+            self.lock_type
+        )
+    }
+}
+
+impl std::error::Error for IndexBusy {}
+
+/// True when the failure is contention rather than an unusable lock file.
+pub fn is_index_busy(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<IndexBusy>()
+        .is_some()
+}
 
 /// Index lock for coordinating access between multiple processes
 pub struct IndexLock {
@@ -87,11 +113,13 @@ impl IndexLock {
                     lock_type,
                 })
             }
-            Err(e) => Err(anyhow!(
-                "Could not acquire {:?} lock on index: {}. Another instance may be running.",
-                lock_type,
-                e
-            )),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Err(IndexBusy { lock_type })
+                .with_context(|| {
+                    format!("acquiring {:?} lock on {}", lock_type, lock_path.display())
+                }),
+            Err(e) => Err(e).with_context(|| {
+                format!("acquiring {:?} lock on {}", lock_type, lock_path.display())
+            }),
         }
     }
 
