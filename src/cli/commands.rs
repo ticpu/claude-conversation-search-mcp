@@ -192,16 +192,14 @@ pub fn setup_logging(verbose: u8) {
 pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
     setup_logging(verbose);
 
+    let index_path = shared::get_config().get_cache_dir()?;
+
     match command {
-        CliCommands::Index { action } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
-            match action.unwrap_or_default() {
-                IndexAction::Status => index::show_status(&index_path)?,
-                IndexAction::Rebuild => index::rebuild(&index_path)?,
-                IndexAction::Vacuum => index::vacuum(&index_path)?,
-            }
-        }
+        CliCommands::Index { action } => match action.unwrap_or_default() {
+            IndexAction::Status => index::show_status(&index_path)?,
+            IndexAction::Rebuild => index::rebuild(&index_path)?,
+            IndexAction::Vacuum => index::vacuum(&index_path)?,
+        },
         CliCommands::Completions { .. } => unreachable!("Completions handled in main"),
         CliCommands::Mcp => unreachable!("MCP handled in main"),
         CliCommands::Search {
@@ -220,8 +218,6 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             include,
             truncate,
         } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             let cb = ctx_before.unwrap_or(context);
             let ca = ctx_after.unwrap_or(context);
@@ -252,14 +248,10 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             search_conversations(&index_path, opts)?;
         }
         CliCommands::Topics { project, limit } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             show_topics(&index_path, project, limit)?;
         }
         CliCommands::Stats { project } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             show_stats(&index_path, project)?;
         }
@@ -274,8 +266,6 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             offset,
             limit,
         } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             let opts = SessionViewOpts {
                 session_id,
@@ -291,19 +281,13 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             view_session(&index_path, &opts)?;
         }
         CliCommands::Summary { session_id } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
             shared::auto_index(&index_path)?;
             summarize_session(&index_path, session_id)?;
         }
-        CliCommands::Cache { action } => {
-            let config = shared::get_config();
-            let index_path = config.get_cache_dir()?;
-            match action {
-                CacheAction::Info => show_cache_info(&index_path)?,
-                CacheAction::Clear => clear_cache(&index_path)?,
-            }
-        }
+        CliCommands::Cache { action } => match action {
+            CacheAction::Info => show_cache_info(&index_path)?,
+            CacheAction::Clear => clear_cache(&index_path)?,
+        },
         CliCommands::Install { project } => install(project)?,
     }
 
