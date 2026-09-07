@@ -127,4 +127,4 @@ Release workflow (`.github/workflows/release.yml`) triggers on version tags and 
 `.deb` packages. The packages are what https://apt.ticpu.net ingests, so a release missing them
 leaves the archive on the previous version.
 
-**Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=union` to avoid spurious merge conflicts. Do not stage `Cargo.lock` outside of the release process.
+**Cargo.lock Policy**: ignored on master. The release procedure commits it on a detached child of the tagged master commit, so the tag carries the lockfile that `--locked` release builds and the AUR PKGBUILD pin, and master never does. Never stage `Cargo.lock` on a branch.
