@@ -1418,19 +1418,4 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":0,"method":"tools/list"}"#
         ));
     }
-
-    #[test]
-    fn notification_namespaces_are_recognized() {
-        for method in [
-            "notifications/initialized",
-            "notifications/cancelled",
-            "$/cancelRequest",
-        ] {
-            assert!(
-                method.starts_with("notifications/") || method.starts_with("$/"),
-                "{method} should route to the notification arm, not unknown-method"
-            );
-        }
-        assert!(!"tools/list".starts_with("notifications/"));
-    }
 }

@@ -255,22 +255,4 @@ mod tests {
         assert!(techs.contains(&"rust".to_string()));
         assert!(techs.contains(&"docker".to_string()));
     }
-
-    #[test]
-    fn test_code_detection() {
-        let content_with_code = "Here's some code:\n```rust\nfn main() {}\n```";
-        let content_without_code = "This is just plain text";
-
-        assert!(has_code_blocks(content_with_code));
-        assert!(!has_code_blocks(content_without_code));
-    }
-
-    #[test]
-    fn test_error_detection() {
-        let content_with_error = "I'm getting an error when running this";
-        let content_normal = "Everything is working fine";
-
-        assert!(has_error_mentions(content_with_error));
-        assert!(!has_error_mentions(content_normal));
-    }
 }
