@@ -1,12 +1,13 @@
-use super::models::{SearchQuery, SearchResult, SortOrder};
-use super::path_utils::{session_jsonl_path, short_uuid};
+use super::models::{MessageType, SearchQuery, SearchResult, SortOrder};
+use super::path_utils::{home_to_tilde, session_jsonl_path, short_uuid};
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::Path;
+use std::str::FromStr;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Value};
@@ -505,11 +506,12 @@ impl SearchEngine {
             })
             .unwrap_or_else(Utc::now);
 
-        let message_type = doc
+        let stored_type = doc
             .get_first(self.message_type_field)
             .and_then(|v| v.as_str())
-            .unwrap_or("Unknown")
-            .to_string();
+            .ok_or_else(|| anyhow!("document {uuid} has no message_type field"))?;
+        let message_type = MessageType::from_str(stored_type)
+            .with_context(|| format!("document {uuid} carries an unindexable message type"))?;
 
         let technologies = doc
             .get_first(self.technologies_field)
@@ -646,9 +648,7 @@ impl SearchResultWithContext {
         let project_path_full = &self
             .matched_message
             .project_path;
-        let project_path_display = self
-            .matched_message
-            .project_path_display();
+        let project_path_display = home_to_tilde(project_path_full);
         let session_id = &self
             .matched_message
             .session_id;
@@ -728,7 +728,13 @@ impl SearchResultWithContext {
                 truncate_content(&msg.content, opts.truncate_length, true)
             };
 
-            output.push_str(&format!("{}{}: {}\n", prefix, msg.role_display(), content));
+            output.push_str(&format!(
+                "{}{}: {}\n",
+                prefix,
+                msg.message_type
+                    .short_name(),
+                content
+            ));
         }
     }
 }

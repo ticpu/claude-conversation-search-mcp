@@ -932,7 +932,7 @@ impl McpServer {
         let total = messages.len();
         let project = messages
             .first()
-            .map(|m| m.project_path_display())
+            .map(|m| crate::shared::home_to_tilde(&m.project_path))
             .unwrap_or_default();
         let short_session = short_uuid(session_id);
         let truncate_length = args
@@ -1001,7 +1001,9 @@ impl McpServer {
             let time = msg
                 .timestamp
                 .format("%H:%M");
-            let msg_type = msg.role_display();
+            let msg_type = msg
+                .message_type
+                .short_name();
             let marker = if center_idx == Some(idx) { "»" } else { " " };
             let content = if truncate_length > 0 {
                 let truncated: String = msg

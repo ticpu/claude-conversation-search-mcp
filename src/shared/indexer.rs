@@ -187,7 +187,7 @@ impl SearchIndexer {
                 self.fields.project_field => entry.project_path,
                 self.fields.session_field => entry.session_id,
                 self.fields.timestamp_field => tantivy::DateTime::from_timestamp_millis(entry.timestamp.timestamp_millis()),
-                self.fields.message_type_field => format!("{:?}", entry.message_type),
+                self.fields.message_type_field => entry.message_type.to_string(),
                 self.fields.model_field => entry.model.unwrap_or_else(|| "unknown".to_string()),
                 self.fields.technologies_field => entry.technologies.join(" "),
                 self.fields.code_languages_field => entry.code_languages.join(" "),

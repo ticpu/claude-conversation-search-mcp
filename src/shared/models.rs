@@ -1,5 +1,8 @@
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 
 /// Raw JSONL message structure for parsing Claude Code logs
 #[derive(Debug, Deserialize, Clone)]
@@ -65,18 +68,20 @@ pub struct ConversationEntry {
 
 impl ConversationEntry {
     pub fn is_displayable(&self) -> bool {
-        matches!(
-            self.message_type,
-            MessageType::User | MessageType::Assistant | MessageType::Summary
-        ) && self
-            .content
-            .trim()
-            != "Warmup"
+        displayable(&self.message_type, &self.content)
     }
 
     pub fn project_path_display(&self) -> String {
         super::path_utils::home_to_tilde(&self.project_path)
     }
+}
+
+/// Filters noise: non-conversational message types and internal warmup messages.
+pub fn displayable(kind: &MessageType, content: &str) -> bool {
+    matches!(
+        kind,
+        MessageType::User | MessageType::Assistant | MessageType::Summary
+    ) && content.trim() != "Warmup"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -95,6 +100,36 @@ impl MessageType {
             MessageType::Assistant => "AI",
             MessageType::Summary => "Sum",
             MessageType::System => "Sys",
+        }
+    }
+
+    fn as_index_str(&self) -> &'static str {
+        match self {
+            MessageType::User => "User",
+            MessageType::Assistant => "Assistant",
+            MessageType::Summary => "Summary",
+            MessageType::System => "System",
+        }
+    }
+}
+
+/// Exact inverse of `FromStr`: this is what the indexer stores in `message_type`.
+impl fmt::Display for MessageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_index_str())
+    }
+}
+
+impl FromStr for MessageType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "User" => Ok(MessageType::User),
+            "Assistant" => Ok(MessageType::Assistant),
+            "Summary" => Ok(MessageType::Summary),
+            "System" => Ok(MessageType::System),
+            other => Err(anyhow!("unknown message type {other:?}")),
         }
     }
 }
@@ -133,46 +168,11 @@ pub struct SearchResult {
     pub has_error: bool,
     pub interaction_count: usize,
     pub sequence_num: usize,
-    pub message_type: String,
+    pub message_type: MessageType,
 }
 
 impl SearchResult {
-    /// Check if message should be displayed (filters noise like Warmup, tool_result dumps)
     pub fn is_displayable(&self) -> bool {
-        // Filter by message type
-        if !matches!(
-            self.message_type
-                .as_str(),
-            "User" | "Assistant" | "Summary"
-        ) {
-            return false;
-        }
-        // Filter internal warmup messages
-        if self
-            .content
-            .trim()
-            == "Warmup"
-        {
-            return false;
-        }
-        true
-    }
-
-    /// Get project path with ~ for home directory
-    pub fn project_path_display(&self) -> String {
-        super::path_utils::home_to_tilde(&self.project_path)
-    }
-
-    /// Short display name for message type (User, AI, Sum, Sys)
-    pub fn role_display(&self) -> &'static str {
-        match self
-            .message_type
-            .as_str()
-        {
-            "User" => "User",
-            "Assistant" => "AI",
-            "Summary" => "Sum",
-            _ => "?",
-        }
+        displayable(&self.message_type, &self.content)
     }
 }

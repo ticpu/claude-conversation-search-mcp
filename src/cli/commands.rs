@@ -1059,7 +1059,7 @@ fn view_session_from_results(
         (&displayable[..], None)
     };
 
-    let project_path = results[0].project_path_display();
+    let project_path = shared::home_to_tilde(&results[0].project_path);
     let time_range = format!(
         "{} - {}",
         results[0]
@@ -1136,7 +1136,12 @@ fn view_session_from_results(
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        println!("{marker} [{time}] {}: {content}", result.role_display());
+        println!(
+            "{marker} [{time}] {}: {content}",
+            result
+                .message_type
+                .short_name()
+        );
     }
 
     Ok(())
@@ -1180,7 +1185,12 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        conversation.push_str(&format!("{}: {}\n", r.role_display(), content));
+        conversation.push_str(&format!(
+            "{}: {}\n",
+            r.message_type
+                .short_name(),
+            content
+        ));
     }
 
     // Create jail directory in temp dir (XDG_RUNTIME_DIR on Unix, %TEMP% on Windows)
