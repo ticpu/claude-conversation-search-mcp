@@ -61,7 +61,6 @@ pub struct SearchEngine {
     index: Index,
     reader: IndexReader,
     uuid_field: Field,
-    parent_uuid_field: Field,
     content_field: Field,
     project_field: Field,
     session_field: Field,
@@ -74,8 +73,6 @@ pub struct SearchEngine {
     has_error_field: Field,
     cwd_field: Field,
     sequence_num_field: Field,
-    is_sidechain_field: Field,
-    agent_id_field: Field,
     interaction_counts: HashMap<String, usize>,
 }
 
@@ -89,7 +86,6 @@ impl SearchEngine {
 
         let schema = index.schema();
         let uuid_field = schema.get_field("uuid")?;
-        let parent_uuid_field = schema.get_field("parent_uuid")?;
         let content_field = schema.get_field("content")?;
         let project_field = schema.get_field("project")?;
         let session_field = schema.get_field("session_id")?;
@@ -102,14 +98,11 @@ impl SearchEngine {
         let has_error_field = schema.get_field("has_error")?;
         let cwd_field = schema.get_field("cwd")?;
         let sequence_num_field = schema.get_field("sequence_num")?;
-        let is_sidechain_field = schema.get_field("is_sidechain")?;
-        let agent_id_field = schema.get_field("agent_id")?;
 
         Ok(Self {
             index,
             reader,
             uuid_field,
-            parent_uuid_field,
             content_field,
             project_field,
             session_field,
@@ -122,8 +115,6 @@ impl SearchEngine {
             has_error_field,
             cwd_field,
             sequence_num_field,
-            is_sidechain_field,
-            agent_id_field,
             interaction_counts: session_counts,
         })
     }
@@ -205,9 +196,8 @@ impl SearchEngine {
         match &query.sort_by {
             SortOrder::Relevance => {
                 let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
-                for (score, doc_address) in top_docs {
-                    let result =
-                        self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
+                for (_, doc_address) in top_docs {
+                    let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
                     if !self.passes_post_filters(&result, &query) {
                         continue;
                     }
@@ -219,8 +209,7 @@ impl SearchEngine {
                     .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Desc);
                 let top_docs = searcher.search(&*final_query, &collector)?;
                 for (_, doc_address) in top_docs {
-                    let result =
-                        self.doc_to_result(&searcher.doc(doc_address)?, 0.0, &query.text)?;
+                    let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
                     if !self.passes_post_filters(&result, &query) {
                         continue;
                     }
@@ -232,8 +221,7 @@ impl SearchEngine {
                     .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Asc);
                 let top_docs = searcher.search(&*final_query, &collector)?;
                 for (_, doc_address) in top_docs {
-                    let result =
-                        self.doc_to_result(&searcher.doc(doc_address)?, 0.0, &query.text)?;
+                    let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
                     if !self.passes_post_filters(&result, &query) {
                         continue;
                     }
@@ -416,8 +404,8 @@ impl SearchEngine {
         let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
 
         let mut results = Vec::new();
-        for (score, doc_address) in top_docs {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
+        for (_, doc_address) in top_docs {
+            let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
             // Filter to session_id match - support prefix matching for short IDs
             if result.session_id == session_id
                 || result
@@ -461,8 +449,8 @@ impl SearchEngine {
 
             let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
 
-            for (score, doc_address) in top_docs {
-                let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
+            for (_, doc_address) in top_docs {
+                let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
                 // Exact match or prefix match
                 if result.uuid == *uuid
                     || result
@@ -478,23 +466,12 @@ impl SearchEngine {
         Ok(results)
     }
 
-    fn doc_to_result(
-        &self,
-        doc: &TantivyDocument,
-        score: f32,
-        query_text: &str,
-    ) -> Result<SearchResult> {
+    fn doc_to_result(&self, doc: &TantivyDocument) -> Result<SearchResult> {
         let uuid = doc
             .get_first(self.uuid_field)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-
-        let parent_uuid = doc
-            .get_first(self.parent_uuid_field)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
 
         let content = doc
             .get_first(self.content_field)
@@ -533,12 +510,6 @@ impl SearchEngine {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown")
             .to_string();
-
-        let snippet = if query_text.is_empty() {
-            truncate_content(&content, 150, false)
-        } else {
-            self.generate_snippet(&content, query_text)
-        };
 
         let technologies = doc
             .get_first(self.technologies_field)
@@ -585,29 +556,15 @@ impl SearchEngine {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
-        let is_sidechain = doc
-            .get_first(self.is_sidechain_field)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let agent_id = doc
-            .get_first(self.agent_id_field)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-
         let interaction_count = self.get_interaction_count(&session_id);
 
         Ok(SearchResult {
             uuid,
-            parent_uuid,
             content,
             project,
             project_path,
             session_id,
             timestamp,
-            score,
-            snippet,
             technologies,
             code_languages,
             tools_mentioned,
@@ -615,60 +572,8 @@ impl SearchEngine {
             has_error,
             interaction_count,
             sequence_num,
-            is_sidechain,
-            agent_id,
             message_type,
         })
-    }
-
-    fn generate_snippet(&self, content: &str, query: &str) -> String {
-        let words: Vec<&str> = content
-            .split_whitespace()
-            .collect();
-        let query_words: Vec<&str> = query
-            .split_whitespace()
-            .collect();
-
-        if words.len() <= 30 {
-            return content.to_string();
-        }
-
-        let mut best_start = 0;
-        let mut best_score = 0;
-
-        for (i, window) in words
-            .windows(30)
-            .enumerate()
-        {
-            let window_text = window.join(" ");
-            let mut score = 0;
-
-            for query_word in &query_words {
-                if window_text
-                    .to_lowercase()
-                    .contains(&query_word.to_lowercase())
-                {
-                    score += 1;
-                }
-            }
-
-            if score > best_score {
-                best_score = score;
-                best_start = i;
-            }
-        }
-
-        let snippet_words = &words[best_start..std::cmp::min(best_start + 30, words.len())];
-        let mut snippet = snippet_words.join(" ");
-
-        if best_start > 0 {
-            snippet = format!("...{snippet}");
-        }
-        if best_start + 30 < words.len() {
-            snippet = format!("{snippet}...");
-        }
-
-        snippet
     }
 
     fn get_interaction_count(&self, session_id: &str) -> usize {

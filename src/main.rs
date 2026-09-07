@@ -1,4 +1,6 @@
-use claude_conversation_search::{cli, mcp};
+mod cli;
+mod mcp;
+mod shared;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser};

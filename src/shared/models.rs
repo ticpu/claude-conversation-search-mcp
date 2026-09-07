@@ -118,17 +118,14 @@ pub struct SearchQuery {
     pub before: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     pub uuid: String,
-    pub parent_uuid: Option<String>,
     pub content: String,
     pub project: String,
     pub project_path: String,
     pub session_id: String,
     pub timestamp: DateTime<Utc>,
-    pub score: f32,
-    pub snippet: String,
     pub technologies: Vec<String>,
     pub code_languages: Vec<String>,
     pub tools_mentioned: Vec<String>,
@@ -136,8 +133,6 @@ pub struct SearchResult {
     pub has_error: bool,
     pub interaction_count: usize,
     pub sequence_num: usize,
-    pub is_sidechain: bool,
-    pub agent_id: Option<String>,
     pub message_type: String,
 }
 
