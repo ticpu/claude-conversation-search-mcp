@@ -85,7 +85,7 @@ fn query_terminal_da1() -> bool {
 }
 
 /// Create OSC 8 hyperlink if terminal supports it, otherwise plain text
-pub fn hyperlink(url: &str, text: &str) -> String {
+fn hyperlink(url: &str, text: &str) -> String {
     if supports_hyperlinks() {
         format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
     } else {

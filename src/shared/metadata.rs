@@ -190,7 +190,7 @@ static ERROR_PATTERNS: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
-pub fn extract_technologies(content: &str) -> Vec<String> {
+fn extract_technologies(content: &str) -> Vec<String> {
     let mut technologies = HashSet::new();
     for (tech, pattern) in TECHNOLOGY_PATTERNS.iter() {
         if pattern.is_match(content) {
@@ -202,7 +202,7 @@ pub fn extract_technologies(content: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn extract_tools_mentioned(content: &str) -> Vec<String> {
+fn extract_tools_mentioned(content: &str) -> Vec<String> {
     let mut tools = HashSet::new();
     for (tool, pattern) in TOOL_PATTERNS.iter() {
         if pattern.is_match(content) {
@@ -214,7 +214,7 @@ pub fn extract_tools_mentioned(content: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn extract_code_languages(content: &str) -> Vec<String> {
+fn extract_code_languages(content: &str) -> Vec<String> {
     let mut languages = HashSet::new();
     for (lang, pattern) in LANGUAGE_PATTERNS.iter() {
         if pattern.is_match(content) {
@@ -226,11 +226,11 @@ pub fn extract_code_languages(content: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn has_code_blocks(content: &str) -> bool {
+fn has_code_blocks(content: &str) -> bool {
     CODE_BLOCK_PATTERN.is_match(content)
 }
 
-pub fn has_error_mentions(content: &str) -> bool {
+fn has_error_mentions(content: &str) -> bool {
     ERROR_PATTERNS.is_match(content)
 }
 
