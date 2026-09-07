@@ -4,6 +4,7 @@ pub mod index;
 mod search;
 mod session;
 mod stats;
+mod summary;
 
 pub use args::*;
 pub use commands::*;
