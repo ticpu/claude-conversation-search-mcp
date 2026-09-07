@@ -4,7 +4,6 @@ use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder};
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Subcommand, ValueEnum};
-use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::Level;
@@ -423,10 +422,7 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
         .clone();
     all_exclude_patterns.extend(opts.exclude_patterns);
 
-    let exclude_regexes: Vec<Regex> = all_exclude_patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect();
+    let exclude_regexes = shared::compile_exclude_patterns(&all_exclude_patterns)?;
 
     let (_cache, search_engine) = shared::open_search_engine(index_path)?;
 

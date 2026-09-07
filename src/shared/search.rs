@@ -594,6 +594,15 @@ fn self_context_result(
     }
 }
 
+/// Compile exclusion patterns, refusing an invalid one rather than searching
+/// unfiltered.
+pub fn compile_exclude_patterns(patterns: &[String]) -> Result<Vec<regex::Regex>> {
+    patterns
+        .iter()
+        .map(|p| regex::Regex::new(p).with_context(|| format!("invalid exclude pattern '{p}'")))
+        .collect()
+}
+
 /// Post-search filtering: excluded projects, excluded path/project regexes,
 /// an optional session to drop (the one currently being written), and the
 /// result cap applied after dedup.

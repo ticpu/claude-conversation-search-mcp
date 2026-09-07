@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -223,21 +222,19 @@ impl SearchArgs {
 
         let exclude_projects = json_strings(args.get("exclude_projects"));
 
-        let exclude_patterns: Vec<String> = args
-            .get("exclude_patterns")
-            .map(|v| {
-                if let Some(arr) = v.as_array() {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .collect()
-                } else if let Some(s) = v.as_str() {
-                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            })
-            .unwrap_or_default();
+        let exclude_patterns: Vec<String> = match args.get("exclude_patterns") {
+            Some(v) if v.is_array() => json_strings(Some(v)),
+            Some(v) => {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("'exclude_patterns' must be an array of strings")
+                    })?;
+                serde_json::from_str::<Vec<String>>(s)
+                    .with_context(|| format!("parsing 'exclude_patterns' from '{s}'"))?
+            }
+            None => Vec::new(),
+        };
 
         let limit = args
             .get("limit")
@@ -606,10 +603,10 @@ impl McpServer {
                 .clone(),
         );
 
-        let exclude_regexes: Vec<Regex> = all_exclude_patterns
-            .iter()
-            .filter_map(|p| Regex::new(p).ok())
-            .collect();
+        let exclude_regexes = match shared::compile_exclude_patterns(&all_exclude_patterns) {
+            Ok(regexes) => regexes,
+            Err(e) => return tool_err(format!("{e:#}")),
+        };
 
         let after = if let Some(ref s) = search_args.after {
             match shared::parse_date(s) {
