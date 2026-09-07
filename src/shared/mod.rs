@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod cache_stats;
 pub mod config;
 pub mod format;
 pub mod indexer;
