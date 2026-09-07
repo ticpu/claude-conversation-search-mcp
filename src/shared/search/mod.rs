@@ -171,28 +171,22 @@ impl SearchEngine {
             ));
         }
 
-        let final_query = if final_query_parts.len() > 1 {
-            Box::new(BooleanQuery::new(final_query_parts)) as Box<dyn tantivy::query::Query>
-        } else {
-            final_query_parts
-                .into_iter()
-                .next()
-                .unwrap()
-                .1
-        };
+        // BooleanQuery specializes a single-clause vector to the clause's own
+        // scorer, so this scores identically to using the clause directly.
+        let final_query = BooleanQuery::new(final_query_parts);
 
         // The three sort orders use different tantivy collectors (with different
         // Fruit types), so each match arm runs its own search and discards the
         // sort key, leaving a uniform doc address list for the one loop below.
         let doc_addresses: Vec<_> = match &query.sort_by {
             SortOrder::Relevance => searcher
-                .search(&*final_query, &TopDocs::with_limit(query.limit))?
+                .search(&final_query, &TopDocs::with_limit(query.limit))?
                 .into_iter()
                 .map(|(_, addr)| addr)
                 .collect(),
             SortOrder::DateDesc => searcher
                 .search(
-                    &*final_query,
+                    &final_query,
                     &TopDocs::with_limit(query.limit)
                         .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Desc),
                 )?
@@ -201,7 +195,7 @@ impl SearchEngine {
                 .collect(),
             SortOrder::DateAsc => searcher
                 .search(
-                    &*final_query,
+                    &final_query,
                     &TopDocs::with_limit(query.limit)
                         .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Asc),
                 )?

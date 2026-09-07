@@ -4,7 +4,7 @@ use super::indexer::SearchIndexer;
 use super::lock::{ExclusiveIndexAccess, is_index_busy};
 use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
@@ -19,11 +19,7 @@ pub fn parse_date(s: &str) -> Result<DateTime<Utc>> {
         return Ok(dt.with_timezone(&Utc));
     }
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(Utc.from_utc_datetime(
-            &date
-                .and_hms_opt(0, 0, 0)
-                .unwrap(),
-        ));
+        return Ok(Utc.from_utc_datetime(&date.and_time(NaiveTime::MIN)));
     }
     anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
 }
