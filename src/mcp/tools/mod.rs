@@ -207,17 +207,18 @@ type DateBounds = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 /// the caller as tool content (isError), not a protocol-level error, so the
 /// caller decides how to surface this function's `Err`.
 fn parse_date_bounds(search_args: &SearchArgs) -> Result<DateBounds> {
-    let after = search_args
-        .after
-        .as_deref()
-        .map(shared::parse_date)
-        .transpose()?;
-    let before = search_args
-        .before
-        .as_deref()
-        .map(shared::parse_date)
-        .transpose()?;
-    Ok((after, before))
+    Ok((
+        shared::parse_date_opt(
+            search_args
+                .after
+                .as_deref(),
+        )?,
+        shared::parse_date_opt(
+            search_args
+                .before
+                .as_deref(),
+        )?,
+    ))
 }
 
 /// Render the tool response body: optional debug line, exclude/staleness

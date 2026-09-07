@@ -52,14 +52,8 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                 exclude_projects: exclude_project,
                 exclude_patterns: exclude_pattern,
                 sort: sort.into(),
-                after: after
-                    .as_deref()
-                    .map(shared::parse_date)
-                    .transpose()?,
-                before: before
-                    .as_deref()
-                    .map(shared::parse_date)
-                    .transpose()?,
+                after: shared::parse_date_opt(after.as_deref())?,
+                before: shared::parse_date_opt(before.as_deref())?,
                 display: DisplayOptions {
                     include_thinking: include.contains(&IncludeArg::Thinking),
                     include_tools: include.contains(&IncludeArg::Tools),

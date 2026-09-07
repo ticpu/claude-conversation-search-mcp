@@ -24,6 +24,12 @@ pub fn parse_date(s: &str) -> Result<DateTime<Utc>> {
     anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
 }
 
+/// Parse an optional date string, passing `None` through unchanged.
+pub fn parse_date_opt(s: Option<&str>) -> Result<Option<DateTime<Utc>>> {
+    s.map(parse_date)
+        .transpose()
+}
+
 /// Get file modification time as DateTime<Utc>
 pub fn file_mtime(path: &Path) -> Result<DateTime<Utc>> {
     let metadata = fs::metadata(path)?;
