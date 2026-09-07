@@ -119,30 +119,26 @@ claude-conversation-search search "function" --limit 20
 
 ## CLI Reference
 
-### `claude-conversation-search index`
-Build or update the search index from your Claude Code conversations.
+### `claude-conversation-search index [status|rebuild|vacuum]`
+Manage the search index. `status` (the default, run with no subcommand) prints the lock state
+and, if an index exists, its path, file/entry counts, last-updated time and size:
 
-```bash
-claude-conversation-search index              # Build/update index from ~/.claude/projects/
-claude-conversation-search index --rebuild    # Force full rebuild (recreates index)
+```
+Index Status
+============
+Lock Status: Available
+Index Path: /home/user/.cache/claude-conversation-search
+Total Files: 15
+Total Entries: 2847
+Last Updated: 2025-08-23 15:30:00 UTC
+Index Size: 12.40 MB
 ```
 
-**What it does:**
-- Scans `~/.claude/projects/` for `*.jsonl` files
-- Parses conversation entries with timestamps, content, and metadata  
-- Builds full-text search index using Tantivy
-- Index stored at `~/.cache/claude-conversation-search/`
-
-**Expected output:**
-```
-Starting indexing process...
-Scanning for JSONL files in: /home/user/.claude/projects/**/*.jsonl
-Processing: /home/user/.claude/projects/my-project/session-id.jsonl
-  Indexed 45 entries
-Processing: /home/user/.claude/projects/other-project/session-id2.jsonl  
-  Indexed 123 entries
-Indexing complete: 15 files, 2,847 entries
-```
+`rebuild` clears the cache and re-indexes every JSONL file under `~/.claude/projects/` from
+scratch, printing `Index rebuild completed successfully.` when done. `vacuum` is currently the
+same rebuild under a different name. Every other command (`search`, `topics`, `stats`, `session`,
+`summary`) auto-indexes first when `index.auto_index_on_startup` is true (the default), so running
+`index` explicitly is only needed to check status or force a rebuild.
 
 ### `claude-conversation-search search <query>`
 Search through your indexed conversations.
@@ -153,31 +149,63 @@ claude-conversation-search search "error" --project "my-project" --limit 5
 ```
 
 **Options:**
-- `--project <name>` - Filter by project directory name (e.g., "vault-rs")
-- `--limit <n>` - Maximum results to show (default: 10)
+- `--project <name>` - Filter by project directory name
+- `--session <id>` - Filter by session ID (prefix match)
+- `--limit <n>` - Maximum results (default: 10)
+- `-C <n>` / `-B <n>` / `-A <n>` - Context messages before/after the match, grep-style (default: 2)
+- `--exclude-project <name>` - Repeatable; drop results from these projects
+- `--exclude-pattern <regex>` - Repeatable; drop results matching a regex
+- `--sort <relevance|date-desc|date-asc>` - Result order (default: relevance)
+- `--after <date>` / `--before <date>` - Filter by date (YYYY-MM-DD or ISO 8601)
+- `--include <thinking|tools>` - Repeatable; show thinking blocks and/or tool calls (hidden by default)
+- `--truncate <n>` - Characters shown per message around the match; 0 for full content (default: 300)
 
 **Expected output:**
 ```
-Found 3 results:
+Found 3 results (-C 2):
 
-1. [my-project] 2025-08-23 15:30 (score: 8.42)
-   Session: abc123-def456-789
-   Here's how to handle async functions in Rust: async fn process_data() -> Result<(), Error> { ... }
-
-2. [my-project] 2025-08-22 09:15 (score: 7.23)  
-   Session: xyz789-abc123-456
-   You can use tokio::spawn for concurrent async tasks...
-
-3. [another-project] 2025-08-20 14:45 (score: 6.91)
-   Session: def456-xyz789-123
-   The async/await syntax makes it easy to write asynchronous code...
+1. 📁 ~/GIT/my-project 🗒️ abc123de (12 msgs) 💬 f4a9e21c 📅 2025-08-23 15:30
+🎟️rust,async
+   User: how do I handle async functions in Rust
+»  AI: Here's how to handle async functions in Rust: async fn process_data() -> Result<(), Error> { ... }
+   User: thanks, what about tokio::spawn
 ```
 
-**Query features:**
-- **Simple text**: `claude-conversation-search search "docker compose"`
-- **Multiple terms**: `claude-conversation-search search "rust error handling"`  
-- **Phrase search**: `claude-conversation-search search '"exact phrase"'` (wrap in quotes)
-- **Boolean AND**: `claude-conversation-search search "rust AND async"` (both terms must appear)
+**Query features** (Tantivy's default query syntax):
+- **Simple/multiple terms**: `claude-conversation-search search "rust error handling"`
+- **Phrase search**: `claude-conversation-search search '"exact phrase"'`
+- **Boolean AND/OR**: `claude-conversation-search search "rust AND async"`
+- **Field syntax**: `claude-conversation-search search "project:vault-rs"` or `"session_id:abc123"`
+
+### `claude-conversation-search session <session_id>`
+View a session's messages directly.
+
+```bash
+claude-conversation-search session abc123de              # first page, 5 messages of context
+claude-conversation-search session abc123de --full       # untruncated content
+claude-conversation-search session abc123de --center <msg_uuid> -C 10
+claude-conversation-search session abc123de --offset 50 --limit 20
+```
+
+**Options:**
+- `--full` - Show full content instead of truncated snippets
+- `--center <uuid>` - Center the view on a message UUID (prefix match); overrides offset/limit
+- `-C <n>` / `-B <n>` / `-A <n>` - Messages before/after the center (default: 5)
+- `--truncate <n>` - Characters shown per message; 0 for full content (default: 200)
+- `--offset <n>` - Skip this many messages before displaying (default: 0)
+- `--limit <n>` - Messages to show; 0 for all (default: 0)
+
+Reads the source JSONL directly when it exists (untruncated content), falling back to the search
+index otherwise; the header marks it `(from index, content may be truncated)` when it does. Exits
+with a non-zero status and an error on stderr if the session has no displayable messages.
+
+### Other commands
+- `topics [--project <name>] [--limit <n>]` - Ranked technologies, languages, tools and projects across indexed conversations
+- `stats [--project <name>]` - Cache and conversation statistics
+- `summary <session_id>` - Summarize a session by piping it to `claude --print --model haiku` in a jailed empty directory
+- `cache info` / `cache clear` - Inspect or clear the on-disk index
+- `install [--project]` - Register this binary as an MCP server with Claude Code (user scope by default)
+- `completions <shell>` - Generate shell completions
 
 ## MCP Integration (Claude Code)
 
@@ -207,13 +235,13 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
 3. **Use within Claude Code** - Claude will automatically have access to search your conversations:
    - "Search my previous conversations about Rust async"
    - "Find where we discussed error handling"
-   - "Show stats on my coding conversations"
+   - "Summarize that long session from last week"
 
 ### MCP Tools Available
-- **search_conversations**: Full-text search with `-C`/`-B`/`-A` context (grep-style). Shows timestamps, session IDs, 🎟️ tags.
+- **search_conversations**: Full-text search with `-C`/`-B`/`-A` context (grep-style). Shows timestamps, session IDs, 🎟️ tags. Excludes the caller's own active session from results unless `include: ["current_session"]` is passed; `debug: true` prints the parsed query and filters applied.
 - **get_session_messages**: Paginated session content. Use `center_on` + `-B`/`-A` to jump to a specific message.
 - **get_messages**: Fetch full content of specific messages by UUID (from 💬 in search results).
-- **summarize_session**: Returns Task instructions for haiku-powered summarization of large sessions.
+- **summarize_session**: Returns Task tool instructions for haiku-powered summarization of large sessions (the agent then calls `get_session_messages` itself).
 - **reindex**: Update index when results seem incomplete.
 - **respawn_server**: Reload MCP server after rebuilding.
 
@@ -261,29 +289,39 @@ claude-conversation-search search "regex pattern"
 The tool works out of the box, but you can customize behavior:
 
 ### Environment Variables
-- `CLAUDE_CONFIG_DIR` - Override Claude Code directory location
-- `CLAUDE_SEARCH_CACHE` - Custom cache directory location
-- `RUST_LOG` - Control logging verbosity (`error`, `warn`, `info`, `debug`, `trace`)
+- `HYPERLINKS` - `0`/`false` to disable OSC 8 terminal hyperlinks, `1`/anything else to force them on (auto-detected otherwise)
+- `XDG_RUNTIME_DIR` - Where the `summary` command creates its jailed working directory (Unix only; falls back to the system temp dir)
+
+Verbosity is controlled by repeating `-v` on the command line (`-v` = WARN, `-vv` = INFO, `-vvv` = DEBUG), not an environment variable. The Claude Code directory and the cache directory are overridden through the config file below, not environment variables.
 
 ### Config File
 
-`~/.config/claude-conversation-search-mcp/config.yaml`:
+`~/.config/claude-conversation-search-mcp/config.yaml` is created with these defaults on first run:
 
 ```yaml
+index:
+  auto_index_on_startup: true   # Index before search/session/topics/stats/summary if needed
+  writer_heap_mb: 512           # Tantivy writer heap size
+  enable_tagging: true          # Extract technologies/languages/tools/error tags at index time
+  cache_dir: null                # Override the index location (default: OS cache dir)
+  claude_dir: null               # Override ~/.claude (default: autodetects ~/.claude, then ~/.config/claude)
+
+locking:
+  enabled: true
+  lock_file: null                # Override the lock file path (default: <cache_dir>/index.lock)
+
 limits:
-  per_file_chars: 150000        # Max chars indexed per JSONL file
   tool_result_max_chars: 2000   # Max chars kept from tool_result content
   tool_input_max_chars: 200     # Max chars kept from tool_use input
 
 search:
   exclude_patterns: []          # Regex patterns to exclude from results
-
-index:
-  auto_index_on_startup: true
-  writer_heap_mb: 50
 ```
 
-Changing `tool_result_max_chars` or `tool_input_max_chars` requires a reindex (`claude-conversation-search index rebuild`).
+Changing `tool_result_max_chars`, `tool_input_max_chars` or `enable_tagging` requires a reindex
+(`claude-conversation-search index rebuild`) since they only affect content extracted while
+parsing. With `enable_tagging: false`, entries carry no technologies/languages/tools/error tags:
+`topics` has nothing to rank and search results show no 🎟️ line.
 
 ### Cache Location
 
@@ -315,15 +353,15 @@ Changing `tool_result_max_chars` or `tool_input_max_chars` requires a reindex (`
 **"No conversations found"**
 - Check that Claude Code has created files in `~/.claude/projects/`
 - Verify directory permissions
-- Try `claude-conversation-search index --rebuild`
+- Try `claude-conversation-search index rebuild`
 
-**"Index is corrupt"**  
-- Run `claude-conversation-search cache clear && claude-conversation-search index`
+**"Index is corrupt"**
+- Run `claude-conversation-search cache clear && claude-conversation-search index rebuild`
 - Check disk space availability
 
 **"Search is slow"**
 - Run `claude-conversation-search cache info` to check index size
-- Consider `claude-conversation-search index --rebuild` to optimize
+- Consider `claude-conversation-search index rebuild` to optimize
 
 **"Permission denied"**
 - Ensure read access to Claude Code directories
@@ -358,33 +396,28 @@ claude-conversation-search index --help    # Index command help
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
 ### Development Setup
 ```bash
-git clone https://github.com/user/claude-conversation-search
-cd claude-conversation-search
+git clone https://github.com/ticpu/claude-conversation-search-mcp
+cd claude-conversation-search-mcp
 
 # Build for development
 cargo build
 
-# Test (runs all tests)
-cargo test
+# Run the pre-commit checks (fmt --check, clippy -D warnings, cargo test --release)
+bash hooks/install.sh   # once, to install the git hook
+cargo clippy --fix --allow-dirty --message-format=short && cargo fmt --all
 
 # Run CLI tool
 cargo run -- --help
 
 # Run MCP server (for testing)
 cargo run -- mcp
-
-# Check for warnings and run linting
-cargo check
-cargo clippy --fix --allow-dirty
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+GPL-3.0-only - see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
