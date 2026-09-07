@@ -492,6 +492,37 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     Ok(())
 }
 
+/// Print a ranked topic section: header, then up to `limit` entries sorted by
+/// count descending, formatted as "   item (count<count_suffix>)".
+fn print_topic_section(
+    header: &str,
+    counts: &HashMap<String, i32>,
+    limit: usize,
+    count_suffix: &str,
+    trailing_blank_line: bool,
+) {
+    if counts.is_empty() {
+        return;
+    }
+    println!("{header}");
+    let mut sorted: Vec<_> = counts
+        .iter()
+        .collect();
+    sorted.sort_by(|a, b| {
+        b.1.cmp(a.1)
+    });
+
+    for (item, count) in sorted
+        .iter()
+        .take(limit)
+    {
+        println!("   {item} ({count}{count_suffix})");
+    }
+    if trailing_blank_line {
+        println!();
+    }
+}
+
 fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'claude-search index' first.");
@@ -566,79 +597,25 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
         println!("Filtered by project: {project}\n");
     }
 
-    // Top technologies
-    if !tech_counts.is_empty() {
-        println!("🔧 Top Technologies:");
-        let mut sorted_tech: Vec<_> = tech_counts
-            .iter()
-            .collect();
-        sorted_tech.sort_by(|a, b| {
-            b.1.cmp(a.1)
-        });
-
-        for (tech, count) in sorted_tech
-            .iter()
-            .take(limit)
-        {
-            println!("   {tech} ({count})");
-        }
-        println!();
-    }
-
-    // Top programming languages
-    if !lang_counts.is_empty() {
-        println!("💻 Top Programming Languages:");
-        let mut sorted_lang: Vec<_> = lang_counts
-            .iter()
-            .collect();
-        sorted_lang.sort_by(|a, b| {
-            b.1.cmp(a.1)
-        });
-
-        for (lang, count) in sorted_lang
-            .iter()
-            .take(limit)
-        {
-            println!("   {lang} ({count})");
-        }
-        println!();
-    }
-
-    // Top tools mentioned
-    if !tool_counts.is_empty() {
-        println!("🔨 Top Tools Mentioned:");
-        let mut sorted_tools: Vec<_> = tool_counts
-            .iter()
-            .collect();
-        sorted_tools.sort_by(|a, b| {
-            b.1.cmp(a.1)
-        });
-
-        for (tool, count) in sorted_tools
-            .iter()
-            .take(limit)
-        {
-            println!("   {tool} ({count})");
-        }
-        println!();
-    }
+    print_topic_section("🔧 Top Technologies:", &tech_counts, limit, "", true);
+    print_topic_section(
+        "💻 Top Programming Languages:",
+        &lang_counts,
+        limit,
+        "",
+        true,
+    );
+    print_topic_section("🔨 Top Tools Mentioned:", &tool_counts, limit, "", true);
 
     // Project breakdown (if not filtering by project)
-    if project_filter.is_none() && !project_counts.is_empty() {
-        println!("📂 Project Activity:");
-        let mut sorted_projects: Vec<_> = project_counts
-            .iter()
-            .collect();
-        sorted_projects.sort_by(|a, b| {
-            b.1.cmp(a.1)
-        });
-
-        for (project, count) in sorted_projects
-            .iter()
-            .take(limit)
-        {
-            println!("   {project} ({count} conversations)");
-        }
+    if project_filter.is_none() {
+        print_topic_section(
+            "📂 Project Activity:",
+            &project_counts,
+            limit,
+            " conversations",
+            false,
+        );
     }
 
     Ok(())
