@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct CacheMetadata {
@@ -156,10 +156,20 @@ impl CacheManager {
             .filter_map(|file_path| {
                 info!("Processing: {}", file_path.display());
                 let source_kind = SourceKind::classify(&file_path);
-                let file_size = fs::metadata(&file_path)
-                    .ok()?
-                    .len();
-                let file_modified = file_mtime(&file_path).ok()?;
+                let file_size = match fs::metadata(&file_path) {
+                    Ok(m) => m.len(),
+                    Err(e) => {
+                        warn!("Skipping {}: {}", file_path.display(), e);
+                        return None;
+                    }
+                };
+                let file_modified = match file_mtime(&file_path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!("Skipping {}: {:#}", file_path.display(), e);
+                        return None;
+                    }
+                };
                 match parser.parse_file(&file_path) {
                     Ok(entries) => Some(ParsedFile {
                         path: file_path,
@@ -426,11 +436,17 @@ impl CacheManager {
             if !considered.contains(path.as_path()) {
                 continue;
             }
-            if let Ok(current_mtime) = file_mtime(path) {
-                let current_size = fs::metadata(path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                if current_size != meta.size || current_mtime != meta.modified {
+            let current = fs::metadata(path)
+                .with_context(|| format!("reading metadata of {}", path.display()))
+                .and_then(|m| Ok((m.len(), file_mtime(path)?)));
+            match current {
+                Ok((size, mtime)) => {
+                    if size != meta.size || mtime != meta.modified {
+                        stale += 1;
+                    }
+                }
+                Err(e) => {
+                    error!("Counting {} as stale: {:#}", path.display(), e);
                     stale += 1;
                 }
             }
