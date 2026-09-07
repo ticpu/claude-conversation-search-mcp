@@ -211,43 +211,42 @@ impl SearchEngine {
                 .1
         };
 
-        let mut results = Vec::new();
+        // The three sort orders use different tantivy collectors (with different
+        // Fruit types), so each match arm runs its own search and discards the
+        // sort key, leaving a uniform doc address list for the one loop below.
+        let doc_addresses: Vec<_> = match &query.sort_by {
+            SortOrder::Relevance => searcher
+                .search(&*final_query, &TopDocs::with_limit(query.limit))?
+                .into_iter()
+                .map(|(_, addr)| addr)
+                .collect(),
+            SortOrder::DateDesc => searcher
+                .search(
+                    &*final_query,
+                    &TopDocs::with_limit(query.limit)
+                        .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Desc),
+                )?
+                .into_iter()
+                .map(|(_, addr)| addr)
+                .collect(),
+            SortOrder::DateAsc => searcher
+                .search(
+                    &*final_query,
+                    &TopDocs::with_limit(query.limit)
+                        .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Asc),
+                )?
+                .into_iter()
+                .map(|(_, addr)| addr)
+                .collect(),
+        };
 
-        match &query.sort_by {
-            SortOrder::Relevance => {
-                let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
-                for (_, doc_address) in top_docs {
-                    let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
-                    if !self.passes_post_filters(&result, &query) {
-                        continue;
-                    }
-                    results.push(result);
-                }
+        let mut results = Vec::new();
+        for doc_address in doc_addresses {
+            let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
+            if !self.passes_post_filters(&result, &query) {
+                continue;
             }
-            SortOrder::DateDesc => {
-                let collector = TopDocs::with_limit(query.limit)
-                    .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Desc);
-                let top_docs = searcher.search(&*final_query, &collector)?;
-                for (_, doc_address) in top_docs {
-                    let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
-                    if !self.passes_post_filters(&result, &query) {
-                        continue;
-                    }
-                    results.push(result);
-                }
-            }
-            SortOrder::DateAsc => {
-                let collector = TopDocs::with_limit(query.limit)
-                    .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Asc);
-                let top_docs = searcher.search(&*final_query, &collector)?;
-                for (_, doc_address) in top_docs {
-                    let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
-                    if !self.passes_post_filters(&result, &query) {
-                        continue;
-                    }
-                    results.push(result);
-                }
-            }
+            results.push(result);
         }
 
         Ok(results)
@@ -293,12 +292,7 @@ impl SearchEngine {
 
             // If we can't get session messages, still return the match with just itself as context
             if session_messages.is_empty() {
-                results_with_context.push(SearchResultWithContext {
-                    matched_message: match_result.clone(),
-                    context_messages: vec![match_result],
-                    match_index: 0,
-                    total_session_messages: 1,
-                });
+                results_with_context.push(self_context_result(match_result, 1));
                 continue;
             }
 
@@ -345,24 +339,20 @@ impl SearchEngine {
 
                 // If no context found (e.g., all filtered out), use match as its own context
                 if context_messages.is_empty() {
-                    context_messages.push(match_result.clone());
-                    new_match_idx = 0;
+                    results_with_context
+                        .push(self_context_result(match_result, total_session_messages));
+                } else {
+                    results_with_context.push(SearchResultWithContext {
+                        matched_message: match_result,
+                        context_messages,
+                        match_index: new_match_idx,
+                        total_session_messages,
+                    });
                 }
-
-                results_with_context.push(SearchResultWithContext {
-                    matched_message: match_result,
-                    context_messages,
-                    match_index: new_match_idx,
-                    total_session_messages,
-                });
             } else {
                 // UUID/sequence not found in session, return match with itself as context
-                results_with_context.push(SearchResultWithContext {
-                    matched_message: match_result.clone(),
-                    context_messages: vec![match_result],
-                    match_index: 0,
-                    total_session_messages,
-                });
+                results_with_context
+                    .push(self_context_result(match_result, total_session_messages));
             }
         }
 
@@ -587,6 +577,21 @@ pub struct SearchResultWithContext {
     pub context_messages: Vec<SearchResult>,
     pub match_index: usize,
     pub total_session_messages: usize,
+}
+
+/// A result with itself as its own (sole) context: used when the session
+/// lookup fails, the match isn't found in it, or the context window empties
+/// out after filtering to displayable messages.
+fn self_context_result(
+    matched_message: SearchResult,
+    total_session_messages: usize,
+) -> SearchResultWithContext {
+    SearchResultWithContext {
+        matched_message: matched_message.clone(),
+        context_messages: vec![matched_message],
+        match_index: 0,
+        total_session_messages,
+    }
 }
 
 /// Post-search filtering: excluded projects, excluded path/project regexes,

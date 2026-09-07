@@ -44,6 +44,16 @@ pub struct CacheManager {
     metadata: CacheMetadata,
 }
 
+/// A file parsed by the parallel phase of `update_incremental`, ready to be
+/// fed into the IndexWriter by the serial phase that follows it.
+struct ParsedFile {
+    path: PathBuf,
+    source_kind: SourceKind,
+    file_size: u64,
+    file_modified: DateTime<Utc>,
+    entries: Vec<super::models::ConversationEntry>,
+}
+
 impl CacheManager {
     pub fn new(cache_dir: &Path) -> Result<Self> {
         let metadata_file = cache_dir.join("cache-metadata.json");
@@ -84,9 +94,36 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        let parser = JsonlParser::default();
+        let to_parse = self.triage_files(files)?;
 
-        // Phase 1 (serial): remove deleted files and collect files that need parsing.
+        if to_parse.is_empty() {
+            info!("No files needed indexing");
+            return Ok(());
+        }
+
+        let parsed = Self::parse_files_parallel(to_parse);
+        let (files_processed, total_entries) = self.index_parsed_files(indexer, parsed)?;
+
+        self.refresh_derived_metadata();
+        self.metadata
+            .last_full_scan = Some(Utc::now());
+        self.save_metadata()?;
+
+        if files_processed > 0 {
+            info!(
+                "Incremental indexing complete: {} files processed, {} entries added",
+                files_processed, total_entries
+            );
+        } else {
+            info!("No files needed indexing");
+        }
+
+        Ok(())
+    }
+
+    /// Phase 1 (serial): remove deleted files from the cache and collect
+    /// the files that need (re)parsing.
+    fn triage_files(&mut self, files: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
             if !file_path.exists() {
@@ -106,22 +143,13 @@ impl CacheManager {
             }
             to_parse.push(file_path);
         }
+        Ok(to_parse)
+    }
 
-        if to_parse.is_empty() {
-            info!("No files needed indexing");
-            return Ok(());
-        }
-
-        // Phase 2 (parallel): parse all files concurrently.
-        struct ParsedFile {
-            path: PathBuf,
-            source_kind: SourceKind,
-            file_size: u64,
-            file_modified: DateTime<Utc>,
-            entries: Vec<super::models::ConversationEntry>,
-        }
-
-        let parsed: Vec<_> = to_parse
+    /// Phase 2 (parallel): parse all files concurrently.
+    fn parse_files_parallel(to_parse: Vec<PathBuf>) -> Vec<ParsedFile> {
+        let parser = JsonlParser::default();
+        to_parse
             .into_par_iter()
             .filter_map(|file_path| {
                 info!("Processing: {}", file_path.display());
@@ -144,9 +172,16 @@ impl CacheManager {
                     }
                 }
             })
-            .collect();
+            .collect()
+    }
 
-        // Phase 3 (serial): feed into IndexWriter and update cache metadata.
+    /// Phase 3 (serial): feed parsed files into the IndexWriter, update cache
+    /// metadata, and commit. Returns (files_processed, total_entries).
+    fn index_parsed_files(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        parsed: Vec<ParsedFile>,
+    ) -> Result<(usize, usize)> {
         let mut files_processed = 0;
         let mut total_entries = 0;
 
@@ -207,21 +242,7 @@ impl CacheManager {
             indexer.commit()?;
         }
 
-        self.refresh_derived_metadata();
-        self.metadata
-            .last_full_scan = Some(Utc::now());
-        self.save_metadata()?;
-
-        if files_processed > 0 {
-            info!(
-                "Incremental indexing complete: {} files processed, {} entries added",
-                files_processed, total_entries
-            );
-        } else {
-            info!("No files needed indexing");
-        }
-
-        Ok(())
+        Ok((files_processed, total_entries))
     }
 
     /// Recompute global totals as a fold over per-file metadata. Deriving them
