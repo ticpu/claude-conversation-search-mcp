@@ -1,8 +1,7 @@
-use super::cache::CacheManager;
 use super::models::{ConversationEntry, SearchResult};
 use super::parsers::JsonlParser;
 use super::path_utils::{find_session_jsonl, home_to_tilde};
-use super::search::{DisplayOptions, SearchEngine, filter_content};
+use super::search::{DisplayOptions, filter_content};
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
 use anyhow::{Context, Result, bail};
@@ -72,13 +71,7 @@ pub fn load_session(
         );
     }
 
-    let cache = CacheManager::new(index_path)?;
-    let engine = SearchEngine::new(
-        index_path,
-        cache
-            .get_session_counts()
-            .clone(),
-    )?;
+    let (_cache, engine) = super::search::open_search_engine(index_path)?;
     let results = engine
         .get_session_messages(session_id)
         .with_context(|| format!("reading session {session_id} from the index"))?;

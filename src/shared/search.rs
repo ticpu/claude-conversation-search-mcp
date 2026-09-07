@@ -138,6 +138,16 @@ impl SearchEngine {
         })
     }
 
+    /// Build the engine seeded with `cache`'s session counts.
+    pub fn from_cache(index_path: &Path, cache: &super::cache::CacheManager) -> Result<Self> {
+        Self::new(
+            index_path,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+    }
+
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
         let searcher = self
             .reader
@@ -555,6 +565,13 @@ impl SearchEngine {
             .copied()
             .unwrap_or(0)
     }
+}
+
+/// Open the cache and the search engine seeded with its session counts.
+pub fn open_search_engine(index_path: &Path) -> Result<(super::cache::CacheManager, SearchEngine)> {
+    let cache = super::cache::CacheManager::new(index_path)?;
+    let engine = SearchEngine::from_cache(index_path, &cache)?;
+    Ok((cache, engine))
 }
 
 /// Search result with surrounding context messages

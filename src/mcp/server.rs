@@ -258,11 +258,7 @@ impl McpServer {
         // Auto-index if needed
         auto_index(&cache_dir)?;
 
-        let cache = CacheManager::new(&cache_dir)?;
-        let counts = cache
-            .get_session_counts()
-            .clone();
-        let search_engine = SearchEngine::new(&cache_dir, counts)?;
+        let (_cache, search_engine) = shared::open_search_engine(&cache_dir)?;
 
         Ok(Self {
             search_engine,
@@ -962,10 +958,7 @@ Task(
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             cache.update_incremental(&mut indexer, all_files)?;
-            let counts = cache
-                .get_session_counts()
-                .clone();
-            self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
+            self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
             "Full rebuild complete".to_string()
         } else {
             // Incremental update
@@ -973,10 +966,7 @@ Task(
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let (stale, new) = cache.quick_health_check(&all_files);
             cache.update_incremental(&mut indexer, all_files)?;
-            let counts = cache
-                .get_session_counts()
-                .clone();
-            self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
+            self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
             format!(
                 "Incremental update: {} stale + {} new files reindexed",
                 stale, new

@@ -1,6 +1,6 @@
 use crate::cli::index;
 use crate::shared::session_view::{self, SessionViewOpts, Window};
-use crate::shared::{self, CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder};
+use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder};
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Subcommand, ValueEnum};
@@ -428,13 +428,7 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
         .filter_map(|p| Regex::new(p).ok())
         .collect();
 
-    let cache = CacheManager::new(index_path)?;
-    let search_engine = SearchEngine::new(
-        index_path,
-        cache
-            .get_session_counts()
-            .clone(),
-    )?;
+    let (_cache, search_engine) = shared::open_search_engine(index_path)?;
 
     let query = SearchQuery {
         text: opts.query,
@@ -520,13 +514,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
         return Ok(());
     }
 
-    let cache = CacheManager::new(index_path)?;
-    let search_engine = SearchEngine::new(
-        index_path,
-        cache
-            .get_session_counts()
-            .clone(),
-    )?;
+    let (_cache, search_engine) = shared::open_search_engine(index_path)?;
 
     // Get all conversations to analyze topics
     let query = SearchQuery {
@@ -617,14 +605,8 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    let cache_manager = CacheManager::new(index_path)?;
+    let (cache_manager, search_engine) = shared::open_search_engine(index_path)?;
     let cache_stats = cache_manager.get_stats();
-    let search_engine = SearchEngine::new(
-        index_path,
-        cache_manager
-            .get_session_counts()
-            .clone(),
-    )?;
 
     // Get conversation stats
     let query = SearchQuery {
