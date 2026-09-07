@@ -26,6 +26,32 @@ pub struct IndexFields {
     pub source_file_field: Field,
 }
 
+impl IndexFields {
+    /// Resolve every field the indexer writes from an already-built schema.
+    pub fn from_schema(schema: &Schema) -> Result<Self> {
+        Ok(IndexFields {
+            uuid_field: schema.get_field("uuid")?,
+            parent_uuid_field: schema.get_field("parent_uuid")?,
+            content_field: schema.get_field("content")?,
+            project_field: schema.get_field("project")?,
+            session_field: schema.get_field("session_id")?,
+            timestamp_field: schema.get_field("timestamp")?,
+            message_type_field: schema.get_field("message_type")?,
+            model_field: schema.get_field("model")?,
+            technologies_field: schema.get_field("technologies")?,
+            code_languages_field: schema.get_field("code_languages")?,
+            tools_mentioned_field: schema.get_field("tools_mentioned")?,
+            has_code_field: schema.get_field("has_code")?,
+            has_error_field: schema.get_field("has_error")?,
+            cwd_field: schema.get_field("cwd")?,
+            sequence_num_field: schema.get_field("sequence_num")?,
+            is_sidechain_field: schema.get_field("is_sidechain")?,
+            agent_id_field: schema.get_field("agent_id")?,
+            source_file_field: schema.get_field("source_file")?,
+        })
+    }
+}
+
 pub struct SearchIndexer {
     writer: IndexWriter,
     fields: IndexFields,
@@ -130,29 +156,7 @@ impl SearchIndexer {
 
     pub fn open(index_path: &Path) -> Result<Self> {
         let index = Index::open_in_dir(index_path)?;
-        let schema = index.schema();
-
-        // Get fields from the existing schema
-        let fields = IndexFields {
-            uuid_field: schema.get_field("uuid")?,
-            parent_uuid_field: schema.get_field("parent_uuid")?,
-            content_field: schema.get_field("content")?,
-            project_field: schema.get_field("project")?,
-            session_field: schema.get_field("session_id")?,
-            timestamp_field: schema.get_field("timestamp")?,
-            message_type_field: schema.get_field("message_type")?,
-            model_field: schema.get_field("model")?,
-            technologies_field: schema.get_field("technologies")?,
-            code_languages_field: schema.get_field("code_languages")?,
-            tools_mentioned_field: schema.get_field("tools_mentioned")?,
-            has_code_field: schema.get_field("has_code")?,
-            has_error_field: schema.get_field("has_error")?,
-            cwd_field: schema.get_field("cwd")?,
-            sequence_num_field: schema.get_field("sequence_num")?,
-            is_sidechain_field: schema.get_field("is_sidechain")?,
-            agent_id_field: schema.get_field("agent_id")?,
-            source_file_field: schema.get_field("source_file")?,
-        };
+        let fields = IndexFields::from_schema(&index.schema())?;
 
         let config = get_config();
         let writer = index.writer(config.get_writer_heap_size())?;

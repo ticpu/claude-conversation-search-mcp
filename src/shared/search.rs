@@ -107,19 +107,7 @@ const MAX_SESSION_MESSAGES: usize = 5000;
 pub struct SearchEngine {
     index: Index,
     reader: IndexReader,
-    uuid_field: Field,
-    content_field: Field,
-    project_field: Field,
-    session_field: Field,
-    timestamp_field: Field,
-    message_type_field: Field,
-    technologies_field: Field,
-    code_languages_field: Field,
-    tools_mentioned_field: Field,
-    has_code_field: Field,
-    has_error_field: Field,
-    cwd_field: Field,
-    sequence_num_field: Field,
+    fields: super::indexer::IndexFields,
     interaction_counts: HashMap<String, usize>,
 }
 
@@ -131,37 +119,12 @@ impl SearchEngine {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
 
-        let schema = index.schema();
-        let uuid_field = schema.get_field("uuid")?;
-        let content_field = schema.get_field("content")?;
-        let project_field = schema.get_field("project")?;
-        let session_field = schema.get_field("session_id")?;
-        let timestamp_field = schema.get_field("timestamp")?;
-        let message_type_field = schema.get_field("message_type")?;
-        let technologies_field = schema.get_field("technologies")?;
-        let code_languages_field = schema.get_field("code_languages")?;
-        let tools_mentioned_field = schema.get_field("tools_mentioned")?;
-        let has_code_field = schema.get_field("has_code")?;
-        let has_error_field = schema.get_field("has_error")?;
-        let cwd_field = schema.get_field("cwd")?;
-        let sequence_num_field = schema.get_field("sequence_num")?;
+        let fields = super::indexer::IndexFields::from_schema(&index.schema())?;
 
         Ok(Self {
             index,
             reader,
-            uuid_field,
-            content_field,
-            project_field,
-            session_field,
-            timestamp_field,
-            message_type_field,
-            technologies_field,
-            code_languages_field,
-            tools_mentioned_field,
-            has_code_field,
-            has_error_field,
-            cwd_field,
-            sequence_num_field,
+            fields,
             interaction_counts: session_counts,
         })
     }
@@ -183,7 +146,14 @@ impl SearchEngine {
 
         let query_parser = QueryParser::for_index(
             &self.index,
-            vec![self.content_field, self.session_field, self.project_field],
+            vec![
+                self.fields
+                    .content_field,
+                self.fields
+                    .session_field,
+                self.fields
+                    .project_field,
+            ],
         );
         let text_query = query_parser.parse_query(&query.text)?;
 
@@ -193,12 +163,20 @@ impl SearchEngine {
         )];
 
         if let Some(ref project_filter) = query.project_filter {
-            let project_query = build_project_query(self.project_field, project_filter);
+            let project_query = build_project_query(
+                self.fields
+                    .project_field,
+                project_filter,
+            );
             final_query_parts.push((Occur::Must, project_query));
         }
 
         if let Some(ref session_filter) = query.session_filter {
-            let session_query = hyphenated_term_query(self.session_field, session_filter);
+            let session_query = hyphenated_term_query(
+                self.fields
+                    .session_field,
+                session_filter,
+            );
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
@@ -424,7 +402,11 @@ impl SearchEngine {
             .reader
             .searcher();
 
-        let query = hyphenated_term_query(self.session_field, session_id);
+        let query = hyphenated_term_query(
+            self.fields
+                .session_field,
+            session_id,
+        );
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
 
@@ -455,7 +437,11 @@ impl SearchEngine {
         let mut results = Vec::new();
 
         for uuid in uuids {
-            let query = hyphenated_term_query(self.uuid_field, uuid);
+            let query = hyphenated_term_query(
+                self.fields
+                    .uuid_field,
+                uuid,
+            );
 
             let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
 
@@ -477,35 +463,85 @@ impl SearchEngine {
     }
 
     fn doc_to_result(&self, doc: &TantivyDocument) -> Result<SearchResult> {
-        let uuid = doc_str(doc, self.uuid_field);
-        let content = doc_str(doc, self.content_field);
-        let project = doc_str(doc, self.project_field);
-        let project_path = doc_str_opt(doc, self.cwd_field)
-            .unwrap_or(&project)
-            .to_string();
-        let session_id = doc_str(doc, self.session_field);
+        let uuid = doc_str(
+            doc,
+            self.fields
+                .uuid_field,
+        );
+        let content = doc_str(
+            doc,
+            self.fields
+                .content_field,
+        );
+        let project = doc_str(
+            doc,
+            self.fields
+                .project_field,
+        );
+        let project_path = doc_str_opt(
+            doc,
+            self.fields
+                .cwd_field,
+        )
+        .unwrap_or(&project)
+        .to_string();
+        let session_id = doc_str(
+            doc,
+            self.fields
+                .session_field,
+        );
 
         let timestamp = doc
-            .get_first(self.timestamp_field)
+            .get_first(
+                self.fields
+                    .timestamp_field,
+            )
             .and_then(|v| v.as_datetime())
             .map(|dt| {
                 DateTime::from_timestamp_millis(dt.into_timestamp_millis()).unwrap_or_else(Utc::now)
             })
             .unwrap_or_else(Utc::now);
 
-        let stored_type = doc_str_opt(doc, self.message_type_field)
-            .ok_or_else(|| anyhow!("document {uuid} has no message_type field"))?;
+        let stored_type = doc_str_opt(
+            doc,
+            self.fields
+                .message_type_field,
+        )
+        .ok_or_else(|| anyhow!("document {uuid} has no message_type field"))?;
         let message_type = MessageType::from_str(stored_type)
             .with_context(|| format!("document {uuid} carries an unindexable message type"))?;
 
-        let technologies = doc_str_list(doc, self.technologies_field);
-        let code_languages = doc_str_list(doc, self.code_languages_field);
-        let tools_mentioned = doc_str_list(doc, self.tools_mentioned_field);
-        let has_code = doc_bool(doc, self.has_code_field);
-        let has_error = doc_bool(doc, self.has_error_field);
+        let technologies = doc_str_list(
+            doc,
+            self.fields
+                .technologies_field,
+        );
+        let code_languages = doc_str_list(
+            doc,
+            self.fields
+                .code_languages_field,
+        );
+        let tools_mentioned = doc_str_list(
+            doc,
+            self.fields
+                .tools_mentioned_field,
+        );
+        let has_code = doc_bool(
+            doc,
+            self.fields
+                .has_code_field,
+        );
+        let has_error = doc_bool(
+            doc,
+            self.fields
+                .has_error_field,
+        );
 
         let sequence_num = doc
-            .get_first(self.sequence_num_field)
+            .get_first(
+                self.fields
+                    .sequence_num_field,
+            )
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
