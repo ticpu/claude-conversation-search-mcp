@@ -118,6 +118,28 @@ pub struct ToolResult {
     pub text: String,
 }
 
+/// Build a successful tool response (`isError` omitted).
+fn tool_ok(text: impl Into<String>) -> Result<Value> {
+    Ok(serde_json::to_value(CallToolResponse {
+        content: vec![ToolResult {
+            result_type: "text".to_string(),
+            text: text.into(),
+        }],
+        is_error: None,
+    })?)
+}
+
+/// Build a tool response flagged `isError: true`.
+fn tool_err(text: impl Into<String>) -> Result<Value> {
+    Ok(serde_json::to_value(CallToolResponse {
+        content: vec![ToolResult {
+            result_type: "text".to_string(),
+            text: text.into(),
+        }],
+        is_error: Some(true),
+    })?)
+}
+
 /// Parsed arguments for the search_conversations tool.
 /// `after`/`before` are kept as raw strings: date parsing failures are
 /// reported as tool content (isError), not a protocol-level error, so
@@ -524,13 +546,7 @@ impl McpServer {
                     .await?
             }
             _ => {
-                return Ok(serde_json::to_value(CallToolResponse {
-                    content: vec![ToolResult {
-                        result_type: "text".to_string(),
-                        text: format!("Unknown tool: {}", request.name),
-                    }],
-                    is_error: Some(true),
-                })?);
+                return tool_err(format!("Unknown tool: {}", request.name));
             }
         };
 
@@ -577,13 +593,7 @@ impl McpServer {
             match shared::parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
-                    return Ok(serde_json::to_value(CallToolResponse {
-                        content: vec![ToolResult {
-                            result_type: "text".to_string(),
-                            text: e.to_string(),
-                        }],
-                        is_error: Some(true),
-                    })?);
+                    return tool_err(e.to_string());
                 }
             }
         } else {
@@ -594,13 +604,7 @@ impl McpServer {
             match shared::parse_date(s) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
-                    return Ok(serde_json::to_value(CallToolResponse {
-                        content: vec![ToolResult {
-                            result_type: "text".to_string(),
-                            text: e.to_string(),
-                        }],
-                        is_error: Some(true),
-                    })?);
+                    return tool_err(e.to_string());
                 }
             }
         } else {
@@ -715,13 +719,7 @@ impl McpServer {
             }
         }
 
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: output,
-            }],
-            is_error: None,
-        })?)
+        tool_ok(output)
     }
 
     async fn tool_get_session_messages(&self, args: Option<Value>) -> Result<Value> {
@@ -767,13 +765,7 @@ impl McpServer {
 
         let (entries, source) = session_view::load_session(&self.cache_dir, session_id)?;
         if entries.is_empty() {
-            return Ok(serde_json::to_value(CallToolResponse {
-                content: vec![ToolResult {
-                    result_type: "text".to_string(),
-                    text: format!("No messages found for session {}", session_id),
-                }],
-                is_error: Some(true),
-            })?);
+            return tool_err(format!("No messages found for session {}", session_id));
         }
 
         let display = DisplayOptions {
@@ -782,13 +774,7 @@ impl McpServer {
             truncate_length: opts.truncate_length,
         };
 
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: session_view::render(&entries, &source, &opts, &display),
-            }],
-            is_error: None,
-        })?)
+        tool_ok(session_view::render(&entries, &source, &opts, &display))
     }
 
     async fn tool_summarize_session(&self, args: Option<Value>) -> Result<Value> {
@@ -832,13 +818,7 @@ Task(
 )"#
         );
 
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: output,
-            }],
-            is_error: None,
-        })?)
+        tool_ok(output)
     }
 
     async fn tool_get_messages(&self, args: Option<Value>) -> Result<Value> {
@@ -846,26 +826,14 @@ Task(
         let ids = json_strings(args.get("ids"));
 
         if ids.is_empty() {
-            return Ok(serde_json::to_value(CallToolResponse {
-                content: vec![ToolResult {
-                    result_type: "text".to_string(),
-                    text: "No message IDs provided".to_string(),
-                }],
-                is_error: Some(true),
-            })?);
+            return tool_err("No message IDs provided");
         }
 
         let search_engine = &self.search_engine;
         let messages = search_engine.get_messages_by_uuid(&ids)?;
 
         if messages.is_empty() {
-            return Ok(serde_json::to_value(CallToolResponse {
-                content: vec![ToolResult {
-                    result_type: "text".to_string(),
-                    text: "No messages found for provided IDs".to_string(),
-                }],
-                is_error: None,
-            })?);
+            return tool_ok("No messages found for provided IDs");
         }
 
         let mut output = String::new();
@@ -883,13 +851,7 @@ Task(
             ));
         }
 
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: output,
-            }],
-            is_error: None,
-        })?)
+        tool_ok(output)
     }
 
     #[cfg(unix)]
@@ -906,15 +868,6 @@ Task(
                 .map_err(|e| anyhow::anyhow!("Failed to get current executable path: {}", e))?
         };
 
-        // Prepare response
-        let response = CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: "Respawning MCP server...".to_string(),
-            }],
-            is_error: None,
-        };
-
         // Schedule respawn after a short delay to allow response to be sent
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -925,18 +878,12 @@ Task(
             eprintln!("Failed to exec with {}: {}", exe_path.display(), err);
         });
 
-        Ok(serde_json::to_value(response)?)
+        tool_ok("Respawning MCP server...")
     }
 
     #[cfg(windows)]
     async fn tool_respawn(&self) -> Result<Value> {
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: "respawn_server is not supported on Windows".to_string(),
-            }],
-            is_error: Some(true),
-        })?)
+        tool_err("respawn_server is not supported on Windows")
     }
 
     async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {
@@ -972,13 +919,7 @@ Task(
                 stale, new
             )
         };
-        Ok(serde_json::to_value(CallToolResponse {
-            content: vec![ToolResult {
-                result_type: "text".to_string(),
-                text: result,
-            }],
-            is_error: None,
-        })?)
+        tool_ok(result)
     }
 
     /// Returns `None` for JSON-RPC notifications (no `id`), which must not be
