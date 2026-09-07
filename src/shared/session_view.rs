@@ -1,7 +1,7 @@
+use super::format::{DisplayOptions, filter_content};
 use super::models::{ConversationEntry, SearchResult};
 use super::parsers::JsonlParser;
 use super::path_utils::{find_session_jsonl, home_to_tilde};
-use super::search::{DisplayOptions, filter_content};
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
 use anyhow::{Context, Result, bail};

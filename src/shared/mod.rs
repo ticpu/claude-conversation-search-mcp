@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod config;
+pub mod format;
 pub mod indexer;
 pub mod lock;
 pub mod metadata;
@@ -13,6 +14,7 @@ pub mod utils;
 
 pub use cache::*;
 pub use config::*;
+pub use format::*;
 pub use indexer::*;
 pub use lock::*;
 pub use models::*;
