@@ -837,43 +837,22 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
-        return Ok(());
+    let (entries, _) = session_view::load_session(index_path, &session_id)?;
+    if entries.is_empty() {
+        anyhow::bail!("no messages found for session {session_id}");
     }
 
-    let cache = CacheManager::new(index_path)?;
-    let search_engine = SearchEngine::new(
-        index_path,
-        cache
-            .get_session_counts()
-            .clone(),
-    )?;
-    let mut results = search_engine.get_session_messages(&session_id)?;
-
-    if results.is_empty() {
-        println!("No messages found for session: {session_id}");
-        return Ok(());
-    }
-
-    // Sort and filter displayable
-    results.sort_by_key(|r| r.sequence_num);
-    let results: Vec<_> = results
-        .into_iter()
-        .filter(|r| r.is_displayable())
-        .collect();
-
-    // Build conversation text
     let mut conversation = String::new();
-    for r in &results {
-        let content: String = r
+    for entry in session_view::displayable_entries(&entries) {
+        let content: String = entry
             .content
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
         conversation.push_str(&format!(
             "{}: {}\n",
-            r.message_type
+            entry
+                .message_type
                 .short_name(),
             content
         ));
