@@ -283,18 +283,6 @@ impl CacheManager {
         Ok(())
     }
 
-    pub fn get_basic_stats(&self) -> (usize, u64, Option<DateTime<Utc>>) {
-        (
-            self.metadata
-                .indexed_files
-                .len(),
-            self.metadata
-                .total_entries,
-            self.metadata
-                .last_full_scan,
-        )
-    }
-
     /// Get cached session interaction counts
     pub fn get_session_counts(&self) -> &HashMap<String, usize> {
         &self

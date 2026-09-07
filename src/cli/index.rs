@@ -31,13 +31,13 @@ pub fn show_status(index_path: &Path) -> Result<()> {
     };
 
     let cache_manager = CacheManager::new(index_path)?;
-    let (total_files, total_entries, last_updated) = cache_manager.get_basic_stats();
+    let stats = cache_manager.get_stats();
 
     println!("Index Path: {}", index_path.display());
-    println!("Total Files: {}", total_files);
-    println!("Total Entries: {}", total_entries);
+    println!("Total Files: {}", stats.total_files);
+    println!("Total Entries: {}", stats.total_entries);
 
-    if let Some(last_updated) = last_updated {
+    if let Some(last_updated) = stats.last_updated {
         println!(
             "Last Updated: {}",
             last_updated.format("%Y-%m-%d %H:%M:%S UTC")
@@ -46,19 +46,7 @@ pub fn show_status(index_path: &Path) -> Result<()> {
         println!("Last Updated: Never");
     }
 
-    // Show disk usage
-    let cache_size_mb = if let Ok(entries) = std::fs::read_dir(index_path) {
-        let total_bytes: u64 = entries
-            .filter_map(|entry| entry.ok())
-            .filter_map(|entry| std::fs::metadata(entry.path()).ok())
-            .map(|metadata| metadata.len())
-            .sum();
-        total_bytes as f64 / (1024.0 * 1024.0)
-    } else {
-        0.0
-    };
-
-    println!("Index Size: {:.2} MB", cache_size_mb);
+    println!("Index Size: {:.2} MB", stats.cache_size_mb);
 
     Ok(())
 }
