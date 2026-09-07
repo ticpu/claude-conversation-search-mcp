@@ -418,9 +418,17 @@ struct SearchOpts {
     display: DisplayOptions,
 }
 
+/// True if the index exists; otherwise prints the standard "not found" message.
+fn index_exists_or_notify(index_path: &Path) -> bool {
+    if index_path.exists() {
+        return true;
+    }
+    println!("Index not found. Please run 'claude-conversation-search index' first.");
+    false
+}
+
 fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
-    if !index_path.exists() {
-        println!("Index not found. Please run 'claude-conversation-search index' first.");
+    if !index_exists_or_notify(index_path) {
         return Ok(());
     }
 
@@ -524,8 +532,7 @@ fn print_topic_section(
 }
 
 fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) -> Result<()> {
-    if !index_path.exists() {
-        println!("Index not found. Please run 'claude-conversation-search index' first.");
+    if !index_exists_or_notify(index_path) {
         return Ok(());
     }
 
@@ -622,8 +629,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
 }
 
 fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
-    if !index_path.exists() {
-        println!("Index not found. Please run 'claude-conversation-search index' first.");
+    if !index_exists_or_notify(index_path) {
         return Ok(());
     }
 
