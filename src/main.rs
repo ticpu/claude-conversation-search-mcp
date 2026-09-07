@@ -44,8 +44,12 @@ async fn main() -> Result<()> {
         }
         Some(cli::CliCommands::Mcp) | None => {
             // Default to MCP server mode when no subcommand provided
+            shared::config::init_config()?;
             mcp::run_mcp_server().await
         }
-        Some(command) => cli::run_cli(args.verbose, command),
+        Some(command) => {
+            shared::config::init_config()?;
+            cli::run_cli(args.verbose, command)
+        }
     }
 }

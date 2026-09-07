@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -116,14 +116,17 @@ impl Config {
         let config_path = config_dir.join("config.yaml");
 
         let config = if config_path.exists() {
-            let config_content = fs::read_to_string(&config_path)?;
-            serde_yaml::from_str(&config_content)?
+            let config_content = fs::read_to_string(&config_path)
+                .with_context(|| format!("reading {}", config_path.display()))?;
+            serde_yaml::from_str(&config_content)
+                .with_context(|| format!("parsing {}", config_path.display()))?
         } else {
-            // Create default config if it doesn't exist
-            fs::create_dir_all(&config_dir)?;
+            fs::create_dir_all(&config_dir)
+                .with_context(|| format!("creating {}", config_dir.display()))?;
             let default_config = Self::default();
             let config_content = serde_yaml::to_string(&default_config)?;
-            fs::write(&config_path, config_content)?;
+            fs::write(&config_path, config_content)
+                .with_context(|| format!("writing {}", config_path.display()))?;
             default_config
         };
 
@@ -188,10 +191,24 @@ impl Config {
     }
 }
 
-// Global config instance
 use once_cell::sync::OnceCell;
 static CONFIG: OnceCell<Config> = OnceCell::new();
 
+/// Load the config file, failing the process on a malformed one. Every entry
+/// point calls this before anything reads the config.
+pub fn init_config() -> Result<()> {
+    let config = Config::load()?;
+    if CONFIG
+        .set(config)
+        .is_err()
+    {
+        bail!("config was already read before it was loaded from disk");
+    }
+    Ok(())
+}
+
+/// Defaults stand in only for callers reached without `init_config`, which is
+/// the unit tests.
 pub fn get_config() -> &'static Config {
-    CONFIG.get_or_init(|| Config::load().unwrap_or_default())
+    CONFIG.get_or_init(Config::default)
 }
