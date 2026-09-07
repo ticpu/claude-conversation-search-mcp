@@ -615,7 +615,7 @@ impl Default for DisplayOptions {
 }
 
 /// Filter content based on display options
-fn filter_content(s: &str, opts: &DisplayOptions) -> Option<String> {
+pub(crate) fn filter_content(s: &str, opts: &DisplayOptions) -> Option<String> {
     // Check if content should be hidden
     if !opts.include_thinking && s.starts_with("[thinking]") {
         return None;

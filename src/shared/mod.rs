@@ -7,6 +7,7 @@ pub mod models;
 pub mod parsers;
 pub mod path_utils;
 pub mod search;
+pub mod session_view;
 pub mod terminal;
 pub mod utils;
 
