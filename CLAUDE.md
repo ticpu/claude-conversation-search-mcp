@@ -36,24 +36,22 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 ## Project Architecture
 
 - `src/main.rs` - Entry point, clap subcommand routing
-- `src/cli/` - CLI commands
-- `src/mcp/` - MCP server (server.rs, stats_analyzer.rs)
-- `src/shared/` - Shared modules (cache, search, indexer, models)
-- `src/shared/path_utils.rs` - All `.claude/` filesystem concerns: `projects_dir()`, `project_dir_name()`, `session_jsonl_path()`, `discover_jsonl_files()`, `active_session_jsonl()`. This is the single source of truth for Claude directory layout. Do not duplicate this logic elsewhere.
+- `src/cli/` - CLI commands: `args.rs` (clap types), `commands.rs` (dispatch, cache/install), `index.rs`, `search.rs`, `session.rs`, `stats.rs` (topics + stats), `summary.rs`
+- `src/mcp/` - MCP server: `protocol.rs` (JSON-RPC loop), `server.rs`, `tools/mod.rs` (tool bodies), `tools/schema.rs` (tool list + JSON schemas)
+- `src/shared/` - Shared between CLI and MCP: `cache.rs`, `cache_stats.rs`, `config.rs`, `format.rs` (search result rendering), `indexer.rs`, `lock.rs`, `metadata.rs` (tag extraction), `models.rs`, `parsers/` (JSONL parsing), `path_utils.rs`, `search/` (query + engine), `session_view.rs`, `terminal.rs`
+- `src/shared/path_utils.rs` - All `.claude/` filesystem concerns: `projects_dir()`, `project_dir_name()`, `session_jsonl_path()`, `discover_jsonl_files()`, `find_session_jsonl()` (prefix match), `globally_active_session_jsonl()`. This is the single source of truth for Claude directory layout. Do not duplicate this logic elsewhere.
 
 ## Design Decisions
 
-**summarize_session pattern**: Returns Task tool instructions instead of doing work itself. Avoids polluting MCP tool descriptions with complex instructions. The haiku agent spawned by Task reads these instructions.
+**summarize_session pattern**: The MCP tool returns Task tool instructions instead of doing work itself, avoiding complex instructions baked into the MCP tool description. The haiku agent spawned by Task reads these instructions. The CLI `summary` command is unrelated: it renders the session directly and pipes it into `claude --print --model haiku` in a jailed empty directory (`src/cli/summary.rs`).
 
-**Token estimation**: `HAIKU_CONTEXT_WINDOW * CONTEXT_SAFETY_MARGIN` (200k * 0.75 = 150k) determines when to warn about large sessions.
+**Token estimation**: `HAIKU_CONTEXT_WINDOW * CONTEXT_SAFETY_MARGIN` (200k * 0.75 = 150k) determines when `summarize_session` warns that a session may need multiple agents.
 
-**is_displayable() filter**: On both `SearchResult` and `ConversationEntry` to filter Warmup messages and non-User/Assistant/Summary types. Used by search, session viewing, and summarization.
+**is_displayable() filter**: On both `SearchResult` and `ConversationEntry` (`src/shared/models.rs`) to filter non-User/Assistant/Summary message types and literal `Warmup` messages. Shared by search formatting and `session_view::render`.
 
-**JSONL-first session reading**: `session` CLI and MCP `get_session_messages` read directly from the source JSONL file via `JsonlParser::with_full_content()` to get untruncated content. Falls back to Tantivy index only when the JSONL file is not found. The index content is pre-truncated during parsing (tool inputs/results).
+**Session viewing is unified**: `src/shared/session_view.rs` backs both the CLI `session` command and the MCP `get_session_messages` tool. `load_session` reads the source JSONL directly via `JsonlParser::with_full_content()` for untruncated content, falling back to the Tantivy index (pre-truncated) only when no JSONL file is found; the render footer marks that fallback. `find_session_jsonl` (in `path_utils`) accepts a session ID prefix, so both frontends get prefix matching for free.
 
-**Prefix matching for session IDs**: `get_session_messages` accepts short session IDs (first 8 chars) for convenience.
-
-**Active session exclusion**: MCP `search_conversations` excludes the currently-written JSONL from stale checks via `active_session_jsonl(cwd)` in `path_utils`. This walks up from the process cwd to find the matching `.claude/projects/<dir>/` entry, same algorithm as `claude-session-uuid`.
+**Active session exclusion**: MCP `search_conversations` uses `globally_active_session_jsonl()` (most-recently-modified JSONL under `.claude/projects/`) rather than a cwd walk, since the MCP server's cwd is fixed at startup and does not track the caller's active project. That file is excluded from the staleness check (it's always being written), and its session is also excluded from search results unless the caller passes `include: ["current_session"]`. The CLI has no equivalent: it is invoked per-command and never applies this exclusion.
 
 **Derived package dependencies**: the `.deb`'s `Depends:` is read off the binaries in the build container, never written into `packaging/control`. The glibc floor moves with the base image, and a floor set too low installs cleanly then dies at exec on a symbol version. The `DT_NEEDED` soname list is derived the same way and mapped to packages; an unrecognized soname fails the build rather than shipping an under-declared package.
 
@@ -76,14 +74,13 @@ CLI and MCP must share the same output formatting code in `src/shared/`. The onl
 
 ## Debugging MCP Tools
 
-MCP servers communicate via JSON-RPC over stdio. Use `debug: true` parameter on search tools to see:
-- Raw JSON arguments received
-- Parameter parsing results
-- Filtering logic details
+MCP servers communicate via JSON-RPC over stdio. `search_conversations` takes a `debug: true`
+argument that prepends a line with the parsed query, `-B`/`-A`, limit, and the exclude
+projects/patterns actually applied. No other tool has a debug argument.
 
 ## Testing
 
-Test changes before committing. No need to install - use the built binary directly:
+No need to install to test a change - use the built binary directly:
 
 ```bash
 cargo build --release
@@ -91,22 +88,19 @@ cargo build --release
 ./target/release/claude-conversation-search search "query"
 ```
 
-## Pre-commit Checklist
-
-1. `cargo fmt --all` (required - pre-commit hook rejects unformatted code)
-2. `cargo clippy --fix --allow-dirty`
-3. `cargo test`
-
-All warnings must be resolved. Remove unused code instead of suppressing.
-Always run `cargo fmt --all` before `git commit` - the pre-commit hook checks formatting and will reject the commit if code is not formatted.
-
 ## Pre-commit Hook
 
-A pre-commit hook lives in `hooks/pre-commit` (runs fmt, clippy, tests). Install with:
+`hooks/pre-commit` is the gate and the only description of what committing requires: it refuses
+`#[allow(dead_code)]` in staged `.rs` files, then runs `cargo fmt --all -- --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --release`, in that
+order. Install with:
 
 ```bash
 bash hooks/install.sh
 ```
+
+Before committing, run `cargo clippy --fix --allow-dirty --message-format=short && cargo fmt --all`
+and let the hook be the gate rather than re-running each check separately.
 
 ## Packaging
 
