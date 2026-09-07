@@ -2,29 +2,49 @@ use super::super::config::get_config;
 use super::super::models::{ContentBlock, RawJsonlMessage};
 use super::super::utils::truncate_content;
 
+pub(super) struct SearchableContent {
+    pub content: String,
+    pub has_error: bool,
+    pub tools_used: Vec<String>,
+}
+
+impl SearchableContent {
+    fn empty() -> Self {
+        SearchableContent {
+            content: String::new(),
+            has_error: false,
+            tools_used: Vec::new(),
+        }
+    }
+}
+
 pub(super) fn extract_searchable_content(
     raw: &RawJsonlMessage,
     full_content: bool,
-) -> (String, bool, Vec<String>) {
+) -> SearchableContent {
     let message = match &raw.message {
         Some(m) => m,
-        None => return (String::new(), false, Vec::new()),
+        None => return SearchableContent::empty(),
     };
 
     let content_value = match &message.content {
         Some(c) => c,
-        None => return (String::new(), false, Vec::new()),
+        None => return SearchableContent::empty(),
     };
 
     // Handle string content (simple user messages)
     if let Some(text) = content_value.as_str() {
-        return (text.to_string(), false, Vec::new());
+        return SearchableContent {
+            content: text.to_string(),
+            has_error: false,
+            tools_used: Vec::new(),
+        };
     }
 
     // Handle array content (assistant messages with blocks)
     let blocks = match content_value.as_array() {
         Some(arr) => arr,
-        None => return (String::new(), false, Vec::new()),
+        None => return SearchableContent::empty(),
     };
 
     let mut parts = Vec::new();
@@ -67,7 +87,11 @@ pub(super) fn extract_searchable_content(
         }
     }
 
-    (parts.join("\n"), has_error, tools_used)
+    SearchableContent {
+        content: parts.join("\n"),
+        has_error,
+        tools_used,
+    }
 }
 
 pub(super) fn parse_content_block(

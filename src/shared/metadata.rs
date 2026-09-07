@@ -234,14 +234,22 @@ fn has_error_mentions(content: &str) -> bool {
     ERROR_PATTERNS.is_match(content)
 }
 
-pub fn extract_all_metadata(content: &str) -> (Vec<String>, Vec<String>, Vec<String>, bool, bool) {
-    (
-        extract_technologies(content),
-        extract_tools_mentioned(content),
-        extract_code_languages(content),
-        has_code_blocks(content),
-        has_error_mentions(content),
-    )
+pub struct ContentMetadata {
+    pub technologies: Vec<String>,
+    pub tools_mentioned: Vec<String>,
+    pub code_languages: Vec<String>,
+    pub has_code: bool,
+    pub has_error: bool,
+}
+
+pub fn extract_all_metadata(content: &str) -> ContentMetadata {
+    ContentMetadata {
+        technologies: extract_technologies(content),
+        tools_mentioned: extract_tools_mentioned(content),
+        code_languages: extract_code_languages(content),
+        has_code: has_code_blocks(content),
+        has_error: has_error_mentions(content),
+    }
 }
 
 #[cfg(test)]

@@ -130,17 +130,20 @@ impl JsonlParser {
             _ => MessageType::System,
         };
 
-        let (content, mut has_error, tools_used) = if msg_type == "summary" {
-            (
-                raw.summary
+        let extracted = if msg_type == "summary" {
+            content::SearchableContent {
+                content: raw
+                    .summary
                     .unwrap_or_default(),
-                false,
-                Vec::new(),
-            )
+                has_error: false,
+                tools_used: Vec::new(),
+            }
         } else {
             content::extract_searchable_content(&raw, self.full_content)
         };
-        let content = strip_str(&content);
+        let mut has_error = extracted.has_error;
+        let tools_used = extracted.tools_used;
+        let content = strip_str(&extracted.content);
 
         if content
             .trim()
@@ -171,16 +174,20 @@ impl JsonlParser {
             .index
             .enable_tagging
         {
-            let (techs, tools, langs, has_code, content_has_error) =
-                metadata::extract_all_metadata(&content);
-            has_error |= content_has_error;
-            let mut all_tools = tools;
+            let meta = metadata::extract_all_metadata(&content);
+            has_error |= meta.has_error;
+            let mut all_tools = meta.tools_mentioned;
             for tool in tools_used {
                 if !all_tools.contains(&tool) {
                     all_tools.push(tool);
                 }
             }
-            (techs, langs, has_code, all_tools)
+            (
+                meta.technologies,
+                meta.code_languages,
+                meta.has_code,
+                all_tools,
+            )
         } else {
             (vec![], vec![], false, tools_used)
         };
