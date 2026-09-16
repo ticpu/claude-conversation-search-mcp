@@ -11,12 +11,14 @@ if [ -n "$staged_rs" ] && echo "$staged_rs" | xargs -r grep -nH '#\[.*allow(dead
     exit 1
 fi
 
-if ! cargo fmt --all -- --check; then
+if ! fmt_output=$(cargo fmt --all -- --check 2>&1); then
+    echo "$fmt_output"
     echo "Code is not formatted. Run 'cargo fmt --all' to fix."
     exit 1
 fi
 
-if ! cargo clippy --all-targets --all-features --message-format=short -- -D warnings; then
+if ! clippy_output=$(cargo clippy --all-targets --all-features --message-format=short -- -D warnings 2>&1); then
+    echo "$clippy_output"
     echo "Clippy found warnings. Fix them before committing."
     exit 1
 fi
@@ -26,5 +28,3 @@ if ! test_output=$(cargo test --release 2>&1); then
     echo "Tests failed. Fix them before committing."
     exit 1
 fi
-
-echo "Pre-commit checks passed"
