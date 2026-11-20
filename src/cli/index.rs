@@ -72,8 +72,7 @@ pub fn rebuild(index_path: &Path) -> Result<()> {
 pub fn vacuum(index_path: &Path) -> Result<()> {
     info!("Starting index vacuum operation...");
 
-    let _lock = ExclusiveIndexAccess::acquire()?;
-
+    // rebuild() takes the exclusive lock, which flock refuses to a second descriptor.
     if !index_path.exists() {
         println!("No index found to vacuum.");
         return Ok(());
