@@ -8,8 +8,9 @@
 //! `<leafUuid>:summary`, so the leaf's own uuid names only the leaf message:
 //! uuid lookups rank an exact match over a prefix one. Their timestamp and
 //! cwd are the leaf message's when the leaf is in the same file, else those
-//! of the file's first timestamped message; with no timestamped message the
-//! summary is skipped at debug level.
+//! of the file's first timestamped message. With no timestamped message to
+//! borrow from, the timestamp is the transcript file's mtime and the cwd is
+//! unknown.
 //!
 //! A line whose timestamp does not parse is skipped and counted, and one
 //! warning per file gives the count and the first such line.
@@ -23,7 +24,8 @@ use super::config::get_config;
 use super::metadata;
 use super::models::{ConversationEntry, MessageType, RawJsonlMessage};
 use super::path_utils::session_of_transcript;
-use anyhow::Result;
+use super::utils::file_mtime;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -85,12 +87,15 @@ pub struct FileContext {
     session_id: Option<String>,
     by_uuid: HashMap<String, Anchor>,
     first: Option<Anchor>,
+    /// The file's mtime as RFC 3339, the last resort for a summary's time.
+    mtime: Option<String>,
 }
 
 impl FileContext {
-    fn new(path: &Path, raws: &[(usize, RawJsonlMessage)]) -> Self {
+    fn new(path: &Path, mtime: DateTime<Utc>, raws: &[(usize, RawJsonlMessage)]) -> Self {
         let mut ctx = FileContext {
             session_id: session_of_transcript(path),
+            mtime: Some(mtime.to_rfc3339()),
             ..Default::default()
         };
         for (_, raw) in raws {
@@ -126,6 +131,19 @@ impl FileContext {
             .or(self
                 .first
                 .as_ref())
+    }
+
+    /// The time a summary takes: its anchor's, else the file's mtime.
+    fn summary_timestamp(&self, leaf_uuid: Option<&str>) -> Option<&str> {
+        self.anchor(leaf_uuid)
+            .map(|anchor| {
+                anchor
+                    .timestamp
+                    .as_str()
+            })
+            .or(self
+                .mtime
+                .as_deref())
     }
 }
 
@@ -203,7 +221,9 @@ impl JsonlParser {
             }
         }
 
-        let file = FileContext::new(path, &raws);
+        let mtime =
+            file_mtime(path).with_context(|| format!("reading the mtime of {}", path.display()))?;
+        let file = FileContext::new(path, mtime, &raws);
         let mut bad_timestamps = BadTimestamps::default();
         let mut sequence_counter = 0;
         for (line_num, raw) in raws {
@@ -266,16 +286,14 @@ impl JsonlParser {
         {
             Some(ts) => ts,
             None if is_summary => {
-                let Some(anchor) = file.anchor(
+                let Some(timestamp) = file.summary_timestamp(
                     raw.leaf_uuid
                         .as_deref(),
                 ) else {
-                    debug!("Summary {uuid} has no timestamped message to date it by");
+                    debug!("Summary {uuid} has no time to date it by");
                     return Ok(None);
                 };
-                anchor
-                    .timestamp
-                    .as_str()
+                timestamp
             }
             None => return Ok(None),
         };
@@ -591,6 +609,31 @@ mod tests {
             "2026-03-01T10:00:00+00:00",
             "a leaf outside the file dates the summary by the file's first message"
         );
+    }
+
+    #[test]
+    fn a_summary_with_nothing_to_borrow_from_is_dated_by_the_file_mtime() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp
+            .path()
+            .join(format!("{SESSION}.jsonl"));
+        std::fs::write(&path, summary("elsewhere", "Only a summary") + "\n").unwrap();
+        let mtime: DateTime<Utc> = "2026-02-03T04:05:06Z"
+            .parse()
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime.into())
+            .unwrap();
+
+        let entries = JsonlParser::default()
+            .parse_file(&path)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].timestamp, mtime);
+        assert_eq!(entries[0].session_id, SESSION);
     }
 
     /// Collects what the tracing subscriber writes.
