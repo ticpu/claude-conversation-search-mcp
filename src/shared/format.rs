@@ -9,6 +9,22 @@ use super::models::SearchResult;
 use super::path_utils::{home_to_tilde, session_jsonl_path, short_uuid};
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
+use chrono::{DateTime, Local, TimeZone, Utc};
+use std::fmt::Display;
+
+/// Date and time to the minute with the UTC offset, in the local timezone.
+pub fn local_stamp(ts: &DateTime<Utc>) -> String {
+    stamp_in(ts, &Local)
+}
+
+fn stamp_in<Tz: TimeZone>(ts: &DateTime<Utc>, tz: &Tz) -> String
+where
+    Tz::Offset: Display,
+{
+    ts.with_timezone(tz)
+        .format("%Y-%m-%d %H:%M %:z")
+        .to_string()
+}
 
 /// Search result with surrounding context messages
 #[derive(Debug, Clone)]
@@ -112,9 +128,11 @@ impl SearchResultWithContext {
             session_link,
             self.total_session_messages,
             short_msg,
-            self.matched_message
-                .timestamp
-                .format("%Y-%m-%d %H:%M"),
+            local_stamp(
+                &self
+                    .matched_message
+                    .timestamp
+            ),
         ));
 
         let mut tags = Vec::new();
@@ -175,5 +193,21 @@ impl SearchResultWithContext {
                 content
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::FixedOffset;
+
+    #[test]
+    fn stamps_carry_the_zone_offset() {
+        let ts: DateTime<Utc> = "2026-03-01T03:30:00Z"
+            .parse()
+            .unwrap();
+        let montreal_winter = FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(stamp_in(&ts, &montreal_winter), "2026-02-28 22:30 -05:00");
+        assert_eq!(stamp_in(&ts, &Utc), "2026-03-01 03:30 +00:00");
     }
 }

@@ -547,8 +547,7 @@ Task(
                     msg.uuid
                         .len()
                 )],
-                msg.timestamp
-                    .format("%Y-%m-%d %H:%M"),
+                shared::local_stamp(&msg.timestamp),
                 msg.message_type,
                 msg.content
             ));

@@ -9,7 +9,7 @@
 //! Times are shown in the local timezone (TZ honoured). The header carries
 //! the UTC offset; per-message times are in that same zone.
 
-use super::format::{DisplayOptions, filter_content};
+use super::format::{DisplayOptions, filter_content, local_stamp};
 use super::models::{ConversationEntry, MessageType, SearchResult};
 use super::parsers::JsonlParser;
 use super::path_utils::{find_session_jsonl, home_to_tilde, session_of_transcript};
@@ -17,6 +17,7 @@ use super::search::SearchEngine;
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
 use anyhow::{Context, Result, bail};
+use chrono::Local;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -206,12 +207,8 @@ pub fn render(
     );
     let time_range = format!(
         "{} - {}",
-        first
-            .timestamp
-            .format("%Y-%m-%d %H:%M"),
-        msgs[total - 1]
-            .timestamp
-            .format("%H:%M")
+        local_stamp(&first.timestamp),
+        local_stamp(&msgs[total - 1].timestamp)
     );
     let (session_cell, from_index) = match source {
         SessionSource::Index => (
@@ -270,6 +267,7 @@ pub fn render(
             marker,
             entry
                 .timestamp
+                .with_timezone(&Local)
                 .format("%H:%M:%S"),
             entry
                 .message_type

@@ -4,7 +4,7 @@ use super::indexer::SearchIndexer;
 use super::lock::{ExclusiveIndexAccess, clear_index_dir, is_index_busy};
 use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use tantivy::directory::error::OpenReadError;
@@ -39,11 +39,22 @@ pub fn explain_index_error(err: anyhow::Error, index_path: &Path) -> anyhow::Err
 /// Parse a date as full ISO 8601 or YYYY-MM-DD. A date-only value means local
 /// midnight (TZ honoured); `--before` stays exclusive of that day.
 pub fn parse_date(s: &str) -> Result<DateTime<Utc>> {
+    parse_date_in(s, &Local)
+}
+
+/// `parse_date` with the zone a date-only value is read in.
+fn parse_date_in<Tz: TimeZone>(s: &str, tz: &Tz) -> Result<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Ok(dt.with_timezone(&Utc));
     }
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(Utc.from_utc_datetime(&date.and_time(NaiveTime::MIN)));
+        let midnight = tz
+            .from_local_datetime(&date.and_time(NaiveTime::MIN))
+            .earliest()
+            .ok_or_else(|| {
+                anyhow::anyhow!("midnight of {s} does not exist in the local timezone")
+            })?;
+        return Ok(midnight.with_timezone(&Utc));
     }
     anyhow::bail!("Invalid date '{}': use YYYY-MM-DD or ISO 8601", s)
 }
@@ -229,5 +240,30 @@ mod tests {
         assert!(merged <= 8, "{merged} segments after waiting on merges");
         let control = segments_after_inline_update(true, Merges::Wait);
         assert!(control > 8, "control without merges kept {control}");
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+    use chrono::FixedOffset;
+
+    #[test]
+    fn date_only_bounds_mean_local_midnight() {
+        let montreal_winter = FixedOffset::west_opt(5 * 3600).unwrap();
+        assert_eq!(
+            parse_date_in("2026-03-01", &montreal_winter)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-03-01T05:00:00+00:00"
+        );
+        assert_eq!(
+            parse_date_in("2026-03-01T10:00:00-02:00", &montreal_winter)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-03-01T12:00:00+00:00",
+            "an explicit offset is kept"
+        );
+        assert!(parse_date_in("March 1st", &montreal_winter).is_err());
     }
 }
