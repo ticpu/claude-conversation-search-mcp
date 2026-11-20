@@ -9,7 +9,9 @@ use tracing::error;
 use super::protocol::{tool_err, tool_ok};
 use super::server::McpServer;
 use crate::shared::parsers::SourceKind;
-use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
+use crate::shared::path_utils::{
+    ActiveSession, active_session, discover_jsonl_files, projects_dir, session_of_transcript,
+};
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder, get_config};
 
@@ -154,33 +156,32 @@ impl SearchArgs {
     }
 }
 
-/// Active-session file plus staleness counts against the on-disk index.
-/// Excludes the active session from the check itself (it is always being
-/// written to), found via `globally_active_session_jsonl` since the MCP
-/// server's cwd is fixed at startup and does not track the caller's
-/// current project.
+/// The calling session plus staleness counts against the on-disk index.
+/// The calling session's transcripts are left out of the check: they are
+/// written on every turn.
 struct StalenessProbe {
-    current_session_file: Option<PathBuf>,
+    active: Option<ActiveSession>,
     health: shared::FileHealthCounts,
 }
 
 fn probe_staleness(config: &shared::Config) -> Result<StalenessProbe> {
     let all_files = discover_jsonl_files()?;
-    let current_session_file = globally_active_session_jsonl();
-    let current_session_file_ref = current_session_file.as_deref();
-    let files_for_stale_check: Vec<_> = all_files
-        .iter()
-        .filter(|f| Some(f.as_path()) != current_session_file_ref)
-        .cloned()
+    let active = active_session(&projects_dir()?, &all_files);
+    let active_id = active
+        .as_ref()
+        .map(|a| {
+            a.session_id
+                .as_str()
+        });
+    let files_for_stale_check: Vec<PathBuf> = all_files
+        .into_iter()
+        .filter(|f| active_id.is_none() || session_of_transcript(f).as_deref() != active_id)
         .collect();
 
     let cache = CacheManager::new(&config.get_cache_dir()?)?;
     let health = cache.quick_health_check(&files_for_stale_check);
 
-    Ok(StalenessProbe {
-        current_session_file,
-        health,
-    })
+    Ok(StalenessProbe { active, health })
 }
 
 /// Merge configured and request-supplied exclude patterns and compile them,
@@ -229,20 +230,26 @@ fn render_search_response(
     search_args: &SearchArgs,
     all_exclude_patterns: &[String],
     health: &shared::FileHealthCounts,
+    active: Option<&ActiveSession>,
     filtered: &[shared::SearchResultWithContext],
     display_opts: &DisplayOptions,
 ) -> String {
     let mut output = String::new();
 
     if search_args.debug_mode {
+        let active_session = match active {
+            Some(a) => format!("{} from {}", a.session_id, a.source),
+            None => "none".to_string(),
+        };
         output.push_str(&format!(
-            "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}\n\n",
+            "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}, active_session={}\n\n",
             raw_args.get("query"),
             search_args.context_before,
             search_args.context_after,
             search_args.limit,
             search_args.exclude_projects,
-            all_exclude_patterns
+            all_exclude_patterns,
+            active_session,
         ));
     }
 
@@ -326,18 +333,16 @@ impl McpServer {
             .include
             .contains(&"current_session".to_string());
 
-        // Get current session ID from file detected earlier
-        let current_session_id: Option<String> = if !include_current_session {
-            probe
-                .current_session_file
-                .as_ref()
-                .and_then(|p| {
-                    p.file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_string())
-                })
-        } else {
+        let current_session_id: Option<String> = if include_current_session {
             None
+        } else {
+            probe
+                .active
+                .as_ref()
+                .map(|a| {
+                    a.session_id
+                        .clone()
+                })
         };
 
         let query = SearchQuery {
@@ -386,6 +391,9 @@ impl McpServer {
             &search_args,
             &all_exclude_patterns,
             &health,
+            probe
+                .active
+                .as_ref(),
             &filtered,
             &display_opts,
         ))

@@ -268,21 +268,94 @@ fn find_session_in_projects(cwd: &Path, projects: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Find the most-recently-modified JSONL across all projects.
-/// Used by long-lived processes (e.g. MCP server) whose cwd does not reflect
-/// the currently active Claude session.
-pub fn globally_active_session_jsonl() -> Option<PathBuf> {
-    let root = projects_dir().ok()?;
-    let pattern = root.join("**/*.jsonl");
-    let mut tally = SkipTally::new(&root);
-    glob(&pattern.to_string_lossy())
-        .ok()?
-        .filter_map(|e| tally.keep_readable(e))
-        .max_by_key(|p| {
-            p.metadata()
-                .and_then(|m| m.modified())
-                .ok()
+/// The session a transcript belongs to: a main transcript's stem, or the
+/// directory above `subagents` for a subagent transcript.
+pub fn session_of_transcript(transcript: &Path) -> Option<String> {
+    let named = subagent_session_dir(transcript)
+        .and_then(|dir| dir.file_name())
+        .or_else(|| transcript.file_stem())?;
+    named
+        .to_str()
+        .map(str::to_string)
+}
+
+/// What decided the active session.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ActiveSessionSource {
+    SessionIdEnv,
+    ProjectDirNewest,
+    GlobalNewest,
+}
+
+impl std::fmt::Display for ActiveSessionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::SessionIdEnv => "CLAUDE_CODE_SESSION_ID",
+            Self::ProjectDirNewest => "newest transcript of CLAUDE_PROJECT_DIR",
+            Self::GlobalNewest => "newest transcript",
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveSession {
+    pub session_id: String,
+    pub source: ActiveSessionSource,
+}
+
+/// The session the MCP server was spawned for, from its environment.
+pub fn active_session(projects: &Path, transcripts: &[PathBuf]) -> Option<ActiveSession> {
+    let session_id = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+    let project_dir = std::env::var("CLAUDE_PROJECT_DIR").ok();
+    resolve_active_session(
+        projects,
+        transcripts,
+        session_id.as_deref(),
+        project_dir.as_deref(),
+    )
+}
+
+/// `active_session` with its environment passed in. An empty variable
+/// counts as unset.
+fn resolve_active_session(
+    projects: &Path,
+    transcripts: &[PathBuf],
+    session_id: Option<&str>,
+    project_dir: Option<&str>,
+) -> Option<ActiveSession> {
+    if let Some(id) = session_id.filter(|id| !id.is_empty()) {
+        return Some(ActiveSession {
+            session_id: id.to_string(),
+            source: ActiveSessionSource::SessionIdEnv,
+        });
+    }
+    let mains = || {
+        transcripts
+            .iter()
+            .filter(|p| SourceKind::classify(p) == SourceKind::MainSession)
+    };
+    let in_project = project_dir
+        .filter(|dir| !dir.is_empty())
+        .and_then(|dir| {
+            let project = projects.join(project_dir_name(dir));
+            newest(mains().filter(|p| p.parent() == Some(project.as_path())))
+        });
+    let (newest_main, source) = match in_project {
+        Some(path) => (path, ActiveSessionSource::ProjectDirNewest),
+        None => (newest(mains())?, ActiveSessionSource::GlobalNewest),
+    };
+    Some(ActiveSession {
+        session_id: session_of_transcript(newest_main)?,
+        source,
+    })
+}
+
+fn newest<'a>(paths: impl Iterator<Item = &'a PathBuf>) -> Option<&'a PathBuf> {
+    paths.max_by_key(|p| {
+        p.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+    })
 }
 
 #[cfg(test)]
@@ -387,5 +460,115 @@ mod tests {
 
         let found = find_session_in_projects(&cwd, &projects);
         assert!(found.is_none());
+    }
+
+    /// Two projects, each with a main transcript and a subagent transcript.
+    /// Modification order, oldest first: `here` main, `other` main, `other`
+    /// subagent, `here` subagent; the newest file belongs to `here`, the
+    /// newest main transcript to `other`.
+    struct Layout {
+        _tmp: TempDir,
+        projects: PathBuf,
+        files: Vec<PathBuf>,
+    }
+
+    const HERE: &str = "11111111-aaaa-bbbb-cccc-000000000001";
+    const OTHER: &str = "22222222-aaaa-bbbb-cccc-000000000002";
+
+    fn layout() -> Layout {
+        let tmp = TempDir::new().unwrap();
+        let projects = tmp
+            .path()
+            .join("projects");
+        let here = projects.join(project_dir_name("/home/u/GIT/here"));
+        let other = projects.join(project_dir_name("/home/u/GIT/other"));
+        let files = vec![
+            here.join(format!("{HERE}.jsonl")),
+            other.join(format!("{OTHER}.jsonl")),
+            other
+                .join(OTHER)
+                .join("subagents")
+                .join("agent-b2.jsonl"),
+            here.join(HERE)
+                .join("subagents")
+                .join("agent-a1.jsonl"),
+        ];
+        let base = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for (i, f) in files
+            .iter()
+            .enumerate()
+        {
+            fs::create_dir_all(
+                f.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            fs::File::create(f)
+                .unwrap()
+                .set_modified(base + std::time::Duration::from_secs(60 * i as u64))
+                .unwrap();
+        }
+        Layout {
+            _tmp: tmp,
+            projects,
+            files,
+        }
+    }
+
+    #[test]
+    fn session_id_env_decides_the_active_session() {
+        let l = layout();
+        let active = resolve_active_session(
+            &l.projects,
+            &l.files,
+            Some("env-id"),
+            Some("/home/u/GIT/here"),
+        );
+        assert_eq!(
+            active,
+            Some(ActiveSession {
+                session_id: "env-id".to_string(),
+                source: ActiveSessionSource::SessionIdEnv,
+            })
+        );
+    }
+
+    #[test]
+    fn project_dir_env_picks_its_newest_main_transcript() {
+        let l = layout();
+        let active =
+            resolve_active_session(&l.projects, &l.files, Some(""), Some("/home/u/GIT/here"));
+        assert_eq!(
+            active,
+            Some(ActiveSession {
+                session_id: HERE.to_string(),
+                source: ActiveSessionSource::ProjectDirNewest,
+            })
+        );
+    }
+
+    #[test]
+    fn without_env_the_newest_main_transcript_wins_over_subagents() {
+        let l = layout();
+        let active = resolve_active_session(&l.projects, &l.files, None, None);
+        assert_eq!(
+            active,
+            Some(ActiveSession {
+                session_id: OTHER.to_string(),
+                source: ActiveSessionSource::GlobalNewest,
+            })
+        );
+    }
+
+    #[test]
+    fn subagent_transcript_maps_to_its_parent_session() {
+        let l = layout();
+        assert_eq!(session_of_transcript(&l.files[3]).as_deref(), Some(HERE));
+        assert_eq!(session_of_transcript(&l.files[0]).as_deref(), Some(HERE));
+        assert_eq!(
+            main_transcript_of(&l.files[2]),
+            l.files[1],
+            "a subagent's main transcript is its session's file"
+        );
     }
 }
