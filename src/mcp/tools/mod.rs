@@ -357,7 +357,11 @@ impl McpServer {
             before,
         };
 
-        let search_engine = &self.search_engine;
+        let loaded = match self.ready_engine() {
+            Ok(loaded) => loaded,
+            Err(text) => return tool_err(text),
+        };
+        let search_engine = &loaded.engine;
         let results_with_context = search_engine.search_with_context(
             query,
             search_args.context_before,
@@ -453,7 +457,11 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
         // Get session stats for size estimation
-        let search_engine = &self.search_engine;
+        let loaded = match self.ready_engine() {
+            Ok(loaded) => loaded,
+            Err(text) => return tool_err(text),
+        };
+        let search_engine = &loaded.engine;
         let messages = search_engine.get_session_messages(session_id)?;
         let msg_count = messages.len();
         let total_chars: usize = messages
@@ -497,7 +505,11 @@ Task(
             return tool_err("No message IDs provided");
         }
 
-        let search_engine = &self.search_engine;
+        let loaded = match self.ready_engine() {
+            Ok(loaded) => loaded,
+            Err(text) => return tool_err(text),
+        };
+        let search_engine = &loaded.engine;
         let messages = search_engine.get_messages_by_uuid(&ids)?;
 
         if messages.is_empty() {
@@ -586,7 +598,7 @@ Task(
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             cache.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
             shared::finish_writer(indexer, shared::Merges::Wait)?;
-            self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
+            self.reload_engine()?;
             "Full rebuild complete".to_string()
         } else {
             // Incremental update
@@ -595,7 +607,7 @@ Task(
             let health = cache.quick_health_check(&all_files);
             cache.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
             shared::finish_writer(indexer, shared::Merges::Wait)?;
-            self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
+            self.reload_engine()?;
             format!(
                 "Incremental update: {} stale + {} new files reindexed",
                 health.stale, health.new_files

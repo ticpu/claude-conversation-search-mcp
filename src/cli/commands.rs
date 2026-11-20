@@ -43,7 +43,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             include,
             truncate,
         } => {
-            shared::auto_index(&index_path, shared::Merges::Wait)?;
+            shared::auto_index(&index_path, shared::Merges::Wait, &mut |_| Ok(()))?;
             let cb = ctx_before.unwrap_or(context);
             let ca = ctx_after.unwrap_or(context);
             let opts = SearchOpts {
@@ -67,11 +67,11 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             search_conversations(&index_path, opts)?;
         }
         CliCommands::Topics { project, limit } => {
-            shared::auto_index(&index_path, shared::Merges::Wait)?;
+            shared::auto_index(&index_path, shared::Merges::Wait, &mut |_| Ok(()))?;
             show_topics(&index_path, project, limit)?;
         }
         CliCommands::Stats { project } => {
-            shared::auto_index(&index_path, shared::Merges::Wait)?;
+            shared::auto_index(&index_path, shared::Merges::Wait, &mut |_| Ok(()))?;
             show_stats(&index_path, project)?;
         }
         CliCommands::Session {
@@ -86,7 +86,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             limit,
             meta,
         } => {
-            shared::auto_index(&index_path, shared::Merges::Wait)?;
+            shared::auto_index(&index_path, shared::Merges::Wait, &mut |_| Ok(()))?;
             let opts = SessionViewOpts {
                 session_id,
                 truncate_length: if full { 0 } else { truncate },
@@ -102,7 +102,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             view_session(&index_path, &opts)?;
         }
         CliCommands::Summary { session_id } => {
-            shared::auto_index(&index_path, shared::Merges::Wait)?;
+            shared::auto_index(&index_path, shared::Merges::Wait, &mut |_| Ok(()))?;
             summarize_session(&index_path, session_id)?;
         }
         CliCommands::Cache { action } => match action {

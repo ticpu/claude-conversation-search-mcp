@@ -134,7 +134,7 @@ impl CacheManager {
         &mut self,
         indexer: &mut SearchIndexer,
         discovered: Vec<PathBuf>,
-        on_chunk: &mut dyn FnMut(IndexProgress) -> Result<()>,
+        on_progress: &mut dyn FnMut(IndexProgress) -> Result<()>,
     ) -> Result<UpdateSummary> {
         let mut files: HashSet<PathBuf> = discovered
             .into_iter()
@@ -150,7 +150,7 @@ impl CacheManager {
             files
                 .into_iter()
                 .collect(),
-            on_chunk,
+            on_progress,
         )
     }
 
@@ -165,15 +165,16 @@ impl CacheManager {
         self.update_with_progress(indexer, files, &mut |_| Ok(()))
     }
 
-    /// `update_incremental` reporting after each chunk. Each chunk of
-    /// `INDEX_CHUNK_FILES` is committed and its metadata saved before the next
-    /// is parsed, which bounds memory and limits a kill to one chunk's work.
-    /// An error from `on_chunk` stops the run after the chunk it reports.
+    /// `update_incremental` reporting its progress once triage has counted the
+    /// files to parse, then after each chunk. Each chunk of `INDEX_CHUNK_FILES`
+    /// is committed and its metadata saved before the next is parsed, which
+    /// bounds memory and limits a kill to one chunk's work. An error from
+    /// `on_progress` stops the run where it was reported.
     pub fn update_with_progress(
         &mut self,
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
-        on_chunk: &mut dyn FnMut(IndexProgress) -> Result<()>,
+        on_progress: &mut dyn FnMut(IndexProgress) -> Result<()>,
     ) -> Result<UpdateSummary> {
         let Triage {
             to_parse,
@@ -186,6 +187,10 @@ impl CacheManager {
         }
 
         let files_total = to_parse.len();
+        on_progress(IndexProgress {
+            files_done: 0,
+            files_total,
+        })?;
         let mut chunks: Vec<&[PathBuf]> = to_parse
             .chunks(INDEX_CHUNK_FILES)
             .collect();
@@ -222,7 +227,7 @@ impl CacheManager {
                 "Committed {}/{} files",
                 progress.files_done, progress.files_total
             );
-            on_chunk(progress)?;
+            on_progress(progress)?;
         }
 
         info!("Indexing complete: {summary}");
@@ -1010,7 +1015,7 @@ mod tests {
             .unwrap();
         assert_eq!(summary.commits, 3);
         assert_eq!(summary.files_indexed, 450);
-        assert_eq!(reports, [(200, 450), (400, 450), (450, 450)]);
+        assert_eq!(reports, [(0, 450), (200, 450), (400, 450), (450, 450)]);
     }
 
     #[test]
@@ -1024,8 +1029,11 @@ mod tests {
         let mut indexer = SearchIndexer::new(&index_dir).unwrap();
         let mut cache = CacheManager::new(&index_dir).unwrap();
         let err = cache
-            .update_with_progress(&mut indexer, files, &mut |_| {
-                anyhow::bail!("killed before chunk 2")
+            .update_with_progress(&mut indexer, files, &mut |p| {
+                if p.files_done > 0 {
+                    anyhow::bail!("killed before chunk 2")
+                }
+                Ok(())
             })
             .unwrap_err();
         assert_eq!(err.to_string(), "killed before chunk 2");

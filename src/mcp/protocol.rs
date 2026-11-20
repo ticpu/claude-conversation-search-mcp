@@ -395,7 +395,7 @@ mod tests {
     async fn reindex_follows_the_index_service() {
         let temp = tempfile::TempDir::new().unwrap();
         let index = index_with(temp.path(), Vec::new());
-        let mut server = McpServer::open(index.clone()).unwrap();
+        let mut server = McpServer::start(index.clone(), |_| Ok(()));
         let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
 
         let out = server
@@ -434,7 +434,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let first = write_session(temp.path(), "sess-a");
         let index = index_with(temp.path(), vec![first]);
-        let mut server = McpServer::open(index.clone()).unwrap();
+        let mut server = McpServer::start(index.clone(), |_| Ok(()));
 
         // Another process indexes a new session; mtime granularity needs a tick.
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -447,7 +447,9 @@ mod tests {
             .await
             .unwrap();
         let hits = server
-            .search_engine
+            .ready_engine()
+            .unwrap()
+            .engine
             .search(crate::shared::SearchQuery {
                 text: "hello".to_string(),
                 project_filter: None,
@@ -468,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn ping_answers_an_empty_result() {
         let temp = tempfile::TempDir::new().unwrap();
-        let mut server = McpServer::open(index_with(temp.path(), Vec::new())).unwrap();
+        let mut server = McpServer::start(index_with(temp.path(), Vec::new()), |_| Ok(()));
         let out = server
             .process_line(r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
             .await

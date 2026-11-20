@@ -1,4 +1,4 @@
-use super::cache::CacheManager;
+use super::cache::{CacheManager, IndexProgress};
 use super::config::get_config;
 use super::indexer::SearchIndexer;
 use super::lock::{ExclusiveIndexAccess, clear_index_dir, is_index_busy};
@@ -138,7 +138,11 @@ pub fn open_or_create_indexer(index_path: &Path) -> Result<(SearchIndexer, Cache
     Ok((indexer, cache))
 }
 
-pub fn auto_index(index_path: &Path, merges: Merges) -> Result<()> {
+pub fn auto_index(
+    index_path: &Path,
+    merges: Merges,
+    on_progress: &mut dyn FnMut(IndexProgress) -> Result<()>,
+) -> Result<()> {
     let config = get_config();
 
     if !config
@@ -162,7 +166,7 @@ pub fn auto_index(index_path: &Path, merges: Merges) -> Result<()> {
 
     let (mut indexer, mut cache_manager) = open_or_create_indexer(index_path)?;
     let all_files = discover_jsonl_files()?;
-    cache_manager.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
+    cache_manager.update_full(&mut indexer, all_files, on_progress)?;
     finish_writer(indexer, merges)
 }
 
