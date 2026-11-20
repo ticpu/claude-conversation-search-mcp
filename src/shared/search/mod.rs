@@ -258,6 +258,9 @@ impl SearchEngine {
         text_query: &dyn Query,
         fetch: usize,
     ) -> Result<Vec<SearchResult>> {
+        if fetch == 0 {
+            bail!("the result limit must be at least 1");
+        }
         let searcher = self
             .reader
             .searcher();

@@ -50,6 +50,7 @@ fn search_conversations_schema() -> serde_json::Value {
                 "type": "integer",
                 "description": "Max results",
                 "optional": true,
+                "minimum": 1,
                 "default": 10
             },
             "sort_by": {

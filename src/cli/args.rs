@@ -21,7 +21,7 @@ pub enum CliCommands {
         #[arg(long)]
         session: Option<String>,
         /// Results limit
-        #[arg(long, default_value = "10")]
+        #[arg(long, default_value = "10", value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         limit: usize,
         /// Context lines before and after match (like grep -C)
         #[arg(short = 'C', default_value = "2")]

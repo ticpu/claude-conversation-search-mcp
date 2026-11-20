@@ -100,3 +100,21 @@ pub(crate) fn search_conversations(index_path: &Path, opts: SearchOpts) -> Resul
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: crate::cli::CliCommands,
+    }
+
+    #[test]
+    fn limit_zero_is_refused_by_the_parser() {
+        let parse = |limit: &str| Cli::try_parse_from(["ccs", "search", "q", "--limit", limit]);
+        assert!(parse("0").is_err());
+        assert!(parse("1").is_ok());
+    }
+}

@@ -305,6 +305,9 @@ impl McpServer {
     pub(crate) async fn tool_search_conversations(&self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let search_args = SearchArgs::from_json(&args)?;
+        if search_args.limit == 0 {
+            return tool_err("limit must be at least 1");
+        }
 
         let config = get_config();
         let probe = probe_staleness(config)?;

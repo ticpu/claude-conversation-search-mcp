@@ -1150,3 +1150,33 @@ fn field_clause_still_restricts_to_its_field() {
             .is_none()
     );
 }
+
+#[test]
+fn limit_zero_is_an_error_not_a_panic() {
+    let tmp = TempDir::new().unwrap();
+    index_entries(
+        tmp.path(),
+        vec![
+            EntryBuilder::new("u", "s")
+                .content("widget")
+                .build(),
+        ],
+    );
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+    let err = engine
+        .search_filtered(
+            &widget_query(0),
+            &ResultFilter::default(),
+            &DisplayOptions::default(),
+            0,
+            0,
+        )
+        .err()
+        .expect("limit 0 must be refused");
+    assert!(format!("{err:#}").contains("at least 1"), "{err:#}");
+    assert!(
+        engine
+            .search(widget_query(0))
+            .is_err()
+    );
+}
