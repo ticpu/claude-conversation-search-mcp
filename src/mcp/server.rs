@@ -15,7 +15,7 @@ impl McpServer {
         let cache_dir = get_cache_dir()?;
 
         // Auto-index if needed
-        auto_index(&cache_dir)?;
+        auto_index(&cache_dir, shared::Merges::Abandon)?;
 
         let (_cache, search_engine) = shared::open_search_engine(&cache_dir)?;
 

@@ -88,7 +88,27 @@ pub fn truncate_content(s: &str, max_chars: usize, collapse_whitespace: bool) ->
     }
 }
 
-pub fn auto_index(index_path: &Path) -> Result<()> {
+/// Whether an inline indexer waits for the merges its commits scheduled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Merges {
+    /// Wait, so they land: the writer is about to be dropped, which kills them.
+    Wait,
+    /// Drop the writer at once, abandoning them, to answer sooner.
+    Abandon,
+}
+
+/// Print the merge notice to stderr, then close the writer per `merges`.
+pub fn finish_writer(indexer: SearchIndexer, merges: Merges) -> Result<()> {
+    if merges == Merges::Abandon {
+        return Ok(());
+    }
+    if let Some(notice) = indexer.merge_notice()? {
+        eprintln!("{notice}");
+    }
+    indexer.wait_merging()
+}
+
+pub fn auto_index(index_path: &Path, merges: Merges) -> Result<()> {
     let config = get_config();
 
     if !config
@@ -139,5 +159,66 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     let all_files = discover_jsonl_files()?;
     cache_manager.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
-    Ok(())
+    finish_writer(indexer, merges)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tantivy::Index;
+    use tantivy::indexer::NoMergePolicy;
+    use tempfile::TempDir;
+
+    fn write_one(dir: &Path, i: usize) -> PathBuf {
+        let path = dir.join(format!("s{i}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"uuid":"u{i}","sessionId":"s{i}","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"m {i}"}}}}"#
+            ) + "\n",
+        )
+        .unwrap();
+        path
+    }
+
+    /// A backlog of twenty one-file segments, as left by writers dropped before
+    /// their merges landed, then one inline update by a writer with the given
+    /// policy, closed per `merges`. Returns the segments a fresh reader sees.
+    fn segments_after_inline_update(no_merge: bool, merges: Merges) -> usize {
+        let temp = TempDir::new().unwrap();
+        let index_dir = temp
+            .path()
+            .join("idx");
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        let mut backlog = SearchIndexer::new(&index_dir).unwrap();
+        backlog.set_merge_policy(Box::new(NoMergePolicy));
+        for i in 0..20 {
+            cache
+                .update_incremental(&mut backlog, vec![write_one(temp.path(), i)])
+                .unwrap();
+        }
+        drop(backlog);
+
+        let mut indexer = SearchIndexer::open(&index_dir).unwrap();
+        if no_merge {
+            indexer.set_merge_policy(Box::new(NoMergePolicy));
+        }
+        cache
+            .update_incremental(&mut indexer, vec![write_one(temp.path(), 20)])
+            .unwrap();
+        finish_writer(indexer, merges).unwrap();
+        Index::open_in_dir(&index_dir)
+            .unwrap()
+            .searchable_segment_ids()
+            .unwrap()
+            .len()
+    }
+
+    #[test]
+    fn waiting_lands_the_merges_of_an_inline_update() {
+        let merged = segments_after_inline_update(false, Merges::Wait);
+        assert!(merged <= 8, "{merged} segments after waiting on merges");
+        let control = segments_after_inline_update(true, Merges::Wait);
+        assert!(control > 8, "control without merges kept {control}");
+    }
 }

@@ -5,6 +5,9 @@ use std::path::Path;
 use tantivy::schema::{FAST, Field, INDEXED, STORED, STRING, Schema, SchemaBuilder, TEXT};
 use tantivy::{Index, IndexWriter, Term, doc};
 
+/// Searchable segments from which waiting on merges earns a notice.
+const MERGE_NOTICE_SEGMENTS: usize = 100;
+
 pub struct IndexFields {
     pub uuid_field: Field,
     pub parent_uuid_field: Field,
@@ -215,5 +218,35 @@ impl SearchIndexer {
         self.writer
             .commit()?;
         Ok(())
+    }
+
+    /// Segments a reader opening the index now would search.
+    pub fn searchable_segments(&self) -> Result<usize> {
+        Ok(self
+            .writer
+            .index()
+            .searchable_segment_ids()?
+            .len())
+    }
+
+    /// A notice worth printing before a merge backlog of this size is waited on.
+    pub fn merge_notice(&self) -> Result<Option<String>> {
+        let segments = self.searchable_segments()?;
+        Ok((segments >= MERGE_NOTICE_SEGMENTS)
+            .then(|| format!("merging {segments} index segments, this can take a minute")))
+    }
+
+    /// Close the writer once the merges it scheduled have landed. Dropping it
+    /// instead kills them: tantivy discards a merge whose writer is gone.
+    pub fn wait_merging(self) -> Result<()> {
+        self.writer
+            .wait_merging_threads()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_merge_policy(&self, policy: Box<dyn tantivy::indexer::MergePolicy>) {
+        self.writer
+            .set_merge_policy(policy);
     }
 }

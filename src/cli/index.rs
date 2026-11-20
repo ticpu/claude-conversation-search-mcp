@@ -1,5 +1,5 @@
 use crate::shared::{
-    CacheManager, ExclusiveIndexAccess, SearchIndexer, discover_jsonl_files, index_lock_held,
+    self, CacheManager, ExclusiveIndexAccess, SearchIndexer, discover_jsonl_files, index_lock_held,
     indexer_lock_held,
 };
 use anyhow::Result;
@@ -64,6 +64,7 @@ pub fn rebuild(index_path: &Path) -> Result<()> {
 
     info!("Found {} files to process", all_files.len());
     cache_manager.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
+    shared::finish_writer(indexer, shared::Merges::Wait)?;
 
     println!("Index rebuild completed successfully.");
     Ok(())

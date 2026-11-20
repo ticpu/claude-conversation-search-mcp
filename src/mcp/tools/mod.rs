@@ -574,6 +574,7 @@ Task(
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             cache.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
+            shared::finish_writer(indexer, shared::Merges::Wait)?;
             self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
             "Full rebuild complete".to_string()
         } else {
@@ -582,6 +583,7 @@ Task(
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let health = cache.quick_health_check(&all_files);
             cache.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
+            shared::finish_writer(indexer, shared::Merges::Wait)?;
             self.search_engine = crate::shared::SearchEngine::from_cache(&self.cache_dir, &cache)?;
             format!(
                 "Incremental update: {} stale + {} new files reindexed",
