@@ -1,0 +1,24 @@
+# The single source of the index service unit. The .deb installs it as is
+# to /usr/lib/systemd/user/; `claude-conversation-search install` renders it
+# for any other binary path by substituting every occurrence of
+# /usr/bin/claude-conversation-search, so keep that path spelled out wherever
+# the binary is named.
+#
+# Stopping never waits for the indexer: every file it writes is replaced by
+# rename, so a kill loses at most the batch being indexed.
+[Unit]
+Description=Claude conversation search index writer
+ConditionFileIsExecutable=/usr/bin/claude-conversation-search
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/claude-conversation-search index watch
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=5
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=default.target

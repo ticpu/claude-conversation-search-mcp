@@ -1,3 +1,28 @@
+//! Inter-process locks on the search index.
+//!
+//! Two lock files live in the index directory, their paths derived from the
+//! index path so that a test or a non-default index never touches another
+//! index's locks (`locking.lock_file` in the config still overrides
+//! index.lock's path):
+//!
+//! - index.lock, the writer lock. Whoever writes the index holds it
+//!   exclusively for the duration of the write: an inline auto-index, a
+//!   rebuild, `cache clear`, or `index watch` for its whole life. Readers
+//!   take no lock; tantivy's meta.json is replaced atomically, so a reader
+//!   always opens a committed state.
+//! - indexer.lock, the service marker. Only `index watch` holds it, for its
+//!   whole life. Others probe it with a shared try-lock to learn that the
+//!   service owns indexing, and turn into pure readers.
+//!
+//! `locking.enabled: false` only turns index.lock into a no-op. indexer.lock
+//! always takes a real flock, since a probe that cannot fail would report the
+//! service as always absent; `index watch` refuses to start with locking
+//! disabled because nothing would then keep a second writer out.
+//!
+//! Every wipe of the index directory goes through `clear_index_dir`, which
+//! keeps both lock files: deleting a held lock file lets the next process
+//! create a fresh inode and lock it while the holder still writes.
+
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::fmt;

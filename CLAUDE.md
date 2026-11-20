@@ -59,6 +59,8 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 
 **File-granularity index replacement**: `update_incremental` deletes and re-adds documents per source JSONL file (via exact match on the raw `source_file` STRING field), not per session. Main session files and subagent transcripts (`<uuid>/subagents/**/agent-*.jsonl`) share the same `sessionId`; deleting by session wiped all sibling files' documents whenever any one file was re-indexed.
 
+**One writer at a time, ideally one for life**: every index write holds index.lock exclusively; readers take no lock. Tantivy lands merges only while the writer that scheduled them lives, so a writer per command never merges and segments pile up. `index watch` (`src/cli/watch.rs`, run as the systemd user unit in `packaging/`) is the long-lived writer: it holds index.lock and indexer.lock for life, and indexer.lock held tells the CLI and MCP to act as readers (no inline auto-index, no reindex tool). Without the service the inline path stays, waiting for its merges. Lock paths derive from the index path (`src/shared/lock.rs`), and every wipe of the index directory keeps both lock files.
+
 ## CLI/MCP Feature Parity
 
 CLI and MCP must share the same output formatting code in `src/shared/`. The only difference: MCP assumes non-TTY (no terminal hyperlinks). When adding features:
