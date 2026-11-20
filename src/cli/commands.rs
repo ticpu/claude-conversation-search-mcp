@@ -1,14 +1,14 @@
 use crate::cli::args::{CacheAction, CliCommands, IncludeArg, IndexAction, setup_logging};
 use crate::cli::index;
 use crate::cli::search::{SearchOpts, search_conversations};
+use crate::cli::service;
 use crate::cli::session::view_session;
 use crate::cli::stats::{show_stats, show_topics};
 use crate::cli::summary::summarize_session;
 use crate::shared::session_view::{SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, ExclusiveIndexAccess};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
-use tracing::{debug, error};
 
 pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
     setup_logging(verbose);
@@ -109,48 +109,13 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             CacheAction::Info => show_cache_info(&index_path)?,
             CacheAction::Clear => clear_cache(&index_path)?,
         },
-        CliCommands::Install { project } => install(project)?,
+        CliCommands::Install {
+            project,
+            standalone,
+        } => service::install(project, standalone)?,
+        CliCommands::Uninstall { project } => service::uninstall(project, &index_path)?,
     }
 
-    Ok(())
-}
-
-fn install(project_scope: bool) -> Result<()> {
-    use std::process::Command;
-
-    let exe = std::env::current_exe()?;
-    let exe_path = exe
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid exe path"))?;
-    let scope = if project_scope { "project" } else { "user" };
-
-    match Command::new("claude")
-        .args(["mcp", "remove", "-s", scope, "claude-conversation-search"])
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        // Nothing registered yet is the common case, so this is not an error.
-        Ok(status) => debug!("claude mcp remove exited with {}", status),
-        Err(e) => error!("Could not run claude mcp remove: {}", e),
-    }
-
-    let status = Command::new("claude")
-        .args([
-            "mcp",
-            "add",
-            "-s",
-            scope,
-            "claude-conversation-search",
-            exe_path,
-        ])
-        .status()
-        .context("running claude mcp add")?;
-
-    if !status.success() {
-        anyhow::bail!("claude mcp add failed");
-    }
-
-    println!("{}", exe_path);
     Ok(())
 }
 

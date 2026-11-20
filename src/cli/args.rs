@@ -118,8 +118,17 @@ pub enum CliCommands {
     },
     /// Run as MCP server
     Mcp,
-    /// Register with Claude MCP
+    /// Register with Claude Code MCP and, on Linux, enable the index service
     Install {
+        /// Use project scope instead of user scope
+        #[arg(long)]
+        project: bool,
+        /// Register only; leave indexing to each command instead of a service
+        #[arg(long)]
+        standalone: bool,
+    },
+    /// Undo install: unregister from Claude Code and remove the index service
+    Uninstall {
         /// Use project scope instead of user scope
         #[arg(long)]
         project: bool,

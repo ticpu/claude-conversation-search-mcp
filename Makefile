@@ -64,7 +64,7 @@ dist: $(DIST)
 
 # Grouped target (&:), GNU make >= 4.3: one container pass produces all of
 # these. Older make parses & as another target name and builds a wrong graph.
-$(DIST) &: Containerfile Cargo.toml Cargo.lock $(shell find src -name '*.rs')
+$(DIST) &: Containerfile Cargo.toml Cargo.lock $(shell find src -name '*.rs') packaging/$(NAME)-index.service
 	rm -rf dist
 	$(CONTAINER) build -f Containerfile --output type=local,dest=dist .
 
@@ -82,6 +82,7 @@ define build-deb
 	install -D -m 644 -T dist/completions/bash "$(PKG)/usr/share/bash-completion/completions/$(NAME)"
 	install -D -m 644 -T dist/completions/zsh "$(PKG)/usr/share/zsh/vendor-completions/_$(NAME)"
 	install -D -m 644 -T dist/completions/fish "$(PKG)/usr/share/fish/vendor_completions.d/$(NAME).fish"
+	install -D -m 644 -T packaging/$(NAME)-index.service "$(PKG)/usr/lib/systemd/user/$(NAME)-index.service"
 	install -D -m 644 -T LICENSE "$(PKG)/usr/share/doc/$(NAME)/copyright"
 	install -D -m 644 -T packaging/control "$(PKG)/DEBIAN/control"
 	sed -i -e "s/^Version:.*/Version: $(DEB_VERSION)/" \
@@ -97,10 +98,10 @@ define build-deb
 	done
 endef
 
-$(DEB_AMD64): dist/$(NAME).amd64 dist/glibc-floor.amd64 dist/depends-extra.amd64 $(COMPLETIONS) packaging/control LICENSE
+$(DEB_AMD64): dist/$(NAME).amd64 dist/glibc-floor.amd64 dist/depends-extra.amd64 $(COMPLETIONS) packaging/control packaging/$(NAME)-index.service LICENSE
 	$(call build-deb,amd64)
 
-$(DEB_ARM64): dist/$(NAME).arm64 dist/glibc-floor.arm64 dist/depends-extra.arm64 $(COMPLETIONS) packaging/control LICENSE
+$(DEB_ARM64): dist/$(NAME).arm64 dist/glibc-floor.arm64 dist/depends-extra.arm64 $(COMPLETIONS) packaging/control packaging/$(NAME)-index.service LICENSE
 	$(call build-deb,arm64)
 
 clean:

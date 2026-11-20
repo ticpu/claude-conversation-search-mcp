@@ -30,6 +30,8 @@ ENV CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# Compiled into `install` with include_str!.
+COPY packaging/claude-conversation-search-index.service ./packaging/
 
 # Every dependency of the .deb's Depends: line is read off the binaries here
 # rather than written into packaging/control: a glibc floor set too low
