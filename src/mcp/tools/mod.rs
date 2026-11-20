@@ -561,15 +561,7 @@ Task(
     /// relative to the cwd, which belongs to whatever spawned the server.
     #[cfg(unix)]
     pub(crate) async fn tool_respawn(&self) -> Result<Value> {
-        // Try to find the release binary first, fallback to current_exe
-        let current_dir = std::env::current_dir().context("getting the current directory")?;
-
-        let release_path = current_dir.join("target/release/claude-conversation-search");
-        let exe_path = if release_path.exists() {
-            release_path
-        } else {
-            std::env::current_exe().context("getting the current executable path")?
-        };
+        let exe_path = std::env::current_exe().context("getting the current executable path")?;
 
         // Schedule respawn after a short delay to allow response to be sent
         tokio::spawn(async move {
