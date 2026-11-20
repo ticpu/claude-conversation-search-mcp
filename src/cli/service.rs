@@ -293,6 +293,13 @@ mod tests {
     }
 
     #[test]
+    fn shipped_unit_restarts_cleanly_on_the_binary_replaced_status() {
+        let status = crate::cli::watch::EXIT_BINARY_REPLACED;
+        assert!(SHIPPED.contains(&format!("\nSuccessExitStatus={status}\n")));
+        assert!(SHIPPED.contains(&format!("\nRestartForceExitStatus={status}\n")));
+    }
+
+    #[test]
     fn a_path_systemd_would_split_is_refused() {
         assert!(render_unit(Path::new("/home/u/my bin/ccs")).is_err());
         assert!(render_unit(Path::new("relative/ccs")).is_err());

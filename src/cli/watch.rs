@@ -31,11 +31,15 @@
 //!
 //! Every failure ends the process with a non-zero status so systemd's
 //! Restart=on-failure starts it clean: a failed flush (the in-memory metadata
-//! may already claim the files that failed), a watcher error such as an
-//! exhausted inotify watch limit, or the binary at /proc/self/exe being
-//! replaced or deleted by an upgrade. The loop's return type is Infallible on
+//! may already claim the files that failed) or a watcher error such as an
+//! exhausted inotify watch limit. The loop's return type is Infallible on
 //! success: on-failure ignores exit 0, so a loop that could return Ok would
 //! leave the index unwatched without a restart.
+//!
+//! The binary at /proc/self/exe being replaced or deleted, as an upgrade
+//! does, is not a failure: it exits with `EXIT_BINARY_REPLACED`, which the
+//! unit lists in both SuccessExitStatus and RestartForceExitStatus, so
+//! systemd restarts it on the new binary without recording a failure.
 
 use anyhow::{Context, Result, bail};
 use notify::event::{EventKind, ModifyKind};
@@ -89,11 +93,24 @@ impl Default for Timing {
     }
 }
 
-/// Run the service on `projects` and the index at `index_path` until a failure.
+/// Exit status after `BinaryReplaced` (EX_TEMPFAIL), named in the unit file.
+pub const EXIT_BINARY_REPLACED: i32 = 75;
+
+/// Run the service on `projects` and the index at `index_path` until a
+/// failure, ending the process with `EXIT_BINARY_REPLACED` on `BinaryReplaced`.
 pub fn run(projects: &Path, index_path: &Path) -> Result<Infallible> {
     let mut watch = IndexWatch::start(projects, index_path, Timing::default())?;
     loop {
-        watch.step()?;
+        if let Err(err) = watch.step() {
+            if err
+                .downcast_ref::<BinaryReplaced>()
+                .is_some()
+            {
+                eprintln!("{err:#}");
+                std::process::exit(EXIT_BINARY_REPLACED);
+            }
+            return Err(err);
+        }
     }
 }
 
@@ -116,22 +133,52 @@ impl RunningExe {
     }
 
     /// Fails once the path no longer names the binary this process runs.
-    fn check(&self) -> Result<()> {
-        match std::fs::metadata(&self.path) {
-            Ok(meta) if meta.dev() == self.dev && meta.ino() == self.ino => Ok(()),
-            Ok(_) => bail!(
-                "{} was replaced; exiting so the service restarts on the new binary",
-                self.path
-                    .display()
+    fn check(&self) -> Result<(), BinaryReplaced> {
+        let gone = match std::fs::metadata(&self.path) {
+            Ok(meta) if meta.dev() == self.dev && meta.ino() == self.ino => return Ok(()),
+            Ok(_) => None,
+            Err(e) => Some(e),
+        };
+        Err(BinaryReplaced {
+            path: self
+                .path
+                .clone(),
+            gone,
+        })
+    }
+}
+
+/// The binary this process runs was replaced or deleted, typically by an upgrade.
+#[derive(Debug)]
+pub struct BinaryReplaced {
+    path: PathBuf,
+    /// Why the path could not be read, when it is gone rather than replaced.
+    gone: Option<std::io::Error>,
+}
+
+impl std::fmt::Display for BinaryReplaced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = self
+            .path
+            .display();
+        match self.gone {
+            None => write!(
+                f,
+                "{path} was replaced; exiting so the service restarts on the new binary"
             ),
-            Err(e) => Err(e).with_context(|| {
-                format!(
-                    "{} is gone; exiting so the service restarts on its replacement",
-                    self.path
-                        .display()
-                )
-            }),
+            Some(_) => write!(
+                f,
+                "{path} is gone; exiting so the service restarts on its replacement"
+            ),
         }
+    }
+}
+
+impl std::error::Error for BinaryReplaced {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.gone
+            .as_ref()
+            .map(|e| e as _)
     }
 }
 

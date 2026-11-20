@@ -1,5 +1,6 @@
 //! `index watch` as a process: killed by SIGTERM at any time without losing
-//! committed work, and exiting non-zero when its binary is replaced.
+//! committed work, and exiting with the status the unit restarts cleanly on
+//! when its binary is replaced.
 //!
 //! Each test runs the binary against its own config (XDG_CONFIG_HOME) naming
 //! an index and a Claude dir inside a sandbox under the crate's scratch/, so
@@ -141,6 +142,16 @@ fn wait_exit(child: &mut Child, within: Duration) -> Option<ExitStatus> {
     None
 }
 
+/// The exit status the shipped unit restarts on regardless of Restart=.
+fn unit_restart_force_status() -> i32 {
+    include_str!("../packaging/claude-conversation-search-index.service")
+        .lines()
+        .find_map(|line| line.strip_prefix("RestartForceExitStatus="))
+        .expect("the unit sets RestartForceExitStatus")
+        .parse()
+        .unwrap()
+}
+
 fn sigterm(child: &Child) {
     kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
 }
@@ -192,7 +203,7 @@ fn sigterm_kills_at_once_and_a_restart_keeps_committed_work() {
 }
 
 #[test]
-fn replacing_the_binary_ends_the_service_with_a_failure() {
+fn replacing_the_binary_exits_with_the_status_the_unit_restarts_on() {
     let sandbox = Sandbox::new("watch-replace");
     let bin_dir = sandbox
         .dir
@@ -215,7 +226,7 @@ fn replacing_the_binary_ends_the_service_with_a_failure() {
 
     let status =
         wait_exit(&mut watch, Duration::from_secs(5)).expect("still running on a replaced binary");
-    assert_eq!(status.code(), Some(1), "{status}");
+    assert_eq!(status.code(), Some(unit_restart_force_status()), "{status}");
     let log = std::fs::read_to_string(
         sandbox
             .dir

@@ -6,6 +6,10 @@
 #
 # Stopping never waits for the indexer: every file it writes is replaced by
 # rename, so a kill loses at most the batch being indexed.
+#
+# Exit status 75 means the binary was replaced or deleted (EXIT_BINARY_REPLACED
+# in src/cli/watch.rs): a clean exit that is always restarted. RestartSec
+# still delays that restart; systemd has no per-status delay.
 [Unit]
 Description=Claude conversation search index writer
 ConditionFileIsExecutable=/usr/bin/claude-conversation-search
@@ -15,6 +19,8 @@ Type=notify
 ExecStart=/usr/bin/claude-conversation-search index watch
 Restart=on-failure
 RestartSec=10
+SuccessExitStatus=75
+RestartForceExitStatus=75
 TimeoutStopSec=5
 Nice=10
 IOSchedulingClass=best-effort
