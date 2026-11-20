@@ -36,7 +36,8 @@ pub fn explain_index_error(err: anyhow::Error, index_path: &Path) -> anyhow::Err
     ))
 }
 
-/// Parse a date as full ISO 8601 or YYYY-MM-DD
+/// Parse a date as full ISO 8601 or YYYY-MM-DD. A date-only value means local
+/// midnight (TZ honoured); `--before` stays exclusive of that day.
 pub fn parse_date(s: &str) -> Result<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Ok(dt.with_timezone(&Utc));

@@ -1,3 +1,21 @@
+//! The `.claude/projects/` layout: where transcripts live and which session
+//! a transcript belongs to.
+//!
+//! A main transcript is `<project-dir>/<session-id>.jsonl`. A subagent
+//! transcript is `<project-dir>/<session-id>/subagents/**/agent-<id>.jsonl`
+//! and belongs to the session named by the directory above `subagents`; its
+//! own stem is never a session id. Session prefixes resolve against main
+//! transcript stems only, case-insensitively.
+//!
+//! Active session. The MCP server leaves the session calling it out of its
+//! results. Resolution order: CLAUDE_CODE_SESSION_ID; else the newest main
+//! transcript in the project dir of CLAUDE_PROJECT_DIR; else the newest main
+//! transcript anywhere. Claude Code sets both variables when it spawns the
+//! server, so they reflect the session the server was spawned for: if that
+//! process changes session without respawning the server, the exclusion
+//! keeps the old id. The source that decided travels with the id so the
+//! debug line can name it.
+
 use super::config::get_config;
 use anyhow::{Result, bail};
 use glob::glob;

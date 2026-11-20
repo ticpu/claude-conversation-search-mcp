@@ -1,3 +1,14 @@
+//! One session rendered for the CLI `session` command and the MCP
+//! `get_session_messages` tool.
+//!
+//! Entries arrive in display order and are not re-sorted: from JSONL, one
+//! file in line order; from the index fallback, main transcripts first, then
+//! subagent transcripts, each file in sequence order. sequence_num restarts
+//! in every file, so sorting on it alone interleaves transcripts.
+//!
+//! Times are shown in the local timezone (TZ honoured). The header carries
+//! the UTC offset; per-message times are in that same zone.
+
 use super::format::{DisplayOptions, filter_content};
 use super::models::{ConversationEntry, MessageType, SearchResult};
 use super::parsers::JsonlParser;

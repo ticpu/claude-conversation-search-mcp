@@ -1,3 +1,42 @@
+//! Query construction and retrieval over the tantivy index.
+//!
+//! Query text. User text is code more often than prose, so `word:` is a field
+//! clause only when `word` is a schema field; every other colon is escaped
+//! before parsing (`std::fs::read`, `error: foo`, `http://x`). Text that still
+//! fails strict parsing goes through `parse_query_lenient`, and its parse
+//! errors travel with the results so the caller can say the query was
+//! reinterpreted. A query is never refused for its syntax.
+//!
+//! Filters and the fetch. The project, session, exclude, active-session,
+//! hidden-content and one-per-session filters run after tantivy's top-K, so
+//! the fetch starts at three times the limit and doubles until `limit + 1`
+//! hits survive or the matches run out. The extra survivor is what `more`
+//! reports. Date bounds stay inside the tantivy query, where BM25 only sees
+//! the window. A limit of 0 is an error, never handed to TopDocs, which
+//! asserts on it.
+//!
+//! Project filter. A hit matches when its cwd contains the filter's path
+//! components contiguously, and an absolute filter must be a prefix of it, so
+//! a subdirectory or `worktrees/<x>` of the project matches. The tantivy
+//! clause on the cwd field is a superset prefilter; `project_matches` decides.
+//!
+//! Context window. sequence_num restarts at 0 in every JSONL file, and
+//! subagent and resumed transcripts carry their parent's sessionId, so a
+//! session id does not name one ordered transcript. A hit's context is the
+//! docs of its own source_file with sequence_num in [seq - B, seq + A], and
+//! its "(N msgs)" is the doc count of its main transcript: the file itself,
+//! or the parent `<uuid>.jsonl` of a subagent file. Both are bounded queries;
+//! nothing fetches a whole session to build a window.
+//!
+//! Session and uuid lookups. A session filter arrives resolved: full ids
+//! from the transcript file names, or the raw prefix when no file matches (a
+//! deleted transcript). A full id matches every hyphen segment and must equal
+//! the stored value. A prefix matches the stored value case-insensitively,
+//! prefiltered by a regex on the term of its last segment. uuid lookups work
+//! the same way. `get_session_messages` takes a full id and returns every doc
+//! of the session, main transcripts first, each file in sequence order, with
+//! no cap.
+
 mod doc;
 
 use super::format::{SearchResultWithContext, self_context_result};

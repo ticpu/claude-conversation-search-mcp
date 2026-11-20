@@ -534,6 +534,8 @@ Task(
         tool_ok(output)
     }
 
+    /// Re-execs current_exe with the same arguments, never a binary found
+    /// relative to the cwd, which belongs to whatever spawned the server.
     #[cfg(unix)]
     pub(crate) async fn tool_respawn(&self) -> Result<Value> {
         // Try to find the release binary first, fallback to current_exe

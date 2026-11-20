@@ -1,3 +1,10 @@
+//! Search result rendering, shared by the CLI and MCP.
+//!
+//! A hit whose own content the display options hide (a tool call, thinking)
+//! is dropped by the search before it counts toward the limit, so it never
+//! renders as a header with no body; `filter_content` here only trims its
+//! neighbours. Times are local (TZ honoured) with an explicit UTC offset.
+
 use super::models::SearchResult;
 use super::path_utils::{home_to_tilde, session_jsonl_path, short_uuid};
 use super::terminal::file_hyperlink;

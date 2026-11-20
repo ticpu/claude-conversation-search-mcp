@@ -1,3 +1,15 @@
+//! JSONL transcript parsing into ConversationEntry.
+//!
+//! sequence_num counts the entries kept from one file, from 0; it orders
+//! messages within that file only.
+//!
+//! Summary lines carry only type, summary and leafUuid. Their session id
+//! comes from the file path (path_utils), their uuid is the leafUuid, and
+//! their timestamp is the leaf message's when the leaf is in the same file,
+//! else that of the file's first timestamped message. A line whose timestamp
+//! does not parse is skipped and counted, and one warning per file gives the
+//! count and the first such line.
+
 mod content;
 pub mod source;
 
