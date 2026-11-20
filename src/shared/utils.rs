@@ -138,6 +138,6 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
 
     let mut cache_manager = CacheManager::new(index_path)?;
     let all_files = discover_jsonl_files()?;
-    cache_manager.update_full(&mut indexer, all_files)?;
+    cache_manager.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
     Ok(())
 }

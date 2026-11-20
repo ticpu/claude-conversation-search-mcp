@@ -63,6 +63,36 @@ enum ParseOutcome {
     Failed,
 }
 
+/// Files parsed, indexed and committed per chunk by `update_with_progress`.
+pub const INDEX_CHUNK_FILES: usize = 200;
+
+/// Where an update stands after a committed chunk.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexProgress {
+    pub files_done: usize,
+    pub files_total: usize,
+}
+
+/// What one update did.
+#[derive(Debug, Default)]
+pub struct UpdateSummary {
+    pub files_indexed: usize,
+    pub files_done: usize,
+    pub entries: usize,
+    pub purged: usize,
+    pub commits: usize,
+}
+
+impl std::fmt::Display for UpdateSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} of {} files indexed ({} entries), {} purged, {} commits",
+            self.files_indexed, self.files_done, self.entries, self.purged, self.commits
+        )
+    }
+}
+
 /// What triage decided: files to (re)parse and indexed files now gone.
 struct Triage {
     to_parse: Vec<PathBuf>,
@@ -104,7 +134,8 @@ impl CacheManager {
         &mut self,
         indexer: &mut SearchIndexer,
         discovered: Vec<PathBuf>,
-    ) -> Result<()> {
+        on_chunk: &mut dyn FnMut(IndexProgress) -> Result<()>,
+    ) -> Result<UpdateSummary> {
         let mut files: HashSet<PathBuf> = discovered
             .into_iter()
             .collect();
@@ -114,54 +145,88 @@ impl CacheManager {
                 .keys()
                 .cloned(),
         );
-        self.update_incremental(
+        self.update_with_progress(
             indexer,
             files
                 .into_iter()
                 .collect(),
+            on_chunk,
         )
     }
 
     /// Bring the index in line with `files` as they are on disk: changed files
     /// are reindexed, missing ones have their documents and metadata purged.
+    #[cfg(test)]
     pub fn update_incremental(
         &mut self,
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
-    ) -> Result<()> {
+    ) -> Result<UpdateSummary> {
+        self.update_with_progress(indexer, files, &mut |_| Ok(()))
+    }
+
+    /// `update_incremental` reporting after each chunk. Each chunk of
+    /// `INDEX_CHUNK_FILES` is committed and its metadata saved before the next
+    /// is parsed, which bounds memory and limits a kill to one chunk's work.
+    /// An error from `on_chunk` stops the run after the chunk it reports.
+    pub fn update_with_progress(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        files: Vec<PathBuf>,
+        on_chunk: &mut dyn FnMut(IndexProgress) -> Result<()>,
+    ) -> Result<UpdateSummary> {
         let Triage {
             to_parse,
             mut vanished,
         } = self.triage_files(files)?;
+        let mut summary = UpdateSummary::default();
+        if to_parse.is_empty() && vanished.is_empty() {
+            debug!("No files needed indexing");
+            return Ok(summary);
+        }
 
-        let mut parsed = Vec::new();
-        for outcome in Self::parse_files_parallel(to_parse) {
-            match outcome {
-                ParseOutcome::Parsed(file) => parsed.push(file),
-                ParseOutcome::Vanished(path) => vanished.push(path),
-                ParseOutcome::Failed => {}
+        let files_total = to_parse.len();
+        let mut chunks: Vec<&[PathBuf]> = to_parse
+            .chunks(INDEX_CHUNK_FILES)
+            .collect();
+        if chunks.is_empty() {
+            chunks.push(&[]);
+        }
+        for chunk in chunks {
+            let mut parsed = Vec::new();
+            for outcome in Self::parse_files_parallel(chunk.to_vec()) {
+                match outcome {
+                    ParseOutcome::Parsed(file) => parsed.push(file),
+                    ParseOutcome::Vanished(path) => vanished.push(path),
+                    ParseOutcome::Failed => {}
+                }
             }
+
+            summary.purged += self.purge_files(indexer, std::mem::take(&mut vanished));
+            let (files_processed, entries) = self.index_parsed_files(indexer, parsed)?;
+            indexer.commit()?;
+            self.refresh_derived_metadata();
+            self.metadata
+                .last_full_scan = Some(Utc::now());
+            self.save_metadata()?;
+
+            summary.files_indexed += files_processed;
+            summary.entries += entries;
+            summary.commits += 1;
+            summary.files_done += chunk.len();
+            let progress = IndexProgress {
+                files_done: summary.files_done,
+                files_total,
+            };
+            debug!(
+                "Committed {}/{} files",
+                progress.files_done, progress.files_total
+            );
+            on_chunk(progress)?;
         }
 
-        if parsed.is_empty() && vanished.is_empty() {
-            info!("No files needed indexing");
-            return Ok(());
-        }
-
-        let purged = self.purge_files(indexer, vanished);
-        let (files_processed, total_entries) = self.index_parsed_files(indexer, parsed)?;
-        indexer.commit()?;
-
-        self.refresh_derived_metadata();
-        self.metadata
-            .last_full_scan = Some(Utc::now());
-        self.save_metadata()?;
-
-        info!(
-            "Incremental indexing complete: {} files processed, {} entries added, {} files purged",
-            files_processed, total_entries, purged
-        );
-        Ok(())
+        info!("Indexing complete: {summary}");
+        Ok(summary)
     }
 
     /// Phase 1 (serial): sort `files` into those needing a parse and indexed
@@ -832,14 +897,16 @@ mod tests {
         let mut indexer = SearchIndexer::new(&index_dir).unwrap();
         let mut cache = CacheManager::new(&index_dir).unwrap();
         cache
-            .update_full(&mut indexer, vec![kept.clone(), gone.clone()])
+            .update_full(&mut indexer, vec![kept.clone(), gone.clone()], &mut |_| {
+                Ok(())
+            })
             .unwrap();
         assert_eq!(session_doc_count(&index_dir, "sess-gone"), 3);
 
         fs::remove_file(&gone).unwrap();
         // Discovery no longer lists it; the full pass must still find it gone.
         cache
-            .update_full(&mut indexer, vec![kept.clone()])
+            .update_full(&mut indexer, vec![kept.clone()], &mut |_| Ok(()))
             .unwrap();
         drop(indexer);
 
@@ -891,6 +958,77 @@ mod tests {
                 .total_entries,
             0
         );
+    }
+
+    fn write_many(dir: &Path, count: usize) -> Vec<PathBuf> {
+        (0..count)
+            .map(|i| {
+                let path = dir.join(format!("f{i:04}.jsonl"));
+                write_transcript(&path, &format!("sess-{i:04}"), 1);
+                path
+            })
+            .collect()
+    }
+
+    #[test]
+    fn indexing_commits_once_per_chunk() {
+        let temp = TempDir::new().unwrap();
+        let index_dir = temp
+            .path()
+            .join("idx");
+        let files = write_many(temp.path(), 2 * INDEX_CHUNK_FILES + 50);
+
+        let mut indexer = SearchIndexer::new(&index_dir).unwrap();
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        let mut reports = Vec::new();
+        let summary = cache
+            .update_with_progress(&mut indexer, files, &mut |p| {
+                reports.push((p.files_done, p.files_total));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(summary.commits, 3);
+        assert_eq!(summary.files_indexed, 450);
+        assert_eq!(reports, [(200, 450), (400, 450), (450, 450)]);
+    }
+
+    #[test]
+    fn failure_after_the_first_chunk_leaves_it_searchable() {
+        let temp = TempDir::new().unwrap();
+        let index_dir = temp
+            .path()
+            .join("idx");
+        let files = write_many(temp.path(), 2 * INDEX_CHUNK_FILES + 50);
+
+        let mut indexer = SearchIndexer::new(&index_dir).unwrap();
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        let err = cache
+            .update_with_progress(&mut indexer, files, &mut |_| {
+                anyhow::bail!("killed before chunk 2")
+            })
+            .unwrap_err();
+        assert_eq!(err.to_string(), "killed before chunk 2");
+        drop(indexer);
+
+        let reloaded = CacheManager::new(&index_dir).unwrap();
+        let indexed: Vec<_> = reloaded
+            .metadata
+            .indexed_files
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(indexed.len(), INDEX_CHUNK_FILES);
+        for path in &indexed {
+            let session = format!(
+                "sess-{}",
+                &path
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()[1..]
+            );
+            assert_eq!(session_doc_count(&index_dir, &session), 1, "{session}");
+        }
     }
 
     #[test]
