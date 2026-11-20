@@ -1,5 +1,5 @@
 use super::format::{DisplayOptions, filter_content};
-use super::models::{ConversationEntry, SearchResult};
+use super::models::{ConversationEntry, MessageType, SearchResult};
 use super::parsers::JsonlParser;
 use super::path_utils::{find_session_jsonl, home_to_tilde};
 use super::terminal::file_hyperlink;
@@ -22,6 +22,8 @@ pub struct SessionViewOpts {
     pub session_id: String,
     pub truncate_length: usize,
     pub window: Window,
+    /// Header and session statistics only, no messages.
+    pub meta_only: bool,
 }
 
 pub enum SessionSource {
@@ -139,8 +141,9 @@ pub fn render(
 
     let (range, center_idx) = select_window(&msgs, &opts.window);
     let window = &msgs[range.clone()];
+    let first = &msgs[0];
 
-    let mut output = String::new();
+    let mut output = resume_line(first);
     if opts
         .window
         .center
@@ -156,7 +159,6 @@ pub fn render(
         ));
     }
 
-    let first = &msgs[0];
     let project = home_to_tilde(
         first
             .cwd
@@ -174,27 +176,32 @@ pub fn render(
     );
     let (session_cell, from_index) = match source {
         SessionSource::Index => (
-            opts.session_id
+            first
+                .session_id
                 .clone(),
             " (from index, content may be truncated)",
         ),
         SessionSource::Jsonl(path) => (
-            file_hyperlink(&path.to_string_lossy(), &opts.session_id),
+            file_hyperlink(&path.to_string_lossy(), &first.session_id),
             "",
         ),
     };
+    let shown = if opts.meta_only {
+        total.to_string()
+    } else {
+        format!("{}/{}", window.len(), total)
+    };
     output.push_str(&format!(
-        "📁 {} 🗒️ {} ({}/{} msgs) ⏱️ {}{}\n",
-        project,
-        session_cell,
-        window.len(),
-        total,
-        time_range,
-        from_index
+        "📁 {} 🗒️ {} ({} msgs) ⏱️ {}{}\n",
+        project, session_cell, shown, time_range, from_index
     ));
 
     if let Some(tags) = tag_line(entries) {
         output.push_str(&format!("tags: {tags}\n"));
+    }
+    if opts.meta_only {
+        output.push_str(&stats_lines(entries, &msgs));
+        return output;
     }
     output.push('\n');
 
@@ -237,6 +244,54 @@ pub fn render(
     }
 
     output
+}
+
+/// Sessions are stored per project directory and `claude -r` resolves the ID in the
+/// current one, so the command changes into the session's cwd first.
+fn resume_line(first: &ConversationEntry) -> String {
+    let id = &first.session_id;
+    match first
+        .cwd
+        .as_deref()
+        .map(shlex::try_quote)
+    {
+        Some(Ok(cwd)) => format!("resume: cd {cwd} && claude -r {id}\n"),
+        Some(Err(e)) => format!("resume: claude -r {id} (cwd not quotable: {e})\n"),
+        None => format!("resume: claude -r {id}\n"),
+    }
+}
+
+fn stats_lines(entries: &[ConversationEntry], displayable: &[ConversationEntry]) -> String {
+    let counts: Vec<String> = [
+        MessageType::User,
+        MessageType::Assistant,
+        MessageType::Summary,
+    ]
+    .iter()
+    .filter_map(|kind| {
+        let n = displayable
+            .iter()
+            .filter(|e| &e.message_type == kind)
+            .count();
+        (n > 0).then(|| format!("{}={n}", kind.short_name()))
+    })
+    .collect();
+    let mut out = format!("messages: {}\n", counts.join(" "));
+
+    let models: BTreeSet<&str> = entries
+        .iter()
+        .filter_map(|e| {
+            e.model
+                .as_deref()
+        })
+        .collect();
+    if !models.is_empty() {
+        let models: Vec<&str> = models
+            .into_iter()
+            .collect();
+        out.push_str(&format!("models: {}\n", models.join(",")));
+    }
+    out
 }
 
 fn tag_line(entries: &[ConversationEntry]) -> Option<String> {
@@ -322,6 +377,7 @@ mod tests {
             session_id: "session-1".to_string(),
             truncate_length: 0,
             window,
+            meta_only: false,
         }
     }
 
@@ -413,7 +469,14 @@ mod tests {
         w.center = Some("nope".to_string());
 
         let out = render(&entries, &SessionSource::Index, &opts(w), &full_display());
-        assert!(out.starts_with("warning: message nope not found"), "{out}");
+        let warning = out
+            .lines()
+            .nth(1)
+            .unwrap_or_default();
+        assert!(
+            warning.starts_with("warning: message nope not found"),
+            "{out}"
+        );
         assert!(out.contains("uuid-0") || out.contains("text"), "{out}");
     }
 
@@ -429,6 +492,60 @@ mod tests {
         assert!(out.contains("📁 /home/user/GIT/project-name"), "{out}");
         assert!(out.contains("(1/1 msgs)"), "{out}");
         assert!(out.contains("from index"), "{out}");
+    }
+
+    #[test]
+    fn prefix_lookup_prints_the_full_session_id() {
+        let entries = vec![entry("uuid-0", 0, MessageType::User, "hello")];
+        let mut o = opts(window());
+        o.session_id = "sess".to_string();
+        let out = render(&entries, &SessionSource::Index, &o, &full_display());
+        assert!(
+            out.starts_with("resume: cd /home/user/GIT/project-name && claude -r session-1\n"),
+            "{out}"
+        );
+        assert!(out.contains("🗒️ session-1 "), "{out}");
+    }
+
+    #[test]
+    fn resume_line_quotes_the_cwd() {
+        let entries = vec![
+            EntryBuilder::new("uuid-0", "session-1")
+                .content("hello")
+                .project("p", "/home/user/My Project")
+                .build(),
+        ];
+        let out = render(
+            &entries,
+            &SessionSource::Index,
+            &opts(window()),
+            &full_display(),
+        );
+        assert!(
+            out.starts_with("resume: cd '/home/user/My Project' && claude -r session-1\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn meta_only_prints_statistics_without_messages() {
+        let mut ai = entry("uuid-1", 1, MessageType::Assistant, "answer text");
+        ai.model = Some("claude-test".to_string());
+        let entries = vec![
+            entry("uuid-0", 0, MessageType::User, "question text"),
+            ai,
+            entry("uuid-2", 2, MessageType::User, "follow-up text"),
+        ];
+        let mut w = window();
+        w.limit = 1;
+        let mut o = opts(w);
+        o.meta_only = true;
+        let out = render(&entries, &SessionSource::Index, &o, &full_display());
+        assert!(out.contains("(3 msgs)"), "{out}");
+        assert!(out.contains("messages: User=2 AI=1\n"), "{out}");
+        assert!(out.contains("models: claude-test\n"), "{out}");
+        assert!(!out.contains("question text"), "{out}");
+        assert!(!out.contains("+more"), "{out}");
     }
 
     #[test]

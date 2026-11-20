@@ -419,6 +419,10 @@ impl McpServer {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(50) as usize,
             },
+            meta_only: args
+                .get("meta_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         };
 
         let (entries, source) = session_view::load_session(&self.cache_dir, session_id)?;

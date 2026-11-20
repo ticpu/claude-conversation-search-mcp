@@ -19,7 +19,7 @@ pub(crate) fn view_session(index_path: &Path, opts: &SessionViewOpts) -> Result<
         session_view::render(&entries, &source, opts, &display)
     );
 
-    if opts.truncate_length > 0 {
+    if opts.truncate_length > 0 && !opts.meta_only {
         println!("\nUse --full or --truncate 0 for complete content");
     }
 

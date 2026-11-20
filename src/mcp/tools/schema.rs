@@ -144,6 +144,12 @@ fn get_session_messages_schema() -> serde_json::Value {
                 "description": "Chars shown per message. 0 = full content",
                 "optional": true,
                 "default": 0
+            },
+            "meta_only": {
+                "type": "boolean",
+                "description": "Resume command, header and statistics without messages",
+                "optional": true,
+                "default": false
             }
         },
         "required": ["session_id"]

@@ -80,6 +80,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             truncate,
             offset,
             limit,
+            meta,
         } => {
             shared::auto_index(&index_path)?;
             let opts = SessionViewOpts {
@@ -92,6 +93,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                     offset,
                     limit,
                 },
+                meta_only: meta,
             };
             view_session(&index_path, &opts)?;
         }

@@ -185,7 +185,10 @@ claude-conversation-search session abc123de              # first page, 5 message
 claude-conversation-search session abc123de --full       # untruncated content
 claude-conversation-search session abc123de --center <msg_uuid> -C 10
 claude-conversation-search session abc123de --offset 50 --limit 20
+claude-conversation-search session abc123de --meta       # resume command, header and statistics only
 ```
+
+The first line is a ready-to-paste `cd <cwd> && claude -r <full-session-uuid>`, and the header shows the full session UUID even when looked up by prefix.
 
 **Options:**
 - `--full` - Show full content instead of truncated snippets
@@ -194,6 +197,7 @@ claude-conversation-search session abc123de --offset 50 --limit 20
 - `--truncate <n>` - Characters shown per message; 0 for full content (default: 200)
 - `--offset <n>` - Skip this many messages before displaying (default: 0)
 - `--limit <n>` - Messages to show; 0 for all (default: 0)
+- `--meta` - Print the resume command, header, tags, message counts by type and models used, without messages
 
 Reads the source JSONL directly when it exists (untruncated content), falling back to the search
 index otherwise; the header marks it `(from index, content may be truncated)` when it does. Exits
@@ -239,7 +243,7 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
 
 ### MCP Tools Available
 - **search_conversations**: Full-text search with `-C`/`-B`/`-A` context (grep-style). Shows timestamps, session IDs, 🎟️ tags. Excludes the caller's own active session from results unless `include: ["current_session"]` is passed; `debug: true` prints the parsed query and filters applied.
-- **get_session_messages**: Paginated session content. Use `center_on` + `-B`/`-A` to jump to a specific message.
+- **get_session_messages**: Paginated session content. Use `center_on` + `-B`/`-A` to jump to a specific message, or `meta_only: true` for the resume command and statistics alone.
 - **get_messages**: Fetch full content of specific messages by UUID (from 💬 in search results).
 - **summarize_session**: Returns Task tool instructions for haiku-powered summarization of large sessions (the agent then calls `get_session_messages` itself).
 - **reindex**: Update index when results seem incomplete.

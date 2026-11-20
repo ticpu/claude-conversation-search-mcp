@@ -97,6 +97,9 @@ pub enum CliCommands {
         /// Messages shown (0 = all)
         #[arg(long, default_value = "0")]
         limit: usize,
+        /// Print the resume command, header and statistics without messages
+        #[arg(long)]
+        meta: bool,
     },
     /// Summarize a session using Claude (runs in jailed empty dir)
     Summary {
