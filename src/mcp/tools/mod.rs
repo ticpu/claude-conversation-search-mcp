@@ -395,17 +395,19 @@ impl McpServer {
                 search_args.context_after,
             )?;
 
-        tool_ok(render_search_response(
-            &args,
-            &search_args,
-            &all_exclude_patterns,
-            &health,
-            probe
-                .active
-                .as_ref(),
-            &found,
-            &display_opts,
-        ))
+        tool_ok(
+            self.with_failure_note(render_search_response(
+                &args,
+                &search_args,
+                &all_exclude_patterns,
+                &health,
+                probe
+                    .active
+                    .as_ref(),
+                &found,
+                &display_opts,
+            )),
+        )
     }
 
     pub(crate) async fn tool_get_session_messages(&self, args: Option<Value>) -> Result<Value> {
@@ -455,7 +457,9 @@ impl McpServer {
 
         let (entries, source) = session_view::load_session(&self.cache_dir, session_id)?;
         if entries.is_empty() {
-            return tool_err(format!("No messages found for session {}", session_id));
+            return tool_err(
+                self.with_failure_note(format!("No messages found for session {session_id}")),
+            );
         }
 
         let display = DisplayOptions {
@@ -464,7 +468,7 @@ impl McpServer {
             truncate_length: opts.truncate_length,
         };
 
-        tool_ok(session_view::render(&entries, &source, &opts, &display))
+        tool_ok(self.with_failure_note(session_view::render(&entries, &source, &opts, &display)))
     }
 
     pub(crate) async fn tool_summarize_session(&self, args: Option<Value>) -> Result<Value> {
@@ -481,7 +485,7 @@ impl McpServer {
         };
         let search_engine = &loaded.engine;
         let Some(full_id) = session_view::resolve_session_id(search_engine, session_id)? else {
-            return tool_err(format!("No session found for {session_id}"));
+            return tool_err(self.with_failure_note(format!("No session found for {session_id}")));
         };
         let mut messages = search_engine.get_session_messages(&full_id)?;
         messages
@@ -517,7 +521,7 @@ Task(
 )"#
         );
 
-        tool_ok(output)
+        tool_ok(self.with_failure_note(output))
     }
 
     pub(crate) async fn tool_get_messages(&self, args: Option<Value>) -> Result<Value> {
@@ -536,7 +540,7 @@ Task(
         let messages = search_engine.get_messages_by_uuid(&ids)?;
 
         if messages.is_empty() {
-            return tool_ok("No messages found for provided IDs");
+            return tool_ok(self.with_failure_note("No messages found for provided IDs"));
         }
 
         let mut output = String::new();
@@ -553,7 +557,7 @@ Task(
             ));
         }
 
-        tool_ok(output)
+        tool_ok(self.with_failure_note(output))
     }
 
     /// Re-execs current_exe with the same arguments, never a binary found

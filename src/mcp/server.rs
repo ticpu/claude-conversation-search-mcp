@@ -4,8 +4,11 @@
 //! stdin loop. A background task brings the index up to date while an
 //! existing index is searched as it stands; only with no index yet do the
 //! search tools answer with a retry message carrying the progress. A failure
-//! of the background task is kept and returned by every later tool call, so
-//! it is seen rather than leaving searches silently stale. The engine lives
+//! of the background task is kept for the life of the process, so it is seen
+//! rather than leaving searches silently stale: while an index is open, every
+//! later search, session, messages and summarize answer ends with a line
+//! naming it, and only when no index could be opened is it the tool error by
+//! itself. The engine lives
 //! in an arc-swap snapshot shared with that task, which swaps in a fresh one
 //! when it finishes.
 //!
@@ -154,15 +157,13 @@ impl McpServer {
     }
 
     /// The engine to answer a tool call with, or the text of the tool error to
-    /// answer instead: the background failure, or that the index is not built.
+    /// answer instead: the background failure when no index could be opened,
+    /// or that the index is not built yet.
     pub(crate) fn ready_engine(&self) -> Result<Arc<LoadedEngine>, String> {
-        if let Some(failure) = self
+        let failure = self
             .indexing
             .failure
-            .load_full()
-        {
-            return Err(format!("indexing the conversations failed: {failure:#}"));
-        }
+            .load_full();
         let running = self
             .indexing
             .running
@@ -175,16 +176,22 @@ impl McpServer {
             None => !running && index_exists(&self.cache_dir),
         };
         if stale {
-            let loaded = Arc::new(
-                LoadedEngine::open(&self.cache_dir)
-                    .map_err(|e| format!("opening the index: {e:#}"))?,
-            );
+            let loaded = Arc::new(LoadedEngine::open(&self.cache_dir).map_err(
+                |e| match &failure {
+                    Some(failure) => format!(
+                        "indexing the conversations failed: {failure:#}; opening the index: {e:#}"
+                    ),
+                    None => format!("opening the index: {e:#}"),
+                },
+            )?);
             self.engine
                 .store(Some(loaded.clone()));
             return Ok(loaded);
         }
-        current.ok_or_else(|| {
-            format!(
+        match (current, failure) {
+            (Some(loaded), _) => Ok(loaded),
+            (None, Some(failure)) => Err(format!("indexing the conversations failed: {failure:#}")),
+            (None, None) => Err(format!(
                 "the index is being built ({}/{} files), retry shortly",
                 self.indexing
                     .files_done
@@ -192,8 +199,26 @@ impl McpServer {
                 self.indexing
                     .files_total
                     .load(Ordering::Relaxed)
-            )
-        })
+            )),
+        }
+    }
+
+    /// `text` followed by the background failure line, when the pass failed.
+    pub(crate) fn with_failure_note(&self, text: impl Into<String>) -> String {
+        let mut text = text.into();
+        if let Some(failure) = self
+            .indexing
+            .failure
+            .load_full()
+        {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!(
+                "background indexing failed: {failure:#}; results may be stale"
+            ));
+        }
+        text
     }
 
     /// Swap in an engine opened after this process committed.
@@ -392,14 +417,9 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test]
-    async fn a_background_failure_answers_every_later_call() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let index = temp
-            .path()
-            .join("idx");
-        build_index(&index, vec![write_session(temp.path(), "sess-a")]).unwrap();
-        let mut server = McpServer::start(index, |_| {
+    /// A server whose background pass on `index` failed with a two-level chain.
+    async fn server_after_failed_pass(index: PathBuf) -> McpServer {
+        let server = McpServer::start(index, |_| {
             Err(anyhow::anyhow!("No space left on device").context("committing chunk"))
         });
         let indexing = server
@@ -411,6 +431,17 @@ mod tests {
                 .load(Ordering::SeqCst)
         })
         .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_background_failure_without_an_index_is_the_tool_error() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut server = server_after_failed_pass(
+            temp.path()
+                .join("idx"),
+        )
+        .await;
 
         for _ in 0..2 {
             let (text, is_error) = get_message(&mut server, "sess-a-u").await;
@@ -418,6 +449,28 @@ mod tests {
             assert_eq!(
                 text,
                 "indexing the conversations failed: committing chunk: No space left on device"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_background_failure_is_noted_on_answers_from_the_open_index() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = temp
+            .path()
+            .join("idx");
+        build_index(&index, vec![write_session(temp.path(), "sess-a")]).unwrap();
+        let mut server = server_after_failed_pass(index).await;
+
+        for _ in 0..2 {
+            let (text, is_error) = get_message(&mut server, "sess-a-u").await;
+            assert!(!is_error, "{text}");
+            assert!(text.contains("hello sess-a"), "{text}");
+            assert!(
+                text.ends_with(
+                    "\nbackground indexing failed: committing chunk: No space left on device; results may be stale"
+                ),
+                "{text}"
             );
         }
     }
