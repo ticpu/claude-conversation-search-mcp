@@ -994,3 +994,90 @@ fn project_filter_matches_worktrees_and_subdirectories() {
         assert_eq!(sessions, ["s-root", "s-sub", "s-wt"], "filter {filter}");
     }
 }
+
+#[test]
+fn code_like_queries_search_instead_of_failing() {
+    let tmp = TempDir::new().unwrap();
+    let entries = vec![
+        EntryBuilder::new("fs", "s-fs")
+            .content("call std::fs::read on the path")
+            .build(),
+        EntryBuilder::new("err", "s-err")
+            .content("error: cannot borrow foo as mutable")
+            .build(),
+        EntryBuilder::new("url", "s-url")
+            .content("fetched http://example.org/page")
+            .build(),
+        EntryBuilder::new("quote", "s-quote")
+            .content("the unbalanced quote case")
+            .build(),
+    ];
+    index_entries(tmp.path(), entries);
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+
+    let cases: [(&str, &[&str], bool); 6] = [
+        ("std::fs::read", &["s-fs"], false),
+        ("error: borrow", &["s-err"], false),
+        ("http://example.org", &["s-url"], false),
+        (r#""unbalanced quote"#, &["s-quote"], true),
+        ("(unbalanced", &["s-quote"], true),
+        // tantivy's lenient parse drops an unclosed range with its word.
+        ("[unbalanced", &[], true),
+    ];
+    for (text, sessions, lenient) in cases {
+        let found = engine
+            .search_filtered(
+                &SearchQuery {
+                    text: text.to_string(),
+                    limit: 10,
+                    ..Default::default()
+                },
+                &ResultFilter::default(),
+                &DisplayOptions::default(),
+                0,
+                0,
+            )
+            .unwrap_or_else(|e| panic!("{text}: {e:#}"));
+        assert_eq!(matched_sessions(&found), sessions, "{text}");
+        assert_eq!(
+            found
+                .lenient
+                .is_some(),
+            lenient,
+            "{text}: {:?}",
+            found.lenient
+        );
+    }
+}
+
+#[test]
+fn field_clause_still_restricts_to_its_field() {
+    let tmp = TempDir::new().unwrap();
+    let entries = vec![
+        EntryBuilder::new("a", "s-a")
+            .content("alpha")
+            .project("beta", "/home/u/GIT/beta")
+            .build(),
+        EntryBuilder::new("b", "s-b")
+            .content("beta")
+            .project("other", "/home/u/GIT/other")
+            .build(),
+    ];
+    index_entries(tmp.path(), entries);
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+    let found = filtered(
+        &engine,
+        SearchQuery {
+            text: "content:beta".to_string(),
+            limit: 10,
+            ..Default::default()
+        },
+        &ResultFilter::default(),
+    );
+    assert_eq!(matched_sessions(&found), ["s-b"]);
+    assert!(
+        found
+            .lenient
+            .is_none()
+    );
+}

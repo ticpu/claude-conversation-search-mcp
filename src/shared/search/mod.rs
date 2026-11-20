@@ -1,11 +1,5 @@
-//! Query construction and retrieval over the tantivy index.
-//!
-//! Query text. User text is code more often than prose, so `word:` is a field
-//! clause only when `word` is a schema field; every other colon is escaped
-//! before parsing (`std::fs::read`, `error: foo`, `http://x`). Text that still
-//! fails strict parsing goes through `parse_query_lenient`, and its parse
-//! errors travel with the results so the caller can say the query was
-//! reinterpreted. A query is never refused for its syntax.
+//! Query construction and retrieval over the tantivy index. Query text
+//! parsing lives in `query`.
 //!
 //! Filters and the fetch. The project, session, exclude, active-session,
 //! hidden-content and one-per-session filters run after tantivy's top-K, so
@@ -34,6 +28,7 @@
 
 mod doc;
 mod filter;
+mod query;
 
 pub use filter::{ResultFilter, compile_exclude_patterns};
 
@@ -41,13 +36,14 @@ use super::format::{DisplayOptions, SearchResultWithContext, self_context_result
 use super::models::{SearchQuery, SearchResult, SortOrder};
 use super::parsers::SourceKind;
 use super::path_utils::main_transcript_of;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use filter::{project_matches, project_query};
+use query::{TextQuery, parse_text_query};
 use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, RangeQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, IndexReader, Order, ReloadPolicy, Searcher, Term};
 
@@ -89,6 +85,14 @@ pub struct FilteredResults {
     pub results: Vec<SearchResultWithContext>,
     /// More hits survive the filters than the limit let through.
     pub more: bool,
+    /// Why strict parsing of the query text failed, when it was parsed
+    /// leniently instead.
+    pub lenient: Option<String>,
+}
+
+/// The line telling the user their query text was reinterpreted.
+pub fn lenient_note(reason: &str) -> String {
+    format!("query parsed leniently, some operators may be ignored ({reason})")
 }
 
 pub struct SearchEngine {
@@ -127,8 +131,18 @@ impl SearchEngine {
     }
 
     /// The top `query.limit` hits that pass the project and session filters.
+    /// Query text that only parses leniently is an error here.
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
-        let mut hits = self.fetch_hits(&query, query.limit)?;
+        let text = self.parse_text(&query.text);
+        if let Some(reason) = text.lenient {
+            bail!("query {:?} does not parse: {reason}", query.text);
+        }
+        let mut hits = self.fetch_hits(
+            &query,
+            text.query
+                .as_ref(),
+            query.limit,
+        )?;
         hits.retain(|hit| self.passes_post_filters(hit, &query));
         Ok(hits)
     }
@@ -144,9 +158,15 @@ impl SearchEngine {
         context_after: usize,
     ) -> Result<FilteredResults> {
         let limit = query.limit;
+        let text = self.parse_text(&query.text);
         let mut fetch = limit.saturating_mul(3);
         let survivors = loop {
-            let hits = self.fetch_hits(query, fetch)?;
+            let hits = self.fetch_hits(
+                query,
+                text.query
+                    .as_ref(),
+                fetch,
+            )?;
             let exhausted = hits.len() < fetch;
             let mut sessions_seen = HashSet::new();
             let survivors: Vec<SearchResult> = hits
@@ -174,16 +194,15 @@ impl SearchEngine {
             context_before,
             context_after,
         )?;
-        Ok(FilteredResults { results, more })
+        Ok(FilteredResults {
+            results,
+            more,
+            lenient: text.lenient,
+        })
     }
 
-    /// The top `fetch` hits of the tantivy query, before any post-filter.
-    fn fetch_hits(&self, query: &SearchQuery, fetch: usize) -> Result<Vec<SearchResult>> {
-        let searcher = self
-            .reader
-            .searcher();
-
-        let query_parser = QueryParser::for_index(
+    fn parse_text(&self, text: &str) -> TextQuery {
+        parse_text_query(
             &self.index,
             vec![
                 self.fields
@@ -193,13 +212,22 @@ impl SearchEngine {
                 self.fields
                     .project_field,
             ],
-        );
-        let text_query = query_parser.parse_query(&query.text)?;
+            text,
+        )
+    }
 
-        let mut final_query_parts = vec![(
-            Occur::Must,
-            Box::new(text_query) as Box<dyn tantivy::query::Query>,
-        )];
+    /// The top `fetch` hits of the tantivy query, before any post-filter.
+    fn fetch_hits(
+        &self,
+        query: &SearchQuery,
+        text_query: &dyn Query,
+        fetch: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let searcher = self
+            .reader
+            .searcher();
+
+        let mut final_query_parts = vec![(Occur::Must, text_query.box_clone())];
 
         if let Some(ref project_filter) = query.project_filter {
             let project_query = project_query(

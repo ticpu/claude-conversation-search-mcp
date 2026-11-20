@@ -66,6 +66,9 @@ pub(crate) fn search_conversations(index_path: &Path, opts: SearchOpts) -> Resul
     )?;
     let filtered = found.results;
 
+    if let Some(reason) = &found.lenient {
+        println!("Note: {}", shared::lenient_note(reason));
+    }
     if filtered.is_empty() {
         println!("No results found.");
         return Ok(());

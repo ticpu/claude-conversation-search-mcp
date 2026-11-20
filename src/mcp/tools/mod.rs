@@ -242,8 +242,9 @@ fn render_search_response(
             None => "none".to_string(),
         };
         output.push_str(&format!(
-            "DEBUG: query={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}, active_session={}\n\n",
+            "DEBUG: query={:?}, lenient={:?}, -B={}, -A={}, limit={}, exclude_projects={:?}, patterns={:?}, active_session={}\n\n",
             raw_args.get("query"),
+            found.lenient,
             search_args.context_before,
             search_args.context_after,
             search_args.limit,
@@ -272,6 +273,10 @@ fn render_search_response(
             "Note: index is stale ({} modified, {} new files). Call reindex tool for fresher results.\n",
             health.stale, health.new_files
         ));
+    }
+
+    if let Some(reason) = &found.lenient {
+        output.push_str(&format!("Note: {}\n", shared::lenient_note(reason)));
     }
 
     let filtered = &found.results;
