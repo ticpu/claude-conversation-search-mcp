@@ -94,6 +94,14 @@ fn index_exists(cache_dir: &Path) -> bool {
         .exists()
 }
 
+/// The not-ready answer; `total` stays 0 until discovery has counted the files.
+fn building_message(done: usize, total: usize) -> String {
+    if total == 0 {
+        return "the index is being built, retry shortly".to_string();
+    }
+    format!("the index is being built ({done}/{total} files), retry shortly")
+}
+
 impl McpServer {
     /// Serve the configured index, updating it in the background.
     pub fn new() -> Result<Self> {
@@ -191,14 +199,13 @@ impl McpServer {
         match (current, failure) {
             (Some(loaded), _) => Ok(loaded),
             (None, Some(failure)) => Err(format!("indexing the conversations failed: {failure:#}")),
-            (None, None) => Err(format!(
-                "the index is being built ({}/{} files), retry shortly",
+            (None, None) => Err(building_message(
                 self.indexing
                     .files_done
                     .load(Ordering::Relaxed),
                 self.indexing
                     .files_total
-                    .load(Ordering::Relaxed)
+                    .load(Ordering::Relaxed),
             )),
         }
     }
@@ -295,6 +302,18 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn building_message_omits_counts_until_the_files_are_counted() {
+        assert_eq!(
+            building_message(0, 0),
+            "the index is being built, retry shortly"
+        );
+        assert_eq!(
+            building_message(800, 6337),
+            "the index is being built (800/6337 files), retry shortly"
+        );
+    }
 
     fn write_session(dir: &Path, session: &str) -> PathBuf {
         let path = dir.join(format!("{session}.jsonl"));
