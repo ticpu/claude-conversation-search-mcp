@@ -23,7 +23,7 @@ pub(crate) fn index_exists_or_notify(index_path: &Path) -> bool {
     if index_path.exists() {
         return true;
     }
-    println!("Index not found. Please run 'claude-conversation-search index' first.");
+    println!("Index not found. Please run 'claude-conversation-search index rebuild' first.");
     false
 }
 
