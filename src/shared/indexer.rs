@@ -76,6 +76,9 @@ impl WriterThreads {
 pub struct SearchIndexer {
     writer: IndexWriter,
     fields: IndexFields,
+    /// Tantivy schedules merges only on a commit, so a writer that never
+    /// committed has nothing to wait on.
+    committed: bool,
 }
 
 impl SearchIndexer {
@@ -180,7 +183,11 @@ impl SearchIndexer {
         let index = Index::create_in_dir(index_path, schema)?;
         let writer = threads.writer(&index)?;
 
-        Ok(Self { writer, fields })
+        Ok(Self {
+            writer,
+            fields,
+            committed: false,
+        })
     }
 
     /// Open the index at `index_path` with a writer of `threads`.
@@ -189,7 +196,11 @@ impl SearchIndexer {
         let fields = IndexFields::from_schema(&index.schema())?;
         let writer = threads.writer(&index)?;
 
-        Ok(Self { writer, fields })
+        Ok(Self {
+            writer,
+            fields,
+            committed: false,
+        })
     }
 
     /// Delete all documents from a specific source JSONL file before re-indexing.
@@ -242,6 +253,7 @@ impl SearchIndexer {
     pub fn commit(&mut self) -> Result<()> {
         self.writer
             .commit()?;
+        self.committed = true;
         Ok(())
     }
 
@@ -256,6 +268,9 @@ impl SearchIndexer {
 
     /// A notice worth printing before a merge backlog of this size is waited on.
     pub fn merge_notice(&self) -> Result<Option<String>> {
+        if !self.committed {
+            return Ok(None);
+        }
         let segments = self.searchable_segments()?;
         Ok((segments >= MERGE_NOTICE_SEGMENTS)
             .then(|| format!("merging {segments} index segments, this can take a minute")))
@@ -273,5 +288,53 @@ impl SearchIndexer {
     pub fn set_merge_policy(&self, policy: Box<dyn tantivy::indexer::MergePolicy>) {
         self.writer
             .set_merge_policy(policy);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::models::EntryBuilder;
+    use tantivy::indexer::NoMergePolicy;
+    use tempfile::TempDir;
+
+    fn add_one(indexer: &mut SearchIndexer, i: usize) {
+        let entry = EntryBuilder::new(&format!("u{i}"), &format!("s{i}"))
+            .content("hello")
+            .build();
+        indexer
+            .index_conversations(vec![entry], &format!("f{i}.jsonl"))
+            .unwrap();
+    }
+
+    #[test]
+    fn merge_notice_needs_a_commit_by_this_writer() {
+        let temp = TempDir::new().unwrap();
+        let mut backlog = SearchIndexer::new(temp.path()).unwrap();
+        backlog.set_merge_policy(Box::new(NoMergePolicy));
+        for i in 0..MERGE_NOTICE_SEGMENTS {
+            add_one(&mut backlog, i);
+            backlog
+                .commit()
+                .unwrap();
+        }
+        drop(backlog);
+
+        let mut indexer = SearchIndexer::open(temp.path()).unwrap();
+        assert_eq!(
+            indexer
+                .merge_notice()
+                .unwrap(),
+            None
+        );
+        add_one(&mut indexer, MERGE_NOTICE_SEGMENTS);
+        indexer
+            .commit()
+            .unwrap();
+        let notice = indexer
+            .merge_notice()
+            .unwrap()
+            .expect("a committing writer over a backlog gets the notice");
+        assert!(notice.starts_with("merging "), "{notice}");
     }
 }
