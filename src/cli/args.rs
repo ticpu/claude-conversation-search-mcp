@@ -167,6 +167,9 @@ pub enum IndexAction {
     Rebuild,
     /// Clean up deleted entries from index
     Vacuum,
+    /// Run as the index's long-lived writer, following the conversation files
+    #[cfg(target_os = "linux")]
+    Watch,
 }
 
 pub fn setup_logging(verbose: u8) {

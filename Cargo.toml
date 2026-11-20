@@ -38,3 +38,10 @@ shlex = "2"
 [target.'cfg(unix)'.dependencies]
 exec = "0.3"
 nix = { version = "0.32", features = ["term"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify = "8.2"
+sd-notify = "0.5"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.32", features = ["signal"] }

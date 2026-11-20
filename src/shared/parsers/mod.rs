@@ -11,7 +11,15 @@ use chrono::{DateTime, Utc};
 use std::io::BufReader;
 use std::path::Path;
 use strip_ansi_escapes::strip_str;
-use tracing::warn;
+use tracing::{debug, warn};
+
+/// True when `line` is the last line of `content` and no newline ends it: a
+/// writer may still be appending to it.
+fn is_unterminated_tail(content: &str, line: &str) -> bool {
+    let line_end = line.as_ptr() as usize + line.len();
+    let content_end = content.as_ptr() as usize + content.len();
+    line_end == content_end && !content.ends_with('\n')
+}
 
 /// Read text file, skipping UTF-8 BOM if present
 fn read_text_file(path: &Path) -> Result<String> {
@@ -83,6 +91,13 @@ impl JsonlParser {
                         entries.push(entry);
                         sequence_counter += 1;
                     }
+                }
+                Err(e) if is_unterminated_tail(&content, line) => {
+                    debug!(
+                        "Skipping the unterminated last line of {}, likely mid-write: {}",
+                        path.display(),
+                        e
+                    );
                 }
                 Err(e) => {
                     warn!("Invalid JSON at {}:{}: {}", path.display(), line_num + 1, e);

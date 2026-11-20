@@ -156,7 +156,7 @@ impl CacheManager {
 
     /// Bring the index in line with `files` as they are on disk: changed files
     /// are reindexed, missing ones have their documents and metadata purged.
-    #[cfg(test)]
+    #[cfg(any(test, target_os = "linux"))]
     pub fn update_incremental(
         &mut self,
         indexer: &mut SearchIndexer,
@@ -442,6 +442,26 @@ impl CacheManager {
 
         info!("Cache cleared successfully");
         Ok(())
+    }
+
+    /// Indexed files at or below `prefix`, as the metadata knows them.
+    #[cfg(target_os = "linux")]
+    pub fn indexed_paths_under(&self, prefix: &Path) -> Vec<PathBuf> {
+        self.metadata
+            .indexed_files
+            .keys()
+            .filter(|path| path.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+
+    /// Entries indexed from `path`, if the metadata knows it.
+    #[cfg(test)]
+    pub fn indexed_entries(&self, path: &Path) -> Option<usize> {
+        self.metadata
+            .indexed_files
+            .get(path)
+            .map(|file| file.entry_count)
     }
 
     /// Get cached session interaction counts

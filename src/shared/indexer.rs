@@ -244,7 +244,7 @@ impl SearchIndexer {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, target_os = "linux"))]
     pub fn set_merge_policy(&self, policy: Box<dyn tantivy::indexer::MergePolicy>) {
         self.writer
             .set_merge_policy(policy);

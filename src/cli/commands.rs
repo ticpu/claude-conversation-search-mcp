@@ -20,6 +20,10 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             IndexAction::Status => index::show_status(&index_path)?,
             IndexAction::Rebuild => index::rebuild(&index_path)?,
             IndexAction::Vacuum => index::vacuum(&index_path)?,
+            #[cfg(target_os = "linux")]
+            IndexAction::Watch => {
+                match crate::cli::watch::run(&shared::projects_dir()?, &index_path)? {}
+            }
         },
         CliCommands::Completions { .. } => unreachable!("Completions handled in main"),
         CliCommands::Mcp => unreachable!("MCP handled in main"),

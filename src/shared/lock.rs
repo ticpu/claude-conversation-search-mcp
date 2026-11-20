@@ -183,6 +183,24 @@ pub fn indexer_lock_path(index_path: &Path) -> PathBuf {
     index_path.join("indexer.lock")
 }
 
+/// The held service marker. Always a real flock, whatever `locking.enabled`
+/// says; released when the process exits.
+#[cfg(target_os = "linux")]
+pub struct IndexerLock {
+    _file: File,
+}
+
+#[cfg(target_os = "linux")]
+impl IndexerLock {
+    /// Contention comes back as `IndexBusy`.
+    pub fn try_acquire(index_path: &Path) -> Result<Self> {
+        let path = indexer_lock_path(index_path);
+        let file = open_lock_file(&path)?;
+        try_flock(&file, LockType::Exclusive, &path)?;
+        Ok(Self { _file: file })
+    }
+}
+
 /// Whether another process holds `path`, probed with a shared try-lock released
 /// at once. A missing file is not held and is not created.
 fn probe_held(path: &Path) -> Result<bool> {

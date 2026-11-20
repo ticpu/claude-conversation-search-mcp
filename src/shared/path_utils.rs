@@ -176,9 +176,13 @@ pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
 
 /// Discover all JSONL session files under `.claude/projects/`.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
-    let root = projects_dir()?;
+    discover_jsonl_files_under(&projects_dir()?)
+}
+
+/// Every JSONL file below `root`, at any depth.
+pub fn discover_jsonl_files_under(root: &Path) -> Result<Vec<PathBuf>> {
     let pattern = root.join("**/*.jsonl");
-    let mut tally = SkipTally::new(&root);
+    let mut tally = SkipTally::new(root);
     let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?
         .filter_map(|e| tally.keep_readable(e))
         .collect();

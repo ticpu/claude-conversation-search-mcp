@@ -36,3 +36,546 @@
 //! replaced or deleted by an upgrade. The loop's return type is Infallible on
 //! success: on-failure ignores exit 0, so a loop that could return Ok would
 //! leave the index unwatched without a restart.
+
+use anyhow::{Context, Result, bail};
+use notify::event::{EventKind, ModifyKind};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::{Duration, Instant};
+use tantivy::merge_policy::LogMergePolicy;
+use tracing::debug;
+
+use crate::shared::{
+    CacheManager, ExclusiveIndexAccess, IndexerLock, SearchIndexer, discover_jsonl_files_under,
+    get_config, is_index_busy, open_or_create_indexer,
+};
+
+/// Deleted documents a segment may carry before a merge rewrites it. Watched
+/// transcripts are rewritten whole on every append, so deletes pile up fast.
+const DEL_DOCS_RATIO_BEFORE_MERGE: f32 = 0.3;
+
+/// Backoff between attempts to take the locks at startup, about 5 s in total.
+const LOCK_RETRY_DELAYS_MS: [u64; 6] = [100, 200, 400, 800, 1600, 2000];
+
+/// The batching and polling periods.
+#[derive(Debug, Clone, Copy)]
+pub struct Timing {
+    /// Flush once no event arrived for this long.
+    pub quiet: Duration,
+    /// Flush once the oldest pending change is this old, even amid events.
+    pub max_delay: Duration,
+    /// Period of the safety-net full pass.
+    pub full_pass_every: Duration,
+    /// Longest wait for an event before the timers and the binary are checked.
+    pub tick: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            quiet: Duration::from_secs(2),
+            max_delay: Duration::from_secs(30),
+            full_pass_every: Duration::from_secs(3600),
+            tick: Duration::from_secs(1),
+        }
+    }
+}
+
+/// Run the service on `projects` and the index at `index_path` until a failure.
+pub fn run(projects: &Path, index_path: &Path) -> Result<Infallible> {
+    let mut watch = IndexWatch::start(projects, index_path, Timing::default())?;
+    loop {
+        watch.step()?;
+    }
+}
+
+/// The running binary, identified by device and inode at startup.
+struct RunningExe {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl RunningExe {
+    fn current() -> Result<Self> {
+        let path = std::fs::read_link("/proc/self/exe").context("reading /proc/self/exe")?;
+        let meta = std::fs::metadata("/proc/self/exe").context("reading /proc/self/exe")?;
+        Ok(Self {
+            path,
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
+
+    /// Fails once the path no longer names the binary this process runs.
+    fn check(&self) -> Result<()> {
+        match std::fs::metadata(&self.path) {
+            Ok(meta) if meta.dev() == self.dev && meta.ino() == self.ino => Ok(()),
+            Ok(_) => bail!(
+                "{} was replaced; exiting so the service restarts on the new binary",
+                self.path
+                    .display()
+            ),
+            Err(e) => Err(e).with_context(|| {
+                format!(
+                    "{} is gone; exiting so the service restarts on its replacement",
+                    self.path
+                        .display()
+                )
+            }),
+        }
+    }
+}
+
+pub struct IndexWatch {
+    projects: PathBuf,
+    indexer: SearchIndexer,
+    cache: CacheManager,
+    events: Receiver<notify::Result<Event>>,
+    timing: Timing,
+    exe: RunningExe,
+    pending: HashSet<PathBuf>,
+    oldest_pending: Option<Instant>,
+    last_event: Instant,
+    full_pass_requested: bool,
+    last_full_pass: Instant,
+    // Dropped last: the locks outlive everything that writes under them.
+    _watcher: RecommendedWatcher,
+    _indexer_lock: IndexerLock,
+    _index_lock: ExclusiveIndexAccess,
+}
+
+/// The batching policy: flush after `quiet` without an event, or once the
+/// oldest pending change waited `max_delay`.
+fn flush_due(
+    timing: &Timing,
+    last_event: Instant,
+    oldest_pending: Option<Instant>,
+    now: Instant,
+) -> bool {
+    oldest_pending.is_some_and(|oldest| {
+        now.duration_since(last_event) >= timing.quiet
+            || now.duration_since(oldest) >= timing.max_delay
+    })
+}
+
+/// Take a lock, retrying on contention only, with `LOCK_RETRY_DELAYS_MS` backoff.
+fn acquire_with_retry<T>(mut acquire: impl FnMut() -> Result<T>) -> Result<T> {
+    for delay in LOCK_RETRY_DELAYS_MS {
+        match acquire() {
+            Err(e) if is_index_busy(&e) => std::thread::sleep(Duration::from_millis(delay)),
+            other => return other,
+        }
+    }
+    acquire()
+}
+
+impl IndexWatch {
+    /// Take the locks, open the index, start watching, signal readiness, then
+    /// bring the index up to date with a full pass.
+    pub fn start(projects: &Path, index_path: &Path, timing: Timing) -> Result<Self> {
+        if !get_config()
+            .locking
+            .enabled
+        {
+            bail!(
+                "index watch refuses to run with locking.enabled: false, nothing would keep a second writer out"
+            );
+        }
+        let index_lock = acquire_with_retry(|| ExclusiveIndexAccess::acquire(index_path))?;
+        let indexer_lock = acquire_with_retry(|| IndexerLock::try_acquire(index_path))?;
+        let exe = RunningExe::current()?;
+
+        let (indexer, cache) = open_or_create_indexer(index_path)?;
+        let mut policy = LogMergePolicy::default();
+        policy.set_del_docs_ratio_before_merge(DEL_DOCS_RATIO_BEFORE_MERGE);
+        indexer.set_merge_policy(Box::new(policy));
+
+        std::fs::create_dir_all(projects)
+            .with_context(|| format!("creating {}", projects.display()))?;
+        let (tx, events) = channel();
+        let mut watcher = notify::recommended_watcher(tx).context("creating the file watcher")?;
+        watcher
+            .watch(projects, RecursiveMode::Recursive)
+            .with_context(|| format!("watching {}", projects.display()))?;
+        sd_notify::notify(&[sd_notify::NotifyState::Ready]).context("notifying systemd")?;
+        eprintln!(
+            "watching {} for the index at {}",
+            projects.display(),
+            index_path.display()
+        );
+
+        let now = Instant::now();
+        let mut watch = Self {
+            projects: projects.to_path_buf(),
+            indexer,
+            cache,
+            events,
+            timing,
+            exe,
+            pending: HashSet::new(),
+            oldest_pending: None,
+            last_event: now,
+            full_pass_requested: false,
+            last_full_pass: now,
+            _watcher: watcher,
+            _indexer_lock: indexer_lock,
+            _index_lock: index_lock,
+        };
+        watch.full_pass()?;
+        // Merges are only considered on commit, and a pass with nothing to do
+        // does not commit: this one lets an old backlog start merging.
+        watch
+            .indexer
+            .commit()?;
+        if let Some(notice) = watch
+            .indexer
+            .merge_notice()?
+        {
+            eprintln!("{notice}");
+        }
+        Ok(watch)
+    }
+
+    /// Wait up to one tick for events, then flush or run a full pass if due.
+    pub fn step(&mut self) -> Result<()> {
+        self.exe
+            .check()?;
+        match self
+            .events
+            .recv_timeout(
+                self.timing
+                    .tick,
+            ) {
+            Ok(event) => self.handle_event(event)?,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => bail!("the file watcher stopped"),
+        }
+        while let Ok(event) = self
+            .events
+            .try_recv()
+        {
+            self.handle_event(event)?;
+        }
+
+        let now = Instant::now();
+        if self.full_pass_requested
+            || now.duration_since(self.last_full_pass)
+                >= self
+                    .timing
+                    .full_pass_every
+        {
+            return self.full_pass();
+        }
+        if flush_due(&self.timing, self.last_event, self.oldest_pending, now) {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn handle_event(&mut self, event: notify::Result<Event>) -> Result<()> {
+        let event = match event {
+            Ok(event) => event,
+            Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                return Err(e).context(
+                    "the inotify watch limit is exhausted (fs.inotify.max_user_watches); \
+                     changes are no longer seen",
+                );
+            }
+            Err(e) => return Err(e).context("the file watcher failed"),
+        };
+        if event.need_rescan() {
+            debug!("watcher asked for a rescan");
+            self.full_pass_requested = true;
+            return Ok(());
+        }
+        if matches!(event.kind, EventKind::Access(_)) {
+            return Ok(());
+        }
+        let structural = matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        );
+        for path in event.paths {
+            if path.extension() == Some("jsonl".as_ref()) {
+                self.queue([path]);
+            } else if structural && path.is_dir() {
+                // Files already inside a directory moved or created here fire nothing.
+                let found = discover_jsonl_files_under(&path)?;
+                self.queue(found);
+            } else if structural {
+                let known = self
+                    .cache
+                    .indexed_paths_under(&path);
+                self.queue(known);
+            }
+        }
+        Ok(())
+    }
+
+    /// Add `paths` to the pending set; any path, even one already pending,
+    /// counts as an event for the quiet period.
+    fn queue(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        let mut queued = false;
+        for path in paths {
+            self.pending
+                .insert(path);
+            queued = true;
+        }
+        if queued {
+            let now = Instant::now();
+            self.last_event = now;
+            self.oldest_pending
+                .get_or_insert(now);
+        }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        let files: Vec<PathBuf> = self
+            .pending
+            .drain()
+            .collect();
+        self.oldest_pending = None;
+        debug!("flushing {} changed files", files.len());
+        self.cache
+            .update_incremental(&mut self.indexer, files)
+            .context("indexing changed transcripts")?;
+        Ok(())
+    }
+
+    fn full_pass(&mut self) -> Result<()> {
+        self.pending
+            .clear();
+        self.oldest_pending = None;
+        self.full_pass_requested = false;
+        self.last_full_pass = Instant::now();
+        let discovered = discover_jsonl_files_under(&self.projects)?;
+        let summary = self
+            .cache
+            .update_full(&mut self.indexer, discovered, &mut |_| Ok(()))
+            .context("full pass over the transcripts")?;
+        if summary.commits > 0 {
+            eprintln!("full pass: {summary}");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::Flag;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    const FAST: Timing = Timing {
+        quiet: Duration::from_millis(100),
+        max_delay: Duration::from_secs(1),
+        full_pass_every: Duration::from_secs(3600),
+        tick: Duration::from_millis(50),
+    };
+
+    struct Env {
+        temp: TempDir,
+        projects: PathBuf,
+        watch: IndexWatch,
+    }
+
+    fn env() -> Env {
+        let temp = TempDir::new().unwrap();
+        let projects = temp
+            .path()
+            .join("projects");
+        let watch = IndexWatch::start(
+            &projects,
+            &temp
+                .path()
+                .join("idx"),
+            FAST,
+        )
+        .unwrap();
+        Env {
+            temp,
+            projects,
+            watch,
+        }
+    }
+
+    fn append_line(path: &Path, i: usize) {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        writeln!(
+            file,
+            r#"{{"uuid":"u-{i}","sessionId":"sess","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"line {i}"}}}}"#
+        )
+        .unwrap();
+    }
+
+    /// Step until `path` has `expected` entries indexed, for at most 10 s.
+    fn step_until(watch: &mut IndexWatch, path: &Path, expected: Option<usize>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while watch
+            .cache
+            .indexed_entries(path)
+            != expected
+        {
+            assert!(
+                Instant::now() < deadline,
+                "{} still at {:?}, expected {:?}",
+                path.display(),
+                watch
+                    .cache
+                    .indexed_entries(path),
+                expected
+            );
+            watch
+                .step()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn follows_create_append_and_delete() {
+        let mut env = env();
+        let project = env
+            .projects
+            .join("p");
+        std::fs::create_dir(&project).unwrap();
+        let transcript = project.join("s.jsonl");
+
+        append_line(&transcript, 0);
+        step_until(&mut env.watch, &transcript, Some(1));
+        append_line(&transcript, 1);
+        step_until(&mut env.watch, &transcript, Some(2));
+        std::fs::remove_file(&transcript).unwrap();
+        step_until(&mut env.watch, &transcript, None);
+    }
+
+    #[test]
+    fn finds_files_inside_a_directory_moved_in() {
+        let mut env = env();
+        let outside = env
+            .temp
+            .path()
+            .join("outside");
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        append_line(&outside.join("sub/s.jsonl"), 0);
+
+        let moved = env
+            .projects
+            .join("moved");
+        std::fs::rename(&outside, &moved).unwrap();
+        step_until(&mut env.watch, &moved.join("sub/s.jsonl"), Some(1));
+
+        let gone = env
+            .temp
+            .path()
+            .join("gone");
+        std::fs::rename(&moved, &gone).unwrap();
+        step_until(&mut env.watch, &moved.join("sub/s.jsonl"), None);
+    }
+
+    #[test]
+    fn rescan_recovers_changes_whose_events_were_lost() {
+        let mut env = env();
+        let transcript = env
+            .projects
+            .join("s.jsonl");
+        append_line(&transcript, 0);
+        std::thread::sleep(Duration::from_millis(300));
+        while env
+            .watch
+            .events
+            .try_recv()
+            .is_ok()
+        {}
+        for _ in 0..5 {
+            env.watch
+                .step()
+                .unwrap();
+        }
+        assert_eq!(
+            env.watch
+                .cache
+                .indexed_entries(&transcript),
+            None,
+            "control: with its events dropped the file stays unseen"
+        );
+
+        env.watch
+            .handle_event(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)))
+            .unwrap();
+        env.watch
+            .step()
+            .unwrap();
+        assert_eq!(
+            env.watch
+                .cache
+                .indexed_entries(&transcript),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn flush_waits_for_quiet_or_max_delay() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        assert!(!flush_due(&FAST, t0, None, at(5000)), "nothing pending");
+        assert!(!flush_due(&FAST, at(0), Some(at(0)), at(50)), "still busy");
+        assert!(
+            flush_due(&FAST, at(0), Some(at(0)), at(100)),
+            "quiet period over"
+        );
+        assert!(
+            flush_due(&FAST, at(950), Some(at(0)), at(1000)),
+            "events keep coming, the oldest waited max_delay"
+        );
+    }
+
+    #[test]
+    fn lock_retry_rides_out_a_short_contention() {
+        let mut attempts = 0;
+        let held = acquire_with_retry(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(anyhow::Error::new(crate::shared::IndexBusy {
+                    lock_type: crate::shared::LockType::Exclusive,
+                }))
+            } else {
+                Ok(attempts)
+            }
+        })
+        .unwrap();
+        assert_eq!(held, 3);
+
+        let mut attempts = 0;
+        let err = acquire_with_retry(|| -> Result<()> {
+            attempts += 1;
+            bail!("unusable lock file")
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 1, "only contention is retried: {err}");
+    }
+
+    #[test]
+    fn a_second_service_cannot_start_on_the_same_index() {
+        let env = env();
+        let err = IndexWatch::start(
+            &env.projects,
+            &env.temp
+                .path()
+                .join("idx"),
+            FAST,
+        )
+        .err()
+        .unwrap();
+        assert!(is_index_busy(&err), "{err:#}");
+    }
+}
