@@ -519,3 +519,79 @@ fn test_date_sort_in_collector() {
         "DateDesc limit=1 must return the newest doc, not the highest-BM25 one"
     );
 }
+
+/// Rewrites the format version in every file footer, as a newer tantivy would have written it.
+fn stamp_future_format(index_path: &std::path::Path) -> usize {
+    let current = format!(
+        r#""index_format_version":{}"#,
+        tantivy::INDEX_FORMAT_VERSION
+    );
+    let future = format!(
+        r#""index_format_version":{}"#,
+        tantivy::INDEX_FORMAT_VERSION + 1
+    );
+    assert_eq!(current.len(), future.len(), "footer length must not change");
+    let mut stamped = 0;
+    for file in std::fs::read_dir(index_path).unwrap() {
+        let path = file
+            .unwrap()
+            .path();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let Some(at) = bytes
+            .windows(current.len())
+            .rposition(|w| w == current.as_bytes())
+        else {
+            continue;
+        };
+        bytes[at..at + future.len()].copy_from_slice(future.as_bytes());
+        std::fs::write(&path, bytes).unwrap();
+        stamped += 1;
+    }
+    stamped
+}
+
+#[test]
+fn incompatible_index_error_names_the_remedy() {
+    let temp_dir = TempDir::new().unwrap();
+    let index_path = temp_dir.path();
+    let mut indexer = SearchIndexer::new(index_path).unwrap();
+    indexer
+        .index_conversations(
+            vec![
+                EntryBuilder::new("uuid-0", "session-1")
+                    .content("hello")
+                    .build(),
+            ],
+            "test-source.jsonl",
+        )
+        .unwrap();
+    indexer
+        .commit()
+        .unwrap();
+    drop(indexer);
+    assert!(stamp_future_format(index_path) > 0);
+
+    let err = match SearchEngine::new(index_path, HashMap::new()) {
+        Ok(_) => panic!("a future index format must not open"),
+        Err(e) => crate::shared::explain_index_error(e, index_path),
+    };
+    let message = format!("{err:#}");
+    assert!(
+        message.starts_with(&format!(
+            "the search index at {} is in a format",
+            index_path.display()
+        )),
+        "{message}"
+    );
+    assert!(message.contains("cache clear"), "{message}");
+    assert!(message.contains("Index version unsupported"), "{message}");
+}
+
+#[test]
+fn other_errors_pass_through_unexplained() {
+    let err = crate::shared::explain_index_error(
+        anyhow::anyhow!("disk full"),
+        std::path::Path::new("/nowhere"),
+    );
+    assert_eq!(format!("{err:#}"), "disk full");
+}

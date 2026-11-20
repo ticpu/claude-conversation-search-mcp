@@ -7,10 +7,33 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
+use tantivy::directory::error::OpenReadError;
 use tracing::{error, info, warn};
 
 pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
+}
+
+/// Tops tantivy's IncompatibleIndex with the user's remedy; tantivy's own text tells a
+/// developer to change the dependency. Other errors pass through untouched.
+pub fn explain_index_error(err: anyhow::Error, index_path: &Path) -> anyhow::Error {
+    let incompatible = err
+        .chain()
+        .any(|cause| {
+            matches!(
+                cause.downcast_ref::<OpenReadError>(),
+                Some(OpenReadError::IncompatibleIndex(_))
+            )
+        });
+    if !incompatible {
+        return err;
+    }
+    err.context(format!(
+        "the search index at {} is in a format claude-conversation-search {} cannot read; \
+         `claude-conversation-search cache clear` rebuilds it from the conversation files",
+        index_path.display(),
+        env!("CARGO_PKG_VERSION")
+    ))
 }
 
 /// Parse a date as full ISO 8601 or YYYY-MM-DD

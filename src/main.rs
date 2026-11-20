@@ -45,11 +45,21 @@ async fn main() -> Result<()> {
         Some(cli::CliCommands::Mcp) | None => {
             // Default to MCP server mode when no subcommand provided
             shared::config::init_config()?;
-            mcp::run_mcp_server().await
+            mcp::run_mcp_server()
+                .await
+                .map_err(explain_index_error)
         }
         Some(command) => {
             shared::config::init_config()?;
-            cli::run_cli(args.verbose, command)
+            cli::run_cli(args.verbose, command).map_err(explain_index_error)
         }
+    }
+}
+
+/// A config that cannot name the cache dir already failed before any index was opened.
+fn explain_index_error(err: anyhow::Error) -> anyhow::Error {
+    match shared::get_cache_dir() {
+        Ok(index_path) => shared::explain_index_error(err, &index_path),
+        Err(_) => err,
     }
 }

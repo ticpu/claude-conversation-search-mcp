@@ -6,6 +6,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error};
 
 use super::server::McpServer;
+use crate::shared::explain_index_error;
 
 /// Parse date string: YYYY-MM-DD (as start of day UTC) or full ISO 8601
 // MCP Protocol Structures
@@ -219,7 +220,7 @@ impl McpServer {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
                 result: None,
-                error: Some(internal_error(&e)),
+                error: Some(internal_error(&explain_index_error(e, &self.cache_dir))),
             },
         })
     }
