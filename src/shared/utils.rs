@@ -108,6 +108,36 @@ pub fn finish_writer(indexer: SearchIndexer, merges: Merges) -> Result<()> {
     indexer.wait_merging()
 }
 
+/// Open the index at `index_path` for writing, creating it when absent and
+/// recreating it when its schema is outdated or unreadable. The caller must
+/// hold index.lock. The metadata is loaded after any wipe, which deleted it,
+/// so a recreated index is fully reindexed instead of skipped as unchanged.
+pub fn open_or_create_indexer(index_path: &Path) -> Result<(SearchIndexer, CacheManager)> {
+    let indexer = if index_path
+        .join("meta.json")
+        .exists()
+    {
+        match SearchIndexer::validate_schema(index_path) {
+            Ok(true) => SearchIndexer::open(index_path)?,
+            Ok(false) => {
+                info!("Index schema mismatch detected. Rebuilding index...");
+                clear_index_dir(index_path)?;
+                SearchIndexer::new(index_path)?
+            }
+            Err(e) => {
+                warn!("Failed to validate index: {e:#}. Rebuilding...");
+                clear_index_dir(index_path)?;
+                SearchIndexer::new(index_path)?
+            }
+        }
+    } else {
+        info!("No index found, creating new one...");
+        SearchIndexer::new(index_path)?
+    };
+    let cache = CacheManager::new(index_path)?;
+    Ok((indexer, cache))
+}
+
 pub fn auto_index(index_path: &Path, merges: Merges) -> Result<()> {
     let config = get_config();
 
@@ -130,33 +160,7 @@ pub fn auto_index(index_path: &Path, merges: Merges) -> Result<()> {
         }
     };
 
-    // Build/open the indexer first — a schema-mismatch rebuild wipes index_path,
-    // which also deletes cache-metadata.json (it lives in the same dir). Creating
-    // CacheManager after guarantees a fresh empty metadata when a rebuild occurs,
-    // so the subsequent update_incremental re-indexes everything instead of skipping.
-    let mut indexer = if index_path
-        .join("meta.json")
-        .exists()
-    {
-        match SearchIndexer::validate_schema(index_path) {
-            Ok(true) => SearchIndexer::open(index_path)?,
-            Ok(false) => {
-                info!("Index schema mismatch detected. Rebuilding index...");
-                clear_index_dir(index_path)?;
-                SearchIndexer::new(index_path)?
-            }
-            Err(e) => {
-                warn!("Failed to validate index: {e:#}. Rebuilding...");
-                clear_index_dir(index_path)?;
-                SearchIndexer::new(index_path)?
-            }
-        }
-    } else {
-        info!("No index found, creating new one...");
-        SearchIndexer::new(index_path)?
-    };
-
-    let mut cache_manager = CacheManager::new(index_path)?;
+    let (mut indexer, mut cache_manager) = open_or_create_indexer(index_path)?;
     let all_files = discover_jsonl_files()?;
     cache_manager.update_full(&mut indexer, all_files, &mut |_| Ok(()))?;
     finish_writer(indexer, merges)
