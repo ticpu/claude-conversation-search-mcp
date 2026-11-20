@@ -3,6 +3,13 @@
 //! sequence_num counts the entries kept from one file, from 0; it orders
 //! messages within that file only.
 //!
+//! `parse_lines` with a `Resume` parses only the lines appended after a
+//! file's already-indexed part (the cache decides when that is safe): its
+//! sequence numbers continue from `Resume::next_sequence`, and it sees none
+//! of the earlier lines. A summary in such a tail whose leaf is not in the
+//! tail is dated by the file's mtime and takes the earlier part's cwd, where
+//! a parse of the whole file would borrow the leaf's or the first message's.
+//!
 //! Summary lines carry only type, summary and leafUuid. Their session id
 //! comes from the file path (path_utils), and their uuid is
 //! `<leafUuid>:summary`, so the leaf's own uuid names only the leaf message:
@@ -89,10 +96,17 @@ pub struct FileContext {
     first: Option<Anchor>,
     /// The file's mtime as RFC 3339, the last resort for a summary's time.
     mtime: Option<String>,
+    /// The cwd of the already-indexed part's first message, when resuming.
+    prior_cwd: Option<String>,
 }
 
 impl FileContext {
-    fn new(path: &Path, mtime: DateTime<Utc>, raws: &[(usize, RawJsonlMessage)]) -> Self {
+    fn new(
+        path: &Path,
+        mtime: DateTime<Utc>,
+        raws: &[(usize, RawJsonlMessage)],
+        resume: Option<&Resume>,
+    ) -> Self {
         let mut ctx = FileContext {
             session_id: session_of_transcript(path),
             mtime: Some(mtime.to_rfc3339()),
@@ -118,7 +132,41 @@ impl FileContext {
                     .insert(uuid.clone(), anchor);
             }
         }
+        if let Some(resume) = resume {
+            let tail_cwd = ctx
+                .first
+                .take()
+                .and_then(|first| first.cwd);
+            ctx.prior_cwd = resume
+                .cwd
+                .clone()
+                .or(tail_cwd);
+        }
         ctx
+    }
+
+    /// The cwd recorded for the whole file: its first timestamped message's.
+    fn file_cwd(&self) -> Option<String> {
+        match &self.first {
+            Some(first) => first
+                .cwd
+                .clone(),
+            None => self
+                .prior_cwd
+                .clone(),
+        }
+    }
+
+    /// The cwd a summary takes: its anchor's, else the already-indexed part's.
+    fn summary_cwd(&self, leaf_uuid: Option<&str>) -> Option<String> {
+        match self.anchor(leaf_uuid) {
+            Some(anchor) => anchor
+                .cwd
+                .clone(),
+            None => self
+                .prior_cwd
+                .clone(),
+        }
     }
 
     /// The leaf message when it is in this file, else the first timestamped one.
@@ -145,6 +193,23 @@ impl FileContext {
                 .mtime
                 .as_deref())
     }
+}
+
+/// Where parsing resumes after a transcript's already-indexed part.
+pub struct Resume {
+    pub next_sequence: usize,
+    /// The already-indexed part's cwd, as `ParsedLines::cwd` reported it.
+    pub cwd: Option<String>,
+}
+
+/// What `parse_lines` read.
+pub struct ParsedLines {
+    pub entries: Vec<ConversationEntry>,
+    /// The sequence_num the next entry of this file takes.
+    pub next_sequence: usize,
+    /// The cwd of the file's first timestamped message, for summaries
+    /// parsed on a later resume.
+    pub cwd: Option<String>,
 }
 
 /// Lines skipped for an unparsable timestamp, reported once per file.
@@ -186,6 +251,19 @@ impl JsonlParser {
 
     pub fn parse_file(&self, path: &Path) -> Result<Vec<ConversationEntry>> {
         let content = read_text_file(path)?;
+        Ok(self
+            .parse_lines(path, &content, None)?
+            .entries)
+    }
+
+    /// Parse `content`, the lines of the transcript at `path` from its start,
+    /// or with `resume` those after its already-indexed part.
+    pub fn parse_lines(
+        &self,
+        path: &Path,
+        content: &str,
+        resume: Option<&Resume>,
+    ) -> Result<ParsedLines> {
         let mut entries = Vec::new();
         let project_name = self.extract_project_name(path);
 
@@ -208,7 +286,7 @@ impl JsonlParser {
 
             match serde_json::from_str::<RawJsonlMessage>(line) {
                 Ok(raw) => raws.push((line_num + 1, raw)),
-                Err(e) if is_unterminated_tail(&content, line) => {
+                Err(e) if is_unterminated_tail(content, line) => {
                     debug!(
                         "Skipping the unterminated last line of {}, likely mid-write: {}",
                         path.display(),
@@ -223,9 +301,9 @@ impl JsonlParser {
 
         let mtime =
             file_mtime(path).with_context(|| format!("reading the mtime of {}", path.display()))?;
-        let file = FileContext::new(path, mtime, &raws);
+        let file = FileContext::new(path, mtime, &raws, resume);
         let mut bad_timestamps = BadTimestamps::default();
-        let mut sequence_counter = 0;
+        let mut sequence_counter = resume.map_or(0, |resume| resume.next_sequence);
         for (line_num, raw) in raws {
             match self.parse_raw_message(
                 raw,
@@ -244,7 +322,11 @@ impl JsonlParser {
         }
         bad_timestamps.report(path);
 
-        Ok(entries)
+        Ok(ParsedLines {
+            entries,
+            next_sequence: sequence_counter,
+            cwd: file.file_cwd(),
+        })
     }
 
     /// One line to an entry. None for a line that carries no message;
@@ -331,16 +413,10 @@ impl JsonlParser {
         }
 
         let cwd = match raw.cwd {
-            None if is_summary => file
-                .anchor(
-                    raw.leaf_uuid
-                        .as_deref(),
-                )
-                .and_then(|anchor| {
-                    anchor
-                        .cwd
-                        .clone()
-                }),
+            None if is_summary => file.summary_cwd(
+                raw.leaf_uuid
+                    .as_deref(),
+            ),
             cwd => cwd,
         };
         let project_path = cwd

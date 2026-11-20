@@ -58,8 +58,8 @@ use crate::shared::{
     discover_jsonl_files_under, get_config, is_index_busy, open_or_create_indexer,
 };
 
-/// Deleted documents a segment may carry before a merge rewrites it. Watched
-/// transcripts are rewritten whole on every append, so deletes pile up fast.
+/// Deleted documents a segment may carry before a merge rewrites it. Every
+/// full reindex of a transcript deletes all of its earlier documents.
 const DEL_DOCS_RATIO_BEFORE_MERGE: f32 = 0.3;
 
 /// Indexing threads of the service's writer. A flush carries a few changed
