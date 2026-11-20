@@ -1225,3 +1225,39 @@ fn summary_lines_are_searchable_in_their_session() {
         MessageType::Summary
     );
 }
+
+#[test]
+fn get_messages_by_a_leaf_uuid_returns_the_message_not_its_summary() {
+    let tmp = TempDir::new().unwrap();
+    let session = "c0c0c0c0-1111-2222-3333-444444444444";
+    let index_path = tmp
+        .path()
+        .join("index");
+    // One thread writes one segment, so document order follows line order.
+    let mut indexer =
+        SearchIndexer::create_with(&index_path, crate::shared::WriterThreads::Fixed(1)).unwrap();
+    let mut lines = vec![
+        serde_json::json!({"type": "summary", "summary": "Fixing the frobnicator", "leafUuid": "m-0001"})
+            .to_string(),
+    ];
+    lines.extend(transcript(session, "m", 2));
+    index_transcript(
+        &mut indexer,
+        &tmp.path()
+            .join("projects")
+            .join("-home-user-GIT-proj")
+            .join(format!("{session}.jsonl")),
+        &lines,
+    );
+    indexer
+        .commit()
+        .unwrap();
+    let engine = SearchEngine::new(&index_path, HashMap::new()).unwrap();
+
+    let found = engine
+        .get_messages_by_uuid(&["m-0001".to_string()])
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].message_type, MessageType::Assistant);
+    assert_eq!(found[0].content, "m message 1");
+}

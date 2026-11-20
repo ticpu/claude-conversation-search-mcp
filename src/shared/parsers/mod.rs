@@ -4,12 +4,15 @@
 //! messages within that file only.
 //!
 //! Summary lines carry only type, summary and leafUuid. Their session id
-//! comes from the file path (path_utils), their uuid is the leafUuid, and
-//! their timestamp and cwd are the leaf message's when the leaf is in the
-//! same file, else those of the file's first timestamped message; with no
-//! timestamped message the summary is skipped at debug level. A line whose timestamp
-//! does not parse is skipped and counted, and one warning per file gives the
-//! count and the first such line.
+//! comes from the file path (path_utils), and their uuid is
+//! `<leafUuid>:summary`, so the leaf's own uuid names only the leaf message:
+//! uuid lookups rank an exact match over a prefix one. Their timestamp and
+//! cwd are the leaf message's when the leaf is in the same file, else those
+//! of the file's first timestamped message; with no timestamped message the
+//! summary is skipped at debug level.
+//!
+//! A line whose timestamp does not parse is skipped and counted, and one
+//! warning per file gives the count and the first such line.
 
 mod content;
 pub mod source;
@@ -27,6 +30,9 @@ use std::io::BufReader;
 use std::path::Path;
 use strip_ansi_escapes::strip_str;
 use tracing::{debug, warn};
+
+/// Appended to a summary's leafUuid to form its uuid.
+const SUMMARY_UUID_SUFFIX: &str = ":summary";
 
 /// True when `line` is the last line of `content` and no newline ends it: a
 /// writer may still be appending to it.
@@ -246,7 +252,7 @@ impl JsonlParser {
 
         let uuid = match (&raw.uuid, &raw.leaf_uuid) {
             (Some(uuid), _) => uuid.clone(),
-            (None, Some(leaf)) if is_summary => leaf.clone(),
+            (None, Some(leaf)) if is_summary => format!("{leaf}{SUMMARY_UUID_SUFFIX}"),
             _ => return Ok(None),
         };
         let session_id = match (&raw.session_id, &file.session_id) {
@@ -563,7 +569,7 @@ mod tests {
 
         let leaf = summaries[0];
         assert_eq!(leaf.session_id, SESSION);
-        assert_eq!(leaf.uuid, "m2");
+        assert_eq!(leaf.uuid, "m2:summary");
         assert_eq!(leaf.content, "Fixing the frobnicator");
         assert_eq!(
             leaf.timestamp
@@ -577,7 +583,7 @@ mod tests {
         );
 
         let orphan = summaries[1];
-        assert_eq!(orphan.uuid, "in-another-file");
+        assert_eq!(orphan.uuid, "in-another-file:summary");
         assert_eq!(
             orphan
                 .timestamp

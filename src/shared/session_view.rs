@@ -137,17 +137,33 @@ pub fn displayable_entries(entries: &[ConversationEntry]) -> Vec<ConversationEnt
         .collect()
 }
 
+/// The entry `uuid` names: an exact match first, since a prefix such as a
+/// leaf uuid also starts its summary's uuid, else the first prefix match.
+fn center_position(entries: &[ConversationEntry], uuid: &str) -> Option<usize> {
+    let uuid = uuid.to_lowercase();
+    entries
+        .iter()
+        .position(|e| {
+            e.uuid
+                .to_lowercase()
+                == uuid
+        })
+        .or_else(|| {
+            entries
+                .iter()
+                .position(|e| {
+                    e.uuid
+                        .to_lowercase()
+                        .starts_with(&uuid)
+                })
+        })
+}
+
 pub fn select_window(entries: &[ConversationEntry], w: &Window) -> (Range<usize>, Option<usize>) {
     let total = entries.len();
 
     if let Some(ref uuid) = w.center
-        && let Some(idx) = entries
-            .iter()
-            .position(|e| {
-                e.uuid
-                    .to_lowercase()
-                    .starts_with(&uuid.to_lowercase())
-            })
+        && let Some(idx) = center_position(entries, uuid)
     {
         let start = idx.saturating_sub(w.before);
         let end = (idx + w.after + 1).min(total);
@@ -476,6 +492,35 @@ mod tests {
         );
         assert_eq!(range, 3..7);
         assert_eq!(center, Some(5));
+    }
+
+    #[test]
+    fn centering_on_a_leaf_uuid_reaches_the_message_not_its_summary() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp
+            .path()
+            .join("5e5e5e5e-1111-2222-3333-444444444444.jsonl");
+        std::fs::write(
+            &path,
+            [
+                r#"{"type":"summary","summary":"Leaf work","leafUuid":"m2"}"#,
+                r#"{"uuid":"m1","sessionId":"5e5e5e5e-1111-2222-3333-444444444444","type":"user","timestamp":"2026-03-01T10:00:00Z","message":{"role":"user","content":"first"}}"#,
+                r#"{"uuid":"m2","sessionId":"5e5e5e5e-1111-2222-3333-444444444444","type":"user","timestamp":"2026-03-01T11:00:00Z","message":{"role":"user","content":"the leaf"}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let entries = JsonlParser::with_full_content()
+            .parse_file(&path)
+            .unwrap();
+        let mut w = window();
+        w.center = Some("m2".to_string());
+
+        let (_, center) = select_window(&entries, &w);
+        let centered = &entries[center.unwrap()];
+        assert_eq!(centered.message_type, MessageType::User);
+        assert_eq!(centered.content, "the leaf");
     }
 
     #[test]
