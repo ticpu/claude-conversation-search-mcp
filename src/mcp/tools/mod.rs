@@ -302,7 +302,7 @@ impl McpServer {
 
         let (after, before) = match parse_date_bounds(&search_args) {
             Ok(bounds) => bounds,
-            Err(e) => return tool_err(e.to_string()),
+            Err(e) => return tool_err(format!("{e:#}")),
         };
 
         let display_opts = DisplayOptions {

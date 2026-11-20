@@ -35,6 +35,15 @@ pub(crate) struct JsonRpcError {
     data: Option<Value>,
 }
 
+/// The message carries the whole cause chain: the client sees nothing else.
+fn internal_error(e: &anyhow::Error) -> JsonRpcError {
+    JsonRpcError {
+        code: -32603,
+        message: format!("{e:#}"),
+        data: None,
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct InitializeResponse {
     #[serde(rename = "protocolVersion")]
@@ -194,7 +203,7 @@ impl McpServer {
 
         if is_notification {
             if let Err(e) = result {
-                error!("Notification {} failed: {}", request.method, e);
+                error!("Notification {} failed: {:#}", request.method, e);
             }
             return None;
         }
@@ -210,11 +219,7 @@ impl McpServer {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
                 result: None,
-                error: Some(JsonRpcError {
-                    code: -32603,
-                    message: e.to_string(),
-                    data: None,
-                }),
+                error: Some(internal_error(&e)),
             },
         })
     }
@@ -314,6 +319,16 @@ mod tests {
         assert!(is_notification(
             r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#
         ));
+    }
+
+    #[test]
+    fn internal_error_keeps_the_cause_chain() {
+        let e = anyhow::anyhow!("permission denied for schema freeswitch").context("reading index");
+        let message = internal_error(&e).message;
+        assert_eq!(
+            message,
+            "reading index: permission denied for schema freeswitch"
+        );
     }
 
     #[test]
