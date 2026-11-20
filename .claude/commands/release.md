@@ -42,7 +42,7 @@ git switch master
 ./scripts/publish-aur.sh vX.Y.Z
 ```
 
-   It runs each clone's `update-pkg.sh`, refuses to push a PKGBUILD that upgraded to a version other than the tag, and pushes. A missing clone stops it with the `git clone` line to run. `update-pkg.sh` regenerates the PKGBUILD, so any hand edit to it must be re-applied **after** the script runs, followed by `makepkg --printsrcinfo > .SRCINFO` and a push. AUR commits get no Co-Authored-By trailer. Do not poll the AUR RPC index to confirm: it refreshes minutes behind the push and will report the old version well after the release is live.
+   The recipes live in `packaging/aur/<package>/PKGBUILD`; a recipe change is made and reviewed there, and `make arch-pkg` builds the source one from the working tree. The script resets each clone to the AUR's master, copies the recipe in with pkgver set to the tag and pkgrel to 1, runs `updpkgsums` against the published assets, regenerates `.SRCINFO`, builds, commits and pushes. `-n` stops before the commit. A missing clone stops it with the `git clone` line to run. AUR commits get no Co-Authored-By trailer. Do not poll the AUR RPC index to confirm: it refreshes minutes behind the push and will report the old version well after the release is live.
 8. Publish the Debian packages to apt.ticpu.net, from `~/GIT/apt-ticpu-net`:
 
 ```sh

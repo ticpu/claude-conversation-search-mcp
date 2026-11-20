@@ -20,6 +20,11 @@ GIT_DIRTY := $(shell git status --porcelain --untracked-files=no | head -1)
 # A dev .deb must never be mistakable for the released one
 DEB_VERSION := $(if $(GIT_DIRTY),$(CARGO_VERSION)+$(GIT_SHORT).dirty,$(if $(GIT_TAG),$(CARGO_VERSION),$(CARGO_VERSION)+$(GIT_SHORT)))
 
+# pacman versions allow no '+' or '-'. Deferred (=) so only the arch targets need a v* tag.
+ARCH_SINCE_TAG = $(shell git rev-list --count $(shell git describe --tags --match 'v*' --abbrev=0)..HEAD)
+ARCH_PKGVER = $(CARGO_VERSION)$(if $(GIT_DIRTY)$(filter-out 0,$(ARCH_SINCE_TAG)),.r$(ARCH_SINCE_TAG).g$(GIT_SHORT))$(if $(GIT_DIRTY),.dirty)
+ARCH_DIR := target/arch
+
 DEB_AMD64 := $(NAME)_$(DEB_VERSION)_amd64.deb
 DEB_ARM64 := $(NAME)_$(DEB_VERSION)_arm64.deb
 PKG := package.tmp
@@ -30,7 +35,7 @@ DIST := dist/$(NAME).amd64 dist/$(NAME).arm64 \
 	dist/depends-extra.amd64 dist/depends-extra.arm64 \
 	$(COMPLETIONS)
 
-.PHONY: all clean linux windows macos linux-x86 linux-arm check test fmt clippy dist deb deb-amd64 deb-arm64
+.PHONY: all clean linux windows macos linux-x86 linux-arm check test fmt clippy dist deb deb-amd64 deb-arm64 arch-pkg arch-install aur-check
 
 all: linux windows macos
 
@@ -103,6 +108,28 @@ $(DEB_AMD64): dist/$(NAME).amd64 dist/glibc-floor.amd64 dist/depends-extra.amd64
 
 $(DEB_ARM64): dist/$(NAME).arm64 dist/glibc-floor.arm64 dist/depends-extra.arm64 $(COMPLETIONS) packaging/control packaging/$(NAME)-index.service LICENSE
 	$(call build-deb,arm64)
+
+# Build the AUR source recipe from the working tree: tracked files, committed or
+# not, packed as the release tarball it expects, with a placeholder signature.
+arch-pkg:
+	rm -rf "$(ARCH_DIR)"
+	install -D -m 644 packaging/aur/$(NAME)/PKGBUILD "$(ARCH_DIR)/PKGBUILD"
+	sed -i 's/^pkgver=.*/pkgver=$(ARCH_PKGVER)/; s/^pkgrel=.*/pkgrel=1/' "$(ARCH_DIR)/PKGBUILD"
+	tree=$$(git stash create); git archive --format=tar --prefix="$(NAME)-$(ARCH_PKGVER)/" "$${tree:-HEAD}" \
+		| xz -c > "$(ARCH_DIR)/$(NAME)-$(ARCH_PKGVER).tar.xz"
+	touch "$(ARCH_DIR)/$(NAME)-$(ARCH_PKGVER).tar.xz.asc"
+	cd "$(ARCH_DIR)" && PKGDEST="$(CURDIR)/$(ARCH_DIR)/out" makepkg -f --check --skipchecksums --skippgpcheck
+
+# Install that package, replacing either AUR package.
+arch-install: arch-pkg
+	sudo pacman -U "$(ARCH_DIR)"/out/$(NAME)-$(ARCH_PKGVER)-*.pkg.tar.zst
+
+# Both AUR recipes must at least parse; the -bin one fetches release assets, so
+# it is only fully exercised by publish-aur.sh.
+aur-check:
+	for recipe in packaging/aur/*/PKGBUILD; do \
+		(cd "$${recipe%/PKGBUILD}" && makepkg --printsrcinfo > /dev/null) || exit 1; \
+	done
 
 clean:
 	$(CARGO) clean

@@ -114,6 +114,13 @@ join point: the deb recipe runs natively and reads nothing else from the build.
 `packaging/control` is a template. The Makefile rewrites its `Version:`, `Architecture:` and
 `Depends:` lines; the placeholders are self-describing so an unsubstituted control file is obvious.
 
+`packaging/aur/<package>/PKGBUILD` are the canonical AUR recipes; the clones under
+`~/.cache/paru/clone/` only receive them through `scripts/publish-aur.sh`, which sets pkgver and
+the checksums there. Their pkgver and sums in this repo are those of the last publish. `make
+arch-pkg` builds the source recipe from the working tree (a `git archive` of tracked files under the
+release tarball's name, checks forced on), `make arch-install` installs it, `make aur-check` parses
+both.
+
 ## Release Process
 
 The procedure lives in `.claude/commands/release.md` and is the only copy — a second numbered list
