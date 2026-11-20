@@ -1180,3 +1180,48 @@ fn limit_zero_is_an_error_not_a_panic() {
             .is_err()
     );
 }
+
+#[test]
+fn summary_lines_are_searchable_in_their_session() {
+    let tmp = TempDir::new().unwrap();
+    let session = "c0c0c0c0-1111-2222-3333-444444444444";
+    let index_path = tmp
+        .path()
+        .join("index");
+    let mut indexer = SearchIndexer::new(&index_path).unwrap();
+    let mut lines = vec![
+        serde_json::json!({"type": "summary", "summary": "Fixing the frobnicator", "leafUuid": "m-0001"})
+            .to_string(),
+    ];
+    lines.extend(transcript(session, "m", 2));
+    index_transcript(
+        &mut indexer,
+        &tmp.path()
+            .join("projects")
+            .join("-home-user-GIT-proj")
+            .join(format!("{session}.jsonl")),
+        &lines,
+    );
+    indexer
+        .commit()
+        .unwrap();
+    let engine = SearchEngine::new(&index_path, HashMap::new()).unwrap();
+
+    let found = filtered(
+        &engine,
+        SearchQuery {
+            text: "frobnicator".to_string(),
+            limit: 10,
+            project_filter: Some("/home/user/GIT/proj".to_string()),
+            ..Default::default()
+        },
+        &ResultFilter::default(),
+    );
+    assert_eq!(matched_sessions(&found), [session]);
+    assert_eq!(
+        found.results[0]
+            .matched_message
+            .message_type,
+        MessageType::Summary
+    );
+}

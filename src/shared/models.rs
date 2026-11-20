@@ -20,6 +20,7 @@ pub struct RawJsonlMessage {
     pub agent_id: Option<String>,
     // Summary type fields
     pub summary: Option<String>,
+    pub leaf_uuid: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
