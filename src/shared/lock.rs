@@ -162,32 +162,82 @@ pub struct ExclusiveIndexAccess {
 }
 
 impl ExclusiveIndexAccess {
+    /// Contention while the index service runs names the command that stops it.
     pub fn acquire(index_path: &Path) -> Result<Self> {
-        let lock = IndexLock::try_lock(index_path, LockType::Exclusive)?;
-        Ok(Self { _lock: lock })
-    }
-
-    /// Probe: takes and immediately releases the lock.
-    pub fn is_available(index_path: &Path) -> bool {
-        IndexLock::try_lock(index_path, LockType::Exclusive).is_ok()
+        match IndexLock::try_lock(index_path, LockType::Exclusive) {
+            Ok(lock) => Ok(Self { _lock: lock }),
+            Err(e) if is_index_busy(&e) && service_running(index_path) => Err(e.context(format!(
+                "the index service owns the index; stop it first with \
+                 `systemctl --user stop {SERVICE_UNIT}`"
+            ))),
+            Err(e) => Err(e),
+        }
     }
 }
 
-/// Shared hold on index.lock.
-pub struct SharedIndexAccess {
-    _lock: IndexLock,
+/// The systemd user unit running `index watch`.
+pub const SERVICE_UNIT: &str = "claude-conversation-search-index";
+
+/// The service marker of the index at `index_path`. Never overridden by config.
+pub fn indexer_lock_path(index_path: &Path) -> PathBuf {
+    index_path.join("indexer.lock")
 }
 
-impl SharedIndexAccess {
-    pub fn acquire(index_path: &Path) -> Result<Self> {
-        let lock = IndexLock::try_lock(index_path, LockType::Shared)?;
-        Ok(Self { _lock: lock })
+/// Whether another process holds `path`, probed with a shared try-lock released
+/// at once. A missing file is not held and is not created.
+fn probe_held(path: &Path) -> Result<bool> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("opening lock file {}", path.display())),
+    };
+    match try_flock(&file, LockType::Shared, path) {
+        Ok(()) => Ok(false),
+        Err(e) if is_index_busy(&e) => Ok(true),
+        Err(e) => Err(e),
     }
+}
 
-    /// Probe: takes and immediately releases the lock.
-    pub fn is_available(index_path: &Path) -> bool {
-        IndexLock::try_lock(index_path, LockType::Shared).is_ok()
+/// Whether `index watch` holds the index at `index_path`.
+pub fn indexer_lock_held(index_path: &Path) -> Result<bool> {
+    probe_held(&indexer_lock_path(index_path))
+}
+
+/// Whether a writer holds index.lock right now. Always false with locking disabled.
+pub fn index_lock_held(index_path: &Path) -> Result<bool> {
+    probe_held(&index_lock_path(index_path))
+}
+
+/// `indexer_lock_held` for callers that only branch on it: a failing probe is
+/// logged with its path and reads as "not running".
+pub fn service_running(index_path: &Path) -> bool {
+    indexer_lock_held(index_path).unwrap_or_else(|e| {
+        error!("Treating the index service as not running: {e:#}");
+        false
+    })
+}
+
+/// Empty the index directory, keeping both lock files: a holder keeps its lock
+/// only while the file it locked is the one others open.
+pub fn clear_index_dir(index_path: &Path) -> Result<()> {
+    let keep = [index_lock_path(index_path), indexer_lock_path(index_path)];
+    let entries = std::fs::read_dir(index_path)
+        .with_context(|| format!("reading index directory {}", index_path.display()))?;
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("listing index directory {}", index_path.display()))?
+            .path();
+        if keep.contains(&path) {
+            continue;
+        }
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        removed.with_context(|| format!("removing {}", path.display()))?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -213,16 +263,53 @@ mod tests {
                 .err()
                 .unwrap()
         ));
-        assert!(!SharedIndexAccess::is_available(&index));
+        assert!(index_lock_held(&index).unwrap());
 
         let other = temp
             .path()
             .join("other");
         assert!(
-            ExclusiveIndexAccess::is_available(&other),
+            ExclusiveIndexAccess::acquire(&other).is_ok(),
             "another index's lock is independent"
         );
         drop(held);
-        assert!(ExclusiveIndexAccess::is_available(&index));
+        assert!(!index_lock_held(&index).unwrap());
+    }
+
+    #[test]
+    fn wipe_keeps_lock_files_and_the_held_lock_still_excludes() {
+        let temp = TempDir::new().unwrap();
+        let index = temp
+            .path()
+            .join("idx");
+        let held = ExclusiveIndexAccess::acquire(&index).unwrap();
+        let marker = File::create(indexer_lock_path(&index)).unwrap();
+        marker
+            .try_lock_exclusive()
+            .unwrap();
+        std::fs::write(index.join("meta.json"), "{}").unwrap();
+        std::fs::create_dir(index.join("segdir")).unwrap();
+
+        clear_index_dir(&index).unwrap();
+
+        let mut left: Vec<_> = std::fs::read_dir(&index)
+            .unwrap()
+            .map(|e| {
+                e.unwrap()
+                    .file_name()
+            })
+            .collect();
+        left.sort();
+        assert_eq!(left, ["index.lock", "indexer.lock"]);
+        let second = ExclusiveIndexAccess::acquire(&index)
+            .err()
+            .unwrap();
+        assert!(is_index_busy(&second));
+        assert!(
+            format!("{second:#}").contains("systemctl --user stop"),
+            "{second:#}"
+        );
+        assert!(indexer_lock_held(&index).unwrap());
+        drop(held);
     }
 }

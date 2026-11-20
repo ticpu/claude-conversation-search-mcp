@@ -5,7 +5,7 @@ use crate::cli::session::view_session;
 use crate::cli::stats::{show_stats, show_topics};
 use crate::cli::summary::summarize_session;
 use crate::shared::session_view::{SessionViewOpts, Window};
-use crate::shared::{self, CacheManager, DisplayOptions};
+use crate::shared::{self, CacheManager, DisplayOptions, ExclusiveIndexAccess};
 use anyhow::{Context, Result};
 use std::path::Path;
 use tracing::{debug, error};
@@ -205,8 +205,47 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
 }
 
 fn clear_cache(index_path: &Path) -> Result<()> {
+    let _lock = ExclusiveIndexAccess::acquire(index_path)?;
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
-    println!("Cache cleared successfully. Run 'claude-conversation-search index' to rebuild.");
+    println!(
+        "Cache cleared successfully. Run 'claude-conversation-search index rebuild' to rebuild."
+    );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn cache_clear_refuses_while_a_writer_holds_the_index() {
+        let temp = TempDir::new().unwrap();
+        let index = temp.path();
+        let writer = ExclusiveIndexAccess::acquire(index).unwrap();
+        std::fs::write(index.join("meta.json"), "{}").unwrap();
+
+        let err = clear_cache(index).expect_err("cache clear must not wipe under a live writer");
+        assert!(shared::is_index_busy(&err), "{err:#}");
+        assert!(
+            index
+                .join("meta.json")
+                .exists()
+        );
+
+        drop(writer);
+        clear_cache(index).unwrap();
+        assert!(
+            !index
+                .join("meta.json")
+                .exists()
+        );
+        assert!(
+            index
+                .join("index.lock")
+                .exists(),
+            "the wipe keeps the lock file it ran under"
+        );
+    }
 }

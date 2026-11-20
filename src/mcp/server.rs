@@ -1,32 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::Value;
 use tracing::debug;
 
 use super::protocol::{CallToolRequest, tool_err};
 use crate::shared::{self, SearchEngine, auto_index, get_cache_dir};
-
-/// Empty the index directory for a full rebuild, keeping the lock file: removing
-/// it would drop the exclusive access this rebuild is running under.
-pub(crate) fn clear_index_dir(dir: &std::path::Path) -> Result<()> {
-    let lock_file = crate::shared::index_lock_path(dir);
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("reading index directory {}", dir.display()))?;
-    for entry in entries {
-        let path = entry
-            .with_context(|| format!("listing index directory {}", dir.display()))?
-            .path();
-        if path == lock_file {
-            continue;
-        }
-        let removed = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        removed.with_context(|| format!("removing {}", path.display()))?;
-    }
-    Ok(())
-}
 
 pub struct McpServer {
     pub(crate) search_engine: SearchEngine,

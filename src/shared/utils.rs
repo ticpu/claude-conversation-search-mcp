@@ -1,7 +1,7 @@
 use super::cache::CacheManager;
 use super::config::get_config;
 use super::indexer::SearchIndexer;
-use super::lock::{ExclusiveIndexAccess, is_index_busy};
+use super::lock::{ExclusiveIndexAccess, clear_index_dir, is_index_busy};
 use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
@@ -122,16 +122,12 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
             Ok(true) => SearchIndexer::open(index_path)?,
             Ok(false) => {
                 info!("Index schema mismatch detected. Rebuilding index...");
-                if let Err(rm_err) = std::fs::remove_dir_all(index_path) {
-                    warn!("Failed to remove old index: {}", rm_err);
-                }
+                clear_index_dir(index_path)?;
                 SearchIndexer::new(index_path)?
             }
             Err(e) => {
-                warn!("Failed to validate index: {}. Rebuilding...", e);
-                if let Err(rm_err) = std::fs::remove_dir_all(index_path) {
-                    warn!("Failed to remove corrupted index: {}", rm_err);
-                }
+                warn!("Failed to validate index: {e:#}. Rebuilding...");
+                clear_index_dir(index_path)?;
                 SearchIndexer::new(index_path)?
             }
         }

@@ -1,34 +1,34 @@
 use crate::shared::{
-    CacheManager, ExclusiveIndexAccess, SearchIndexer, SharedIndexAccess, discover_jsonl_files,
+    CacheManager, ExclusiveIndexAccess, SearchIndexer, discover_jsonl_files, index_lock_held,
+    indexer_lock_held,
 };
 use anyhow::Result;
 use std::path::Path;
 use tracing::info;
 
+/// Reads without taking any lock: the metadata and meta.json are both replaced
+/// by rename, so a concurrent writer never shows a torn state.
 pub fn show_status(index_path: &Path) -> Result<()> {
     println!("Index Status");
     println!("============");
 
-    if ExclusiveIndexAccess::is_available(index_path) {
-        println!("Lock Status: Available");
-    } else if SharedIndexAccess::is_available(index_path) {
-        println!("Lock Status: Read-only access available");
-    } else {
-        println!("Lock Status: Locked by another process");
-    }
+    let service = match indexer_lock_held(index_path) {
+        Ok(true) => "running".to_string(),
+        Ok(false) => "not running".to_string(),
+        Err(e) => format!("unknown ({e:#})"),
+    };
+    println!("Index Service: {service}");
+    let writer = match index_lock_held(index_path) {
+        Ok(true) => "held by another process".to_string(),
+        Ok(false) => "free".to_string(),
+        Err(e) => format!("unknown ({e:#})"),
+    };
+    println!("Writer Lock: {writer}");
 
     if !index_path.exists() {
         println!("Index: Not found (will be created on next search)");
         return Ok(());
     }
-
-    let _lock = match SharedIndexAccess::acquire(index_path) {
-        Ok(lock) => lock,
-        Err(e) => {
-            println!("Index: Unable to read ({})", e);
-            return Ok(());
-        }
-    };
 
     let cache_manager = CacheManager::new(index_path)?;
     let stats = cache_manager.get_stats();

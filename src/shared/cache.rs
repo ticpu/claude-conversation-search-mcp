@@ -1,4 +1,5 @@
 use super::indexer::SearchIndexer;
+use super::lock::clear_index_dir;
 use super::models::MessageType;
 use super::parsers::{JsonlParser, SourceKind};
 use super::utils::file_mtime;
@@ -305,9 +306,16 @@ impl CacheManager {
             .cache_dir
             .exists()
         {
-            fs::remove_dir_all(&self.cache_dir)?;
+            clear_index_dir(&self.cache_dir)?;
+        } else {
+            fs::create_dir_all(&self.cache_dir).with_context(|| {
+                format!(
+                    "creating {}",
+                    self.cache_dir
+                        .display()
+                )
+            })?;
         }
-        fs::create_dir_all(&self.cache_dir)?;
 
         self.metadata = CacheMetadata::default();
         self.save_metadata()?;

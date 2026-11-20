@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tracing::error;
 
 use super::protocol::{tool_err, tool_ok};
-use super::server::{McpServer, clear_index_dir};
+use super::server::McpServer;
 use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder, get_config};
@@ -569,7 +569,7 @@ Task(
                 .cache_dir
                 .exists()
             {
-                clear_index_dir(&self.cache_dir)?;
+                shared::clear_index_dir(&self.cache_dir)?;
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
