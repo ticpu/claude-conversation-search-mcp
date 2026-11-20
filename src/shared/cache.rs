@@ -552,6 +552,7 @@ impl CacheManager {
 
 /// Counts from `quick_health_check`: named, since two same-typed counts in
 /// positional order are swap-prone.
+#[derive(Default)]
 pub struct FileHealthCounts {
     pub stale: usize,
     pub new_files: usize,

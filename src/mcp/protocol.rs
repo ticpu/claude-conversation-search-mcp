@@ -154,13 +154,16 @@ impl McpServer {
         Ok(serde_json::to_value(response)?)
     }
 
-    async fn handle_list_tools(&self) -> Result<Value> {
+    /// The reindex tool is listed only while no index service owns indexing.
+    async fn handle_list_tools(&mut self) -> Result<Value> {
         debug!("Handling list_tools request");
 
-        let response = ListToolsResponse {
-            tools: super::tools::schema::tool_list(),
-        };
-        Ok(serde_json::to_value(response)?)
+        let service_running = self.advertise_tools();
+        let tools = super::tools::schema::tool_list()
+            .into_iter()
+            .filter(|tool| !(service_running && tool.name == "reindex"))
+            .collect();
+        Ok(serde_json::to_value(ListToolsResponse { tools })?)
     }
 
     /// Returns `None` for JSON-RPC notifications (no `id`), which must not be
@@ -226,6 +229,42 @@ impl McpServer {
     }
 }
 
+const TOOLS_LIST_CHANGED: &str = r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
+
+impl McpServer {
+    /// The lines one input line produces on stdout: a tools/list_changed
+    /// notification first when the tool set changed, then the response if any.
+    pub(crate) async fn process_line(&mut self, line: &str) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        if self.take_tools_list_change() {
+            out.push(TOOLS_LIST_CHANGED.to_string());
+        }
+        let response = match serde_json::from_str::<JsonRpcRequest>(line) {
+            Ok(request) => {
+                self.handle_request(request)
+                    .await
+            }
+            Err(e) => {
+                error!("Failed to parse JSON-RPC request: {}", e);
+                Some(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: None,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32700,
+                        message: format!("Parse error: {e}"),
+                        data: None,
+                    }),
+                })
+            }
+        };
+        if let Some(response) = response {
+            out.push(serde_json::to_string(&response)?);
+        }
+        Ok(out)
+    }
+}
+
 pub async fn run_mcp_server() -> Result<()> {
     // Initialize logging to stderr so it doesn't interfere with JSON-RPC
     // Only show CRITICAL/ERROR level logs to avoid JSON parsing issues
@@ -249,53 +288,23 @@ pub async fn run_mcp_server() -> Result<()> {
         {
             continue;
         }
-
         debug!("Received line: {}", line);
 
-        match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(request) => {
-                if let Some(response) = server
-                    .handle_request(request)
-                    .await
-                {
-                    let response_json = serde_json::to_string(&response)?;
-                    debug!("Sending response: {}", response_json);
-
-                    stdout
-                        .write_all(response_json.as_bytes())
-                        .await?;
-                    stdout
-                        .write_all(b"\n")
-                        .await?;
-                    stdout
-                        .flush()
-                        .await?;
-                }
-            }
-            Err(e) => {
-                error!("Failed to parse JSON-RPC request: {}", e);
-                let error_response = JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: None,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                let response_json = serde_json::to_string(&error_response)?;
-                stdout
-                    .write_all(response_json.as_bytes())
-                    .await?;
-                stdout
-                    .write_all(b"\n")
-                    .await?;
-                stdout
-                    .flush()
-                    .await?;
-            }
+        for out in server
+            .process_line(&line)
+            .await?
+        {
+            debug!("Sending: {}", out);
+            stdout
+                .write_all(out.as_bytes())
+                .await?;
+            stdout
+                .write_all(b"\n")
+                .await?;
         }
+        stdout
+            .flush()
+            .await?;
     }
 
     Ok(())
@@ -341,5 +350,117 @@ mod tests {
         assert!(!is_notification(
             r#"{"jsonrpc":"2.0","id":0,"method":"tools/list"}"#
         ));
+    }
+
+    fn write_session(dir: &std::path::Path, session: &str) -> std::path::PathBuf {
+        let path = dir.join(format!("{session}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"uuid":"{session}-u","sessionId":"{session}","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"hello {session}"}}}}"#
+            ) + "\n",
+        )
+        .unwrap();
+        path
+    }
+
+    /// An index under `dir` holding the given transcripts, its writer closed.
+    fn index_with(dir: &std::path::Path, files: Vec<std::path::PathBuf>) -> std::path::PathBuf {
+        let index = dir.join("idx");
+        let (mut indexer, mut cache) = crate::shared::open_or_create_indexer(&index).unwrap();
+        cache
+            .update_incremental(&mut indexer, files)
+            .unwrap();
+        index
+    }
+
+    fn tool_names(response: &str) -> Vec<String> {
+        let value: Value = serde_json::from_str(response).unwrap();
+        value["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                t["name"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn reindex_follows_the_index_service() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = index_with(temp.path(), Vec::new());
+        let mut server = McpServer::open(index.clone()).unwrap();
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+
+        let out = server
+            .process_line(list)
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(tool_names(&out[0]).contains(&"reindex".to_string()));
+
+        let service = crate::shared::IndexerLock::try_acquire(&index).unwrap();
+        let out = server
+            .process_line(list)
+            .await
+            .unwrap();
+        assert_eq!(out[0], TOOLS_LIST_CHANGED);
+        assert!(!tool_names(&out[1]).contains(&"reindex".to_string()));
+
+        let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"reindex"}}"#;
+        let out = server
+            .process_line(call)
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1, "no change since the last list: {out:?}");
+        assert!(out[0].contains("index service owns indexing"), "{}", out[0]);
+
+        drop(service);
+        let out = server
+            .process_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .await
+            .unwrap();
+        assert_eq!(out, [TOOLS_LIST_CHANGED], "a notification gets no response");
+    }
+
+    #[tokio::test]
+    async fn session_counts_follow_commits_by_another_writer() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let first = write_session(temp.path(), "sess-a");
+        let index = index_with(temp.path(), vec![first]);
+        let mut server = McpServer::open(index.clone()).unwrap();
+
+        // Another process indexes a new session; mtime granularity needs a tick.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = write_session(temp.path(), "sess-b");
+        index_with(temp.path(), vec![second]);
+
+        let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_messages","arguments":{"ids":["x"]}}}"#;
+        server
+            .process_line(call)
+            .await
+            .unwrap();
+        let hits = server
+            .search_engine
+            .search(crate::shared::SearchQuery {
+                text: "hello".to_string(),
+                project_filter: None,
+                session_filter: Some("sess-b".to_string()),
+                limit: 10,
+                sort_by: crate::shared::SortOrder::Relevance,
+                after: None,
+                before: None,
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].interaction_count, 1,
+            "counts from the newer metadata"
+        );
     }
 }

@@ -293,6 +293,12 @@ impl McpServer {
 
         let config = get_config();
         let probe = probe_staleness(config)?;
+        // The service indexes changes within seconds; staleness is its concern.
+        let health = if self.service_running() {
+            shared::FileHealthCounts::default()
+        } else {
+            probe.health
+        };
 
         let (all_exclude_patterns, exclude_regexes) =
             match compile_excludes(config, &search_args.exclude_patterns) {
@@ -374,7 +380,7 @@ impl McpServer {
             &args,
             &search_args,
             &all_exclude_patterns,
-            &probe.health,
+            &health,
             &filtered,
             &display_opts,
         ))
@@ -547,6 +553,11 @@ Task(
     }
 
     pub(crate) async fn tool_reindex(&mut self, args: Option<Value>) -> Result<Value> {
+        if self.service_running() {
+            return tool_err(
+                "The index service owns indexing and keeps the index current; reindex was not run",
+            );
+        }
         let args = args.unwrap_or_default();
         let full_rebuild = args
             .get("full")
