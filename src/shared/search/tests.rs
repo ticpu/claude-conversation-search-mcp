@@ -595,3 +595,185 @@ fn other_errors_pass_through_unexplained() {
     );
     assert_eq!(format!("{err:#}"), "disk full");
 }
+
+/// A user/assistant line as Claude Code writes it.
+fn jsonl_line(session: &str, uuid: &str, kind: &str, minute: usize, text: &str) -> String {
+    serde_json::json!({
+        "uuid": uuid,
+        "sessionId": session,
+        "type": kind,
+        "timestamp": format!("2026-03-01T10:{:02}:00Z", minute % 60),
+        "cwd": "/home/user/GIT/proj",
+        "message": {"role": kind, "content": text},
+    })
+    .to_string()
+}
+
+/// Writes `lines` to `path`, parses it with the real parser and indexes it
+/// under its own path, as update_incremental does.
+fn index_transcript(indexer: &mut SearchIndexer, path: &Path, lines: &[String]) {
+    std::fs::create_dir_all(
+        path.parent()
+            .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(path, lines.join("\n")).unwrap();
+    let entries = crate::shared::parsers::JsonlParser::default()
+        .parse_file(path)
+        .unwrap();
+    assert_eq!(entries.len(), lines.len(), "every line must parse");
+    indexer
+        .index_conversations(entries, &path.to_string_lossy())
+        .unwrap();
+}
+
+fn transcript(session: &str, label: &str, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| {
+            let kind = if i % 2 == 0 { "user" } else { "assistant" };
+            jsonl_line(
+                session,
+                &format!("{label}-{i:04}"),
+                kind,
+                i,
+                &format!("{label} message {i}"),
+            )
+        })
+        .collect()
+}
+
+/// A main transcript and one subagent transcript sharing a sessionId, both
+/// numbered from sequence 0, with `needle` in message 5 of each.
+fn main_and_subagent(tmp: &TempDir) -> (PathBuf, PathBuf, &'static str) {
+    let session = "a0a0a0a0-1111-2222-3333-444444444444";
+    let project = tmp
+        .path()
+        .join("projects")
+        .join("-home-user-GIT-proj");
+    let main = project.join(format!("{session}.jsonl"));
+    let agent = project
+        .join(session)
+        .join("subagents")
+        .join("agent-abc123.jsonl");
+    let index_path = tmp
+        .path()
+        .join("index");
+    let mut indexer = SearchIndexer::new(&index_path).unwrap();
+    let mut main_lines = transcript(session, "main", 10);
+    main_lines[5] = jsonl_line(session, "main-0005", "assistant", 5, "main needlemain");
+    let mut agent_lines = transcript(session, "agent", 7);
+    agent_lines[5] = jsonl_line(session, "agent-0005", "assistant", 5, "agent needleagent");
+    index_transcript(&mut indexer, &main, &main_lines);
+    index_transcript(&mut indexer, &agent, &agent_lines);
+    indexer
+        .commit()
+        .unwrap();
+    (index_path, main, session)
+}
+
+fn context_uuids(r: &SearchResultWithContext) -> Vec<&str> {
+    r.context_messages
+        .iter()
+        .map(|m| {
+            m.uuid
+                .as_str()
+        })
+        .collect()
+}
+
+#[test]
+fn context_stays_inside_the_hit_transcript() {
+    let tmp = TempDir::new().unwrap();
+    let (index_path, _, _) = main_and_subagent(&tmp);
+    let engine = SearchEngine::new(&index_path, HashMap::new()).unwrap();
+
+    let query = |text: &str| SearchQuery {
+        text: text.to_string(),
+        limit: 10,
+        ..Default::default()
+    };
+    let hits = engine
+        .search_with_context(query("needlemain"), 2, 2)
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        context_uuids(&hits[0]),
+        [
+            "main-0003",
+            "main-0004",
+            "main-0005",
+            "main-0006",
+            "main-0007"
+        ]
+    );
+    assert_eq!(hits[0].match_index, 2);
+    assert_eq!(hits[0].total_session_messages, 10, "main transcript only");
+
+    let hits = engine
+        .search_with_context(query("needleagent"), 2, 2)
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        context_uuids(&hits[0]),
+        ["agent-0003", "agent-0004", "agent-0005", "agent-0006"]
+    );
+    assert_eq!(hits[0].match_index, 2);
+    assert_eq!(
+        hits[0].total_session_messages, 10,
+        "a subagent hit counts its main transcript"
+    );
+}
+
+#[test]
+fn session_messages_list_main_transcript_first_in_file_order() {
+    let tmp = TempDir::new().unwrap();
+    let (index_path, _, session) = main_and_subagent(&tmp);
+    let engine = SearchEngine::new(&index_path, HashMap::new()).unwrap();
+
+    let messages = engine
+        .get_session_messages(session)
+        .unwrap();
+    let uuids: Vec<&str> = messages
+        .iter()
+        .map(|m| {
+            m.uuid
+                .as_str()
+        })
+        .collect();
+    let expected: Vec<String> = (0..10)
+        .map(|i| format!("main-{i:04}"))
+        .chain((0..7).map(|i| format!("agent-{i:04}")))
+        .collect();
+    assert_eq!(uuids, expected);
+}
+
+#[test]
+fn session_messages_are_not_capped() {
+    let tmp = TempDir::new().unwrap();
+    let session = "b0b0b0b0-1111-2222-3333-444444444444";
+    let index_path = tmp
+        .path()
+        .join("index");
+    let mut indexer = SearchIndexer::new(&index_path).unwrap();
+    index_transcript(
+        &mut indexer,
+        &tmp.path()
+            .join("p")
+            .join(format!("{session}.jsonl")),
+        &transcript(session, "m", 6000),
+    );
+    indexer
+        .commit()
+        .unwrap();
+    let engine = SearchEngine::new(&index_path, HashMap::new()).unwrap();
+
+    let messages = engine
+        .get_session_messages(session)
+        .unwrap();
+    assert_eq!(messages.len(), 6000);
+    assert!(
+        messages
+            .windows(2)
+            .all(|w| w[0].sequence_num + 1 == w[1].sequence_num)
+    );
+}

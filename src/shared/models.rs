@@ -229,6 +229,9 @@ pub struct SearchResult {
     pub interaction_count: usize,
     pub sequence_num: usize,
     pub message_type: MessageType,
+    /// The JSONL file the message was indexed from; sequence_num orders
+    /// messages within it only.
+    pub source_file: String,
 }
 
 impl SearchResult {

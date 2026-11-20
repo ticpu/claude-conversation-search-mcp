@@ -41,14 +41,16 @@ mod doc;
 
 use super::format::{SearchResultWithContext, self_context_result};
 use super::models::{SearchQuery, SearchResult, SortOrder};
+use super::parsers::SourceKind;
+use super::path_utils::main_transcript_of;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::ops::Bound;
-use std::path::Path;
-use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, QueryParser, RangeQuery, TermQuery};
+use std::path::{Path, PathBuf};
+use tantivy::collector::{Count, DocSetCollector, TopDocs};
+use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption};
-use tantivy::{Index, IndexReader, Order, ReloadPolicy, Term};
+use tantivy::{Index, IndexReader, Order, ReloadPolicy, Searcher, Term};
 
 /// Extract project name from a path and split into TEXT-tokenizer segments.
 /// Tantivy's default TEXT tokenizer splits on non-alphanumeric characters,
@@ -98,6 +100,21 @@ fn hyphenated_term_query(field: Field, value: &str) -> BooleanQuery {
     BooleanQuery::new(segment_queries)
 }
 
+/// Sort key putting main transcripts before subagent ones, then each file's
+/// messages in sequence order.
+fn transcript_order(r: &SearchResult) -> (bool, &str, usize) {
+    let is_subagent = matches!(
+        SourceKind::classify(Path::new(&r.source_file)),
+        SourceKind::Agent { .. }
+    );
+    (
+        is_subagent,
+        r.source_file
+            .as_str(),
+        r.sequence_num,
+    )
+}
+
 fn project_matches(project_path: &str, filter: &str) -> bool {
     let filter_name = Path::new(filter)
         .file_name()
@@ -109,9 +126,6 @@ fn project_matches(project_path: &str, filter: &str) -> bool {
         .unwrap_or(project_path);
     result_name == filter_name
 }
-
-/// Maximum messages to retrieve per session.
-const MAX_SESSION_MESSAGES: usize = 5000;
 
 pub struct SearchEngine {
     index: Index,
@@ -299,75 +313,42 @@ impl SearchEngine {
         // First, get the matching messages
         let matches = self.search(query)?;
 
+        let searcher = self
+            .reader
+            .searcher();
+        let mut transcript_lengths: HashMap<PathBuf, usize> = HashMap::new();
         let mut results_with_context = Vec::new();
 
         for match_result in matches {
-            let session_messages = self.get_session_messages(&match_result.session_id)?;
+            let main_transcript = main_transcript_of(Path::new(&match_result.source_file));
+            let total_session_messages = match transcript_lengths.get(&main_transcript) {
+                Some(&n) => n,
+                None => {
+                    let n = self.transcript_len(&searcher, &main_transcript)?;
+                    transcript_lengths.insert(main_transcript, n);
+                    n
+                }
+            };
 
-            // If we can't get session messages, still return the match with just itself as context
-            if session_messages.is_empty() {
-                results_with_context.push(self_context_result(match_result, 1));
-                continue;
-            }
-
-            // Sort by sequence number
-            let mut session_messages = session_messages;
-            session_messages.sort_by_key(|m| m.sequence_num);
-
-            // Count only displayable messages (consistent with get_session_messages)
-            let total_session_messages = session_messages
-                .iter()
+            let window =
+                self.context_window(&searcher, &match_result, context_before, context_after)?;
+            let context_messages: Vec<SearchResult> = window
+                .into_iter()
                 .filter(|m| m.is_displayable())
-                .count();
-
-            // Find the matching message index by UUID or by content/timestamp as fallback
-            let match_idx = session_messages
+                .collect();
+            let match_index = context_messages
                 .iter()
-                .position(|m| m.uuid == match_result.uuid)
-                .or_else(|| {
-                    // Fallback: find by sequence number
-                    session_messages
-                        .iter()
-                        .position(|m| m.sequence_num == match_result.sequence_num)
-                });
+                .position(|m| m.sequence_num == match_result.sequence_num);
 
-            if let Some(idx) = match_idx {
-                // Get context window around the match
-                let start = idx.saturating_sub(context_before);
-                let end = (idx + context_after + 1).min(session_messages.len());
-
-                // Filter to displayable messages only, track new match index
-                let mut context_messages = Vec::new();
-                let mut new_match_idx = 0;
-                for (i, msg) in session_messages[start..end]
-                    .iter()
-                    .enumerate()
-                {
-                    if msg.is_displayable() {
-                        if start + i == idx {
-                            new_match_idx = context_messages.len();
-                        }
-                        context_messages.push(msg.clone());
-                    }
-                }
-
-                // If no context found (e.g., all filtered out), use match as its own context
-                if context_messages.is_empty() {
-                    results_with_context
-                        .push(self_context_result(match_result, total_session_messages));
-                } else {
-                    results_with_context.push(SearchResultWithContext {
-                        matched_message: match_result,
-                        context_messages,
-                        match_index: new_match_idx,
-                        total_session_messages,
-                    });
-                }
-            } else {
-                // UUID/sequence not found in session, return match with itself as context
-                results_with_context
-                    .push(self_context_result(match_result, total_session_messages));
-            }
+            results_with_context.push(match match_index {
+                Some(match_index) => SearchResultWithContext {
+                    matched_message: match_result,
+                    context_messages,
+                    match_index,
+                    total_session_messages,
+                },
+                None => self_context_result(match_result, total_session_messages),
+            });
         }
 
         // Apply sorting based on sort_by
@@ -400,39 +381,91 @@ impl SearchEngine {
         Ok(results_with_context)
     }
 
-    /// Get all messages for a session
+    /// The docs of `hit`'s own transcript with sequence_num within `before`
+    /// and `after` of it, in sequence order.
+    fn context_window(
+        &self,
+        searcher: &Searcher,
+        hit: &SearchResult,
+        before: usize,
+        after: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let seq_term = |seq: usize| {
+            Term::from_field_u64(
+                self.fields
+                    .sequence_num_field,
+                seq as u64,
+            )
+        };
+        let first = hit
+            .sequence_num
+            .saturating_sub(before);
+        let last = hit
+            .sequence_num
+            .saturating_add(after);
+        let query = BooleanQuery::new(vec![
+            (
+                Occur::Must,
+                Box::new(self.source_file_query(&hit.source_file)) as Box<dyn Query>,
+            ),
+            (
+                Occur::Must,
+                Box::new(RangeQuery::new(
+                    Bound::Included(seq_term(first)),
+                    Bound::Included(seq_term(last)),
+                )),
+            ),
+        ]);
+        let mut window = self.collect_docs(searcher, &query)?;
+        window.sort_by_key(|m| m.sequence_num);
+        Ok(window)
+    }
+
+    /// Number of docs indexed from one transcript file.
+    fn transcript_len(&self, searcher: &Searcher, transcript: &Path) -> Result<usize> {
+        let query = self.source_file_query(&transcript.to_string_lossy());
+        searcher
+            .search(&query, &Count)
+            .with_context(|| format!("counting the messages of {}", transcript.display()))
+    }
+
+    fn source_file_query(&self, source_file: &str) -> TermQuery {
+        TermQuery::new(
+            Term::from_field_text(
+                self.fields
+                    .source_file_field,
+                source_file,
+            ),
+            IndexRecordOption::Basic,
+        )
+    }
+
+    /// Every doc matching `query`, unordered and uncapped.
+    fn collect_docs(&self, searcher: &Searcher, query: &dyn Query) -> Result<Vec<SearchResult>> {
+        searcher
+            .search(query, &DocSetCollector)?
+            .into_iter()
+            .map(|addr| self.doc_to_result(&searcher.doc(addr)?))
+            .collect()
+    }
+
+    /// Every message of one session, main transcripts first, then subagent
+    /// transcripts, each file in sequence order.
     pub fn get_session_messages(&self, session_id: &str) -> Result<Vec<SearchResult>> {
         let searcher = self
             .reader
             .searcher();
-
         let query = hyphenated_term_query(
             self.fields
                 .session_field,
             session_id,
         );
-
-        let top_docs = searcher.search(
-            &query,
-            &TopDocs::with_limit(MAX_SESSION_MESSAGES).order_by_score(),
-        )?;
-
-        let mut results = Vec::new();
-        for (_, doc_address) in top_docs {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
-            // Filter to session_id match - support prefix matching for short IDs
-            if result.session_id == session_id
-                || result
-                    .session_id
-                    .starts_with(session_id)
-            {
-                results.push(result);
-            }
-        }
-
-        // Sort by sequence number
-        results.sort_by_key(|r| r.sequence_num);
-
+        let mut results = self.collect_docs(&searcher, &query)?;
+        results.retain(|r| {
+            r.session_id
+                .starts_with(session_id)
+        });
+        results.sort_by(|a, b| transcript_order(a).cmp(&transcript_order(b)));
         Ok(results)
     }
 

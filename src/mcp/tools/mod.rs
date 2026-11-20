@@ -3,11 +3,12 @@ pub(crate) mod schema;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::error;
 
 use super::protocol::{tool_err, tool_ok};
 use super::server::McpServer;
+use crate::shared::parsers::SourceKind;
 use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder, get_config};
@@ -456,13 +457,15 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
 
-        // Get session stats for size estimation
+        // The summarizing agent reads the main transcript through get_session_messages.
         let loaded = match self.ready_engine() {
             Ok(loaded) => loaded,
             Err(text) => return tool_err(text),
         };
         let search_engine = &loaded.engine;
-        let messages = search_engine.get_session_messages(session_id)?;
+        let mut messages = search_engine.get_session_messages(session_id)?;
+        messages
+            .retain(|m| SourceKind::classify(Path::new(&m.source_file)) == SourceKind::MainSession);
         let msg_count = messages.len();
         let total_chars: usize = messages
             .iter()

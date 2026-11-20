@@ -98,15 +98,14 @@ pub fn load_session(
     ))
 }
 
-/// Displayable messages in sequence order, the only ordering the window is defined against.
+/// Displayable messages in the order `load_session` returned them, the only
+/// ordering the window is defined against.
 pub fn displayable_entries(entries: &[ConversationEntry]) -> Vec<ConversationEntry> {
-    let mut msgs: Vec<_> = entries
+    entries
         .iter()
         .filter(|e| e.is_displayable())
         .cloned()
-        .collect();
-    msgs.sort_by_key(|e| e.sequence_num);
-    msgs
+        .collect()
 }
 
 pub fn select_window(entries: &[ConversationEntry], w: &Window) -> (Range<usize>, Option<usize>) {
@@ -419,6 +418,7 @@ mod tests {
             interaction_count: 0,
             sequence_num: 3,
             message_type: MessageType::User,
+            source_file: "/p/session-1.jsonl".to_string(),
         };
 
         let entry = ConversationEntry::from(result);

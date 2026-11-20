@@ -17,9 +17,11 @@
 //! debug line can name it.
 
 use super::config::get_config;
+use super::parsers::SourceKind;
 use anyhow::{Result, bail};
 use glob::glob;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tracing::error;
@@ -69,6 +71,32 @@ pub fn session_jsonl_path(project_path: &str, session_id: &str) -> Option<PathBu
             .join(dir_name)
             .join(format!("{}.jsonl", session_id)),
     )
+}
+
+/// The `<session-id>` directory holding a subagent transcript, or None for a
+/// main transcript.
+fn subagent_session_dir(transcript: &Path) -> Option<&Path> {
+    if !matches!(SourceKind::classify(transcript), SourceKind::Agent { .. }) {
+        return None;
+    }
+    transcript
+        .ancestors()
+        .find(|dir| dir.file_name() == Some(OsStr::new("subagents")))?
+        .parent()
+}
+
+/// The main transcript a JSONL file belongs to: itself, or the
+/// `<session-id>.jsonl` beside the directory holding a subagent transcript.
+pub fn main_transcript_of(transcript: &Path) -> PathBuf {
+    let Some(dir) = subagent_session_dir(transcript) else {
+        return transcript.to_path_buf();
+    };
+    let mut name = dir
+        .file_name()
+        .unwrap_or_default()
+        .to_os_string();
+    name.push(".jsonl");
+    dir.with_file_name(name)
 }
 
 /// Counts the entries a walk could not read and reports them as one line when

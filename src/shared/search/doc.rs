@@ -118,6 +118,12 @@ impl SearchEngine {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
+        let source_file = doc_str(
+            doc,
+            self.fields
+                .source_file_field,
+        );
+
         let interaction_count = self.get_interaction_count(&session_id);
 
         Ok(SearchResult {
@@ -135,6 +141,7 @@ impl SearchEngine {
             interaction_count,
             sequence_num,
             message_type,
+            source_file,
         })
     }
 
