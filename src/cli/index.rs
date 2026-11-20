@@ -63,7 +63,7 @@ pub fn rebuild(index_path: &Path) -> Result<()> {
     let all_files = discover_jsonl_files()?;
 
     info!("Found {} files to process", all_files.len());
-    cache_manager.update_incremental(&mut indexer, all_files)?;
+    cache_manager.update_full(&mut indexer, all_files)?;
 
     println!("Index rebuild completed successfully.");
     Ok(())

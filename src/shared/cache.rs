@@ -55,6 +55,29 @@ struct ParsedFile {
     entries: Vec<super::models::ConversationEntry>,
 }
 
+/// Outcome of parsing one file. A file gone by the time it is read is purged
+/// like one found missing at triage.
+enum ParseOutcome {
+    Parsed(ParsedFile),
+    Vanished(PathBuf),
+    Failed,
+}
+
+/// What triage decided: files to (re)parse and indexed files now gone.
+struct Triage {
+    to_parse: Vec<PathBuf>,
+    vanished: Vec<PathBuf>,
+}
+
+fn is_not_found(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        })
+}
+
 impl CacheManager {
     pub fn new(cache_dir: &Path) -> Result<Self> {
         let metadata_file = cache_dir.join("cache-metadata.json");
@@ -75,121 +98,159 @@ impl CacheManager {
         })
     }
 
-    pub fn needs_indexing(&self, file_path: &Path) -> Result<bool> {
-        let file_size = fs::metadata(file_path)?.len();
-        let file_modified = file_mtime(file_path)?;
-
-        match self
-            .metadata
-            .indexed_files
-            .get(file_path)
-        {
-            Some(cached) => {
-                // Check if file has changed using mtime and size
-                Ok(cached.size != file_size || cached.modified != file_modified)
-            }
-            None => Ok(true), // File not indexed yet
-        }
+    /// Full pass: `discovered` plus every file the metadata knows, so a
+    /// transcript deleted since the last pass is found missing and purged.
+    pub fn update_full(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        discovered: Vec<PathBuf>,
+    ) -> Result<()> {
+        let mut files: HashSet<PathBuf> = discovered
+            .into_iter()
+            .collect();
+        files.extend(
+            self.metadata
+                .indexed_files
+                .keys()
+                .cloned(),
+        );
+        self.update_incremental(
+            indexer,
+            files
+                .into_iter()
+                .collect(),
+        )
     }
 
+    /// Bring the index in line with `files` as they are on disk: changed files
+    /// are reindexed, missing ones have their documents and metadata purged.
     pub fn update_incremental(
         &mut self,
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        let to_parse = self.triage_files(files)?;
+        let Triage {
+            to_parse,
+            mut vanished,
+        } = self.triage_files(files)?;
 
-        if to_parse.is_empty() {
+        let mut parsed = Vec::new();
+        for outcome in Self::parse_files_parallel(to_parse) {
+            match outcome {
+                ParseOutcome::Parsed(file) => parsed.push(file),
+                ParseOutcome::Vanished(path) => vanished.push(path),
+                ParseOutcome::Failed => {}
+            }
+        }
+
+        if parsed.is_empty() && vanished.is_empty() {
             info!("No files needed indexing");
             return Ok(());
         }
 
-        let parsed = Self::parse_files_parallel(to_parse);
+        let purged = self.purge_files(indexer, vanished);
         let (files_processed, total_entries) = self.index_parsed_files(indexer, parsed)?;
+        indexer.commit()?;
 
         self.refresh_derived_metadata();
         self.metadata
             .last_full_scan = Some(Utc::now());
         self.save_metadata()?;
 
-        if files_processed > 0 {
-            info!(
-                "Incremental indexing complete: {} files processed, {} entries added",
-                files_processed, total_entries
-            );
-        } else {
-            info!("No files needed indexing");
-        }
-
+        info!(
+            "Incremental indexing complete: {} files processed, {} entries added, {} files purged",
+            files_processed, total_entries, purged
+        );
         Ok(())
     }
 
-    /// Phase 1 (serial): remove deleted files from the cache and collect
-    /// the files that need (re)parsing.
-    fn triage_files(&mut self, files: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
-        let mut to_parse: Vec<PathBuf> = Vec::new();
+    /// Phase 1 (serial): sort `files` into those needing a parse and indexed
+    /// ones that no longer exist. Unchanged and unknown-missing files drop out.
+    fn triage_files(&self, files: Vec<PathBuf>) -> Result<Triage> {
+        let mut triage = Triage {
+            to_parse: Vec::new(),
+            vanished: Vec::new(),
+        };
         for file_path in files {
-            if !file_path.exists() {
-                if self
-                    .metadata
-                    .indexed_files
-                    .remove(&file_path)
-                    .is_some()
+            let known = self
+                .metadata
+                .indexed_files
+                .get(&file_path);
+            let current = fs::metadata(&file_path)
+                .with_context(|| format!("reading metadata of {}", file_path.display()))
+                .and_then(|m| Ok((m.len(), file_mtime(&file_path)?)));
+            match (current, known) {
+                (Err(e), Some(_)) if is_not_found(&e) => triage
+                    .vanished
+                    .push(file_path),
+                (Err(e), None) if is_not_found(&e) => {}
+                (Err(e), _) => return Err(e),
+                (Ok((size, mtime)), Some(cached))
+                    if cached.size == size && cached.modified == mtime =>
                 {
-                    debug!("Removed deleted file from cache: {}", file_path.display());
+                    debug!("Skipping unchanged file: {}", file_path.display());
                 }
-                continue;
+                (Ok(_), _) => triage
+                    .to_parse
+                    .push(file_path),
             }
-            if !self.needs_indexing(&file_path)? {
-                debug!("Skipping unchanged file: {}", file_path.display());
-                continue;
-            }
-            to_parse.push(file_path);
         }
-        Ok(to_parse)
+        Ok(triage)
+    }
+
+    /// Delete the documents and metadata of files that no longer exist.
+    fn purge_files(&mut self, indexer: &mut SearchIndexer, vanished: Vec<PathBuf>) -> usize {
+        let count = vanished.len();
+        for path in vanished {
+            indexer.delete_source_file(&path.to_string_lossy());
+            self.metadata
+                .indexed_files
+                .remove(&path);
+            info!("Purged deleted transcript: {}", path.display());
+        }
+        count
     }
 
     /// Phase 2 (parallel): parse all files concurrently.
-    fn parse_files_parallel(to_parse: Vec<PathBuf>) -> Vec<ParsedFile> {
+    fn parse_files_parallel(to_parse: Vec<PathBuf>) -> Vec<ParseOutcome> {
         let parser = JsonlParser::default();
         to_parse
             .into_par_iter()
-            .filter_map(|file_path| {
+            .map(|file_path| {
                 info!("Processing: {}", file_path.display());
                 let source_kind = SourceKind::classify(&file_path);
-                let file_size = match fs::metadata(&file_path) {
-                    Ok(m) => m.len(),
-                    Err(e) => {
-                        warn!("Skipping {}: {}", file_path.display(), e);
-                        return None;
-                    }
-                };
-                let file_modified = match file_mtime(&file_path) {
-                    Ok(t) => t,
+                let stat = fs::metadata(&file_path)
+                    .with_context(|| format!("reading metadata of {}", file_path.display()))
+                    .and_then(|m| Ok((m.len(), file_mtime(&file_path)?)));
+                let (file_size, file_modified) = match stat {
+                    Ok(stat) => stat,
+                    Err(e) if is_not_found(&e) => return ParseOutcome::Vanished(file_path),
                     Err(e) => {
                         warn!("Skipping {}: {:#}", file_path.display(), e);
-                        return None;
+                        return ParseOutcome::Failed;
                     }
                 };
                 match parser.parse_file(&file_path) {
-                    Ok(entries) => Some(ParsedFile {
+                    Ok(entries) => ParseOutcome::Parsed(ParsedFile {
                         path: file_path,
                         source_kind,
                         file_size,
                         file_modified,
                         entries,
                     }),
+                    Err(e) if is_not_found(&e) => ParseOutcome::Vanished(file_path),
                     Err(e) => {
-                        warn!("Failed to parse {}: {}", file_path.display(), e);
-                        None
+                        warn!("Failed to parse {}: {:#}", file_path.display(), e);
+                        ParseOutcome::Failed
                     }
                 }
             })
             .collect()
     }
 
-    /// Phase 3 (serial): feed parsed files into the IndexWriter, update cache
-    /// metadata, and commit. Returns (files_processed, total_entries).
+    /// Phase 3 (serial): replace each parsed file's documents and record its
+    /// metadata. A file parsing to no entries keeps none. Returns
+    /// (files_processed, total_entries); the caller commits.
     fn index_parsed_files(
         &mut self,
         indexer: &mut SearchIndexer,
@@ -205,35 +266,33 @@ impl CacheManager {
             total_entries += entry_count;
 
             let mut conversation_counts: HashMap<String, usize> = HashMap::new();
+            let path_str = parsed_file
+                .path
+                .to_string_lossy()
+                .into_owned();
+            indexer.delete_source_file(&path_str);
 
-            if entry_count > 0 {
-                let path_str = parsed_file
-                    .path
-                    .to_string_lossy();
-                indexer.delete_source_file(&path_str);
-
-                // Subagent transcripts share their parent's sessionId; counting
-                // them would double-count the session against its main file.
-                if matches!(parsed_file.source_kind, SourceKind::MainSession) {
-                    for entry in &parsed_file.entries {
-                        if matches!(
-                            entry.message_type,
-                            MessageType::User | MessageType::Assistant
-                        ) {
-                            *conversation_counts
-                                .entry(
-                                    entry
-                                        .session_id
-                                        .clone(),
-                                )
-                                .or_insert(0) += 1;
-                        }
+            // Subagent transcripts share their parent's sessionId; counting
+            // them would double-count the session against its main file.
+            if matches!(parsed_file.source_kind, SourceKind::MainSession) {
+                for entry in &parsed_file.entries {
+                    if matches!(
+                        entry.message_type,
+                        MessageType::User | MessageType::Assistant
+                    ) {
+                        *conversation_counts
+                            .entry(
+                                entry
+                                    .session_id
+                                    .clone(),
+                            )
+                            .or_insert(0) += 1;
                     }
                 }
-
-                indexer.index_conversations(parsed_file.entries, &path_str)?;
-                info!("  Indexed {} entries", entry_count);
             }
+
+            indexer.index_conversations(parsed_file.entries, &path_str)?;
+            debug!("  Indexed {} entries", entry_count);
 
             self.metadata
                 .indexed_files
@@ -249,10 +308,6 @@ impl CacheManager {
                     },
                 );
             files_processed += 1;
-        }
-
-        if files_processed > 0 {
-            indexer.commit()?;
         }
 
         Ok((files_processed, total_entries))
@@ -749,6 +804,116 @@ mod tests {
             Some(&4),
             "a subagent file contributes no counts yet must not block the fold"
         );
+    }
+
+    fn session_doc_count(index_dir: &Path, session: &str) -> usize {
+        SearchEngine::new(index_dir, HashMap::new())
+            .unwrap()
+            .get_session_messages(session)
+            .unwrap()
+            .len()
+    }
+
+    #[test]
+    fn deleted_transcript_is_purged_from_index_and_metadata() {
+        let temp = TempDir::new().unwrap();
+        let index_dir = temp
+            .path()
+            .join("idx");
+        let kept = temp
+            .path()
+            .join("kept.jsonl");
+        let gone = temp
+            .path()
+            .join("gone.jsonl");
+        write_transcript(&kept, "sess-kept", 2);
+        write_transcript(&gone, "sess-gone", 3);
+
+        let mut indexer = SearchIndexer::new(&index_dir).unwrap();
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        cache
+            .update_full(&mut indexer, vec![kept.clone(), gone.clone()])
+            .unwrap();
+        assert_eq!(session_doc_count(&index_dir, "sess-gone"), 3);
+
+        fs::remove_file(&gone).unwrap();
+        // Discovery no longer lists it; the full pass must still find it gone.
+        cache
+            .update_full(&mut indexer, vec![kept.clone()])
+            .unwrap();
+        drop(indexer);
+
+        assert_eq!(session_doc_count(&index_dir, "sess-gone"), 0);
+        assert_eq!(session_doc_count(&index_dir, "sess-kept"), 2);
+        let reloaded = CacheManager::new(&index_dir).unwrap();
+        assert!(
+            !reloaded
+                .metadata
+                .indexed_files
+                .contains_key(&gone)
+        );
+        assert_eq!(
+            reloaded
+                .get_session_counts()
+                .get("sess-gone"),
+            None
+        );
+    }
+
+    #[test]
+    fn transcript_emptied_to_zero_entries_loses_its_docs() {
+        let temp = TempDir::new().unwrap();
+        let index_dir = temp
+            .path()
+            .join("idx");
+        let transcript = temp
+            .path()
+            .join("t.jsonl");
+        write_transcript(&transcript, "sess-a", 3);
+
+        let mut indexer = SearchIndexer::new(&index_dir).unwrap();
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+        assert_eq!(session_doc_count(&index_dir, "sess-a"), 3);
+
+        fs::write(&transcript, "").unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![transcript.clone()])
+            .unwrap();
+        drop(indexer);
+
+        assert_eq!(session_doc_count(&index_dir, "sess-a"), 0);
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            0
+        );
+    }
+
+    #[test]
+    fn file_vanishing_after_discovery_does_not_abort_the_pass() {
+        let temp = TempDir::new().unwrap();
+        let index_dir = temp
+            .path()
+            .join("idx");
+        let present = temp
+            .path()
+            .join("present.jsonl");
+        write_transcript(&present, "sess-p", 1);
+        let never_seen = temp
+            .path()
+            .join("vanished.jsonl");
+
+        let mut indexer = SearchIndexer::new(&index_dir).unwrap();
+        let mut cache = CacheManager::new(&index_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![never_seen, present])
+            .unwrap();
+        drop(indexer);
+        assert_eq!(session_doc_count(&index_dir, "sess-p"), 1);
     }
 
     #[test]
