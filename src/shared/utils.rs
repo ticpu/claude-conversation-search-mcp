@@ -1,6 +1,6 @@
 use super::cache::{CacheManager, IndexProgress};
 use super::config::get_config;
-use super::indexer::SearchIndexer;
+use super::indexer::{SearchIndexer, WriterThreads};
 use super::lock::{ExclusiveIndexAccess, clear_index_dir, is_index_busy};
 use super::path_utils::discover_jsonl_files;
 use anyhow::Result;
@@ -124,27 +124,30 @@ pub fn finish_writer(indexer: SearchIndexer, merges: Merges) -> Result<()> {
 /// recreating it when its schema is outdated or unreadable. The caller must
 /// hold index.lock. The metadata is loaded after any wipe, which deleted it,
 /// so a recreated index is fully reindexed instead of skipped as unchanged.
-pub fn open_or_create_indexer(index_path: &Path) -> Result<(SearchIndexer, CacheManager)> {
+pub fn open_or_create_indexer(
+    index_path: &Path,
+    threads: WriterThreads,
+) -> Result<(SearchIndexer, CacheManager)> {
     let indexer = if index_path
         .join("meta.json")
         .exists()
     {
         match SearchIndexer::validate_schema(index_path) {
-            Ok(true) => SearchIndexer::open(index_path)?,
+            Ok(true) => SearchIndexer::open_with(index_path, threads)?,
             Ok(false) => {
                 info!("Index schema mismatch detected. Rebuilding index...");
                 clear_index_dir(index_path)?;
-                SearchIndexer::new(index_path)?
+                SearchIndexer::create_with(index_path, threads)?
             }
             Err(e) => {
                 warn!("Failed to validate index: {e:#}. Rebuilding...");
                 clear_index_dir(index_path)?;
-                SearchIndexer::new(index_path)?
+                SearchIndexer::create_with(index_path, threads)?
             }
         }
     } else {
         info!("No index found, creating new one...");
-        SearchIndexer::new(index_path)?
+        SearchIndexer::create_with(index_path, threads)?
     };
     let cache = CacheManager::new(index_path)?;
     Ok((indexer, cache))
@@ -176,7 +179,8 @@ pub fn auto_index(
         }
     };
 
-    let (mut indexer, mut cache_manager) = open_or_create_indexer(index_path)?;
+    let (mut indexer, mut cache_manager) =
+        open_or_create_indexer(index_path, WriterThreads::PerCore)?;
     let all_files = discover_jsonl_files()?;
     cache_manager.update_full(&mut indexer, all_files, on_progress)?;
     finish_writer(indexer, merges)

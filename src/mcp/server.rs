@@ -284,7 +284,8 @@ mod tests {
     }
 
     fn build_index(index: &Path, files: Vec<PathBuf>) -> Result<()> {
-        let (mut indexer, mut cache) = shared::open_or_create_indexer(index)?;
+        let (mut indexer, mut cache) =
+            shared::open_or_create_indexer(index, shared::WriterThreads::PerCore)?;
         cache.update_incremental(&mut indexer, files)?;
         Ok(())
     }

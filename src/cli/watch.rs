@@ -50,13 +50,17 @@ use tantivy::merge_policy::LogMergePolicy;
 use tracing::debug;
 
 use crate::shared::{
-    CacheManager, ExclusiveIndexAccess, IndexerLock, SearchIndexer, discover_jsonl_files_under,
-    get_config, is_index_busy, open_or_create_indexer,
+    CacheManager, ExclusiveIndexAccess, IndexerLock, SearchIndexer, WriterThreads,
+    discover_jsonl_files_under, get_config, is_index_busy, open_or_create_indexer,
 };
 
 /// Deleted documents a segment may carry before a merge rewrites it. Watched
 /// transcripts are rewritten whole on every append, so deletes pile up fast.
 const DEL_DOCS_RATIO_BEFORE_MERGE: f32 = 0.3;
+
+/// Indexing threads of the service's writer. A flush carries a few changed
+/// files, and each thread holding documents at commit writes its own segment.
+const INDEXING_THREADS: usize = 2;
 
 /// Backoff between attempts to take the locks at startup, about 5 s in total.
 const LOCK_RETRY_DELAYS_MS: [u64; 6] = [100, 200, 400, 800, 1600, 2000];
@@ -190,7 +194,8 @@ impl IndexWatch {
         let indexer_lock = acquire_with_retry(|| IndexerLock::try_acquire(index_path))?;
         let exe = RunningExe::current()?;
 
-        let (indexer, cache) = open_or_create_indexer(index_path)?;
+        let (indexer, cache) =
+            open_or_create_indexer(index_path, WriterThreads::Fixed(INDEXING_THREADS))?;
         let mut policy = LogMergePolicy::default();
         policy.set_del_docs_ratio_before_merge(DEL_DOCS_RATIO_BEFORE_MERGE);
         indexer.set_merge_policy(Box::new(policy));
@@ -456,6 +461,39 @@ mod tests {
         step_until(&mut env.watch, &transcript, Some(2));
         std::fs::remove_file(&transcript).unwrap();
         step_until(&mut env.watch, &transcript, None);
+    }
+
+    #[test]
+    fn one_flush_writes_at_most_one_segment_per_indexing_thread() {
+        let mut env = env();
+        env.watch
+            .indexer
+            .set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+        let before = env
+            .watch
+            .indexer
+            .searchable_segments()
+            .unwrap();
+        let transcript = env
+            .projects
+            .join("s.jsonl");
+        let lines: String = (0..2000)
+            .map(|i| {
+                format!(
+                    r#"{{"uuid":"u-{i}","sessionId":"sess","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{{"role":"user","content":"line {i}"}}}}"#
+                ) + "\n"
+            })
+            .collect();
+        std::fs::write(&transcript, lines).unwrap();
+        step_until(&mut env.watch, &transcript, Some(2000));
+
+        let written = env
+            .watch
+            .indexer
+            .searchable_segments()
+            .unwrap()
+            - before;
+        assert!(written <= INDEXING_THREADS, "{written} segments");
     }
 
     #[test]

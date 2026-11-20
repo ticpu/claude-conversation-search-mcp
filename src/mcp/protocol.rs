@@ -368,7 +368,9 @@ mod tests {
     /// An index under `dir` holding the given transcripts, its writer closed.
     fn index_with(dir: &std::path::Path, files: Vec<std::path::PathBuf>) -> std::path::PathBuf {
         let index = dir.join("idx");
-        let (mut indexer, mut cache) = crate::shared::open_or_create_indexer(&index).unwrap();
+        let (mut indexer, mut cache) =
+            crate::shared::open_or_create_indexer(&index, crate::shared::WriterThreads::PerCore)
+                .unwrap();
         cache
             .update_incremental(&mut indexer, files)
             .unwrap();

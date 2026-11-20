@@ -55,6 +55,24 @@ impl IndexFields {
     }
 }
 
+/// Indexing threads of a writer; all of them share the configured heap.
+#[derive(Debug, Clone, Copy)]
+pub enum WriterThreads {
+    /// Tantivy's default: one per core up to its cap, fewer if the heap is small.
+    PerCore,
+    Fixed(usize),
+}
+
+impl WriterThreads {
+    fn writer(self, index: &Index) -> Result<IndexWriter> {
+        let heap = get_config().get_writer_heap_size();
+        Ok(match self {
+            Self::PerCore => index.writer(heap)?,
+            Self::Fixed(threads) => index.writer_with_num_threads(threads, heap)?,
+        })
+    }
+}
+
 pub struct SearchIndexer {
     writer: IndexWriter,
     fields: IndexFields,
@@ -147,22 +165,29 @@ impl SearchIndexer {
     }
 
     pub fn new(index_path: &Path) -> Result<Self> {
+        Self::create_with(index_path, WriterThreads::PerCore)
+    }
+
+    pub fn open(index_path: &Path) -> Result<Self> {
+        Self::open_with(index_path, WriterThreads::PerCore)
+    }
+
+    /// Create a fresh index at `index_path` with a writer of `threads`.
+    pub fn create_with(index_path: &Path, threads: WriterThreads) -> Result<Self> {
         let (schema, fields) = Self::build_schema();
 
         std::fs::create_dir_all(index_path)?;
         let index = Index::create_in_dir(index_path, schema)?;
-        let config = get_config();
-        let writer = index.writer(config.get_writer_heap_size())?;
+        let writer = threads.writer(&index)?;
 
         Ok(Self { writer, fields })
     }
 
-    pub fn open(index_path: &Path) -> Result<Self> {
+    /// Open the index at `index_path` with a writer of `threads`.
+    pub fn open_with(index_path: &Path, threads: WriterThreads) -> Result<Self> {
         let index = Index::open_in_dir(index_path)?;
         let fields = IndexFields::from_schema(&index.schema())?;
-
-        let config = get_config();
-        let writer = index.writer(config.get_writer_heap_size())?;
+        let writer = threads.writer(&index)?;
 
         Ok(Self { writer, fields })
     }
