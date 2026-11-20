@@ -10,7 +10,8 @@ use super::protocol::{tool_err, tool_ok};
 use super::server::McpServer;
 use crate::shared::parsers::SourceKind;
 use crate::shared::path_utils::{
-    ActiveSession, active_session, discover_jsonl_files, projects_dir, session_of_transcript,
+    ActiveSession, active_session, discover_jsonl_files, projects_dir, resolve_session_filter,
+    session_of_transcript,
 };
 use crate::shared::session_view::{self, SessionViewOpts, Window};
 use crate::shared::{self, CacheManager, DisplayOptions, SearchQuery, SortOrder, get_config};
@@ -360,7 +361,9 @@ impl McpServer {
                 .clone(),
             session_filter: search_args
                 .session_filter
-                .clone(),
+                .as_deref()
+                .map(resolve_session_filter)
+                .transpose()?,
             limit: search_args.limit,
             sort_by: search_args
                 .sort_by
@@ -474,7 +477,10 @@ impl McpServer {
             Err(text) => return tool_err(text),
         };
         let search_engine = &loaded.engine;
-        let mut messages = search_engine.get_session_messages(session_id)?;
+        let Some(full_id) = session_view::resolve_session_id(search_engine, session_id)? else {
+            return tool_err(format!("No session found for {session_id}"));
+        };
+        let mut messages = search_engine.get_session_messages(&full_id)?;
         messages
             .retain(|m| SourceKind::classify(Path::new(&m.source_file)) == SourceKind::MainSession);
         let msg_count = messages.len();

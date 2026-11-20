@@ -33,7 +33,7 @@ mod query;
 pub use filter::{ResultFilter, compile_exclude_patterns};
 
 use super::format::{DisplayOptions, SearchResultWithContext, self_context_result};
-use super::models::{SearchQuery, SearchResult, SortOrder};
+use super::models::{SearchQuery, SearchResult, SessionFilter, SortOrder};
 use super::parsers::SourceKind;
 use super::path_utils::main_transcript_of;
 use anyhow::{Context, Result, bail};
@@ -43,7 +43,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
-use tantivy::query::{BooleanQuery, Occur, Query, RangeQuery, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, RangeQuery, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, IndexReader, Order, ReloadPolicy, Searcher, Term};
 
@@ -54,7 +54,7 @@ fn hyphenated_term_query(field: Field, value: &str) -> BooleanQuery {
     let segment_queries: Vec<_> = value
         .split('-')
         .map(|seg| {
-            let term = Term::from_field_text(field, seg);
+            let term = Term::from_field_text(field, &seg.to_lowercase());
             (
                 Occur::Must,
                 Box::new(TermQuery::new(term, IndexRecordOption::Basic))
@@ -63,6 +63,41 @@ fn hyphenated_term_query(field: Field, value: &str) -> BooleanQuery {
         })
         .collect();
     BooleanQuery::new(segment_queries)
+}
+
+/// Superset prefilter for a case-insensitive prefix of a hyphenated id: every
+/// complete token must match and the last, possibly partial, one is a term
+/// prefix. The caller compares the stored value with `starts_with_ignore_case`.
+fn prefix_query(field: Field, prefix: &str) -> Result<BooleanQuery> {
+    let lower = prefix.to_lowercase();
+    let mut tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .collect();
+    let last = tokens
+        .pop()
+        .unwrap_or_default();
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = tokens
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            let term = Term::from_field_text(field, t);
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic)) as Box<dyn Query>,
+            )
+        })
+        .collect();
+    let pattern = format!("{last}.*");
+    let last_query = RegexQuery::from_pattern(&pattern, field)
+        .with_context(|| format!("building the prefix query for {prefix:?}"))?;
+    clauses.push((Occur::Must, Box::new(last_query)));
+    Ok(BooleanQuery::new(clauses))
+}
+
+fn starts_with_ignore_case(value: &str, prefix: &str) -> bool {
+    value
+        .to_lowercase()
+        .starts_with(&prefix.to_lowercase())
 }
 
 /// Sort key putting main transcripts before subagent ones, then each file's
@@ -239,12 +274,23 @@ impl SearchEngine {
         }
 
         if let Some(ref session_filter) = query.session_filter {
-            let session_query = hyphenated_term_query(
-                self.fields
-                    .session_field,
-                session_filter,
-            );
-            final_query_parts.push((Occur::Must, Box::new(session_query)));
+            let field = self
+                .fields
+                .session_field;
+            let session_query: Box<dyn Query> = match session_filter {
+                SessionFilter::Ids(ids) => Box::new(BooleanQuery::new(
+                    ids.iter()
+                        .map(|id| {
+                            (
+                                Occur::Should,
+                                Box::new(hyphenated_term_query(field, id)) as Box<dyn Query>,
+                            )
+                        })
+                        .collect(),
+                )),
+                SessionFilter::Prefix(prefix) => Box::new(prefix_query(field, prefix)?),
+            };
+            final_query_parts.push((Occur::Must, session_query));
         }
 
         // Push date bounds into the query so BM25 scoring operates only over the
@@ -318,11 +364,14 @@ impl SearchEngine {
     /// Session and project post-filters: precision checks that Tantivy's segment-based
     /// queries cannot express (prefix matching, full name equality).
     fn passes_post_filters(&self, result: &SearchResult, query: &SearchQuery) -> bool {
-        if let Some(ref session_filter) = query.session_filter
-            && !result
-                .session_id
-                .starts_with(session_filter.as_str())
-        {
+        let session_kept = match &query.session_filter {
+            None => true,
+            Some(SessionFilter::Ids(ids)) => ids.contains(&result.session_id),
+            Some(SessionFilter::Prefix(prefix)) => {
+                starts_with_ignore_case(&result.session_id, prefix)
+            }
+        };
+        if !session_kept {
             return false;
         }
         if let Some(ref project_filter) = query.project_filter
@@ -461,15 +510,35 @@ impl SearchEngine {
             session_id,
         );
         let mut results = self.collect_docs(&searcher, &query)?;
-        results.retain(|r| {
-            r.session_id
-                .starts_with(session_id)
-        });
+        results.retain(|r| r.session_id == session_id);
         results.sort_by(|a, b| transcript_order(a).cmp(&transcript_order(b)));
         Ok(results)
     }
 
-    /// Get specific messages by their UUIDs
+    /// Distinct indexed session ids starting with `prefix`, ignoring case,
+    /// for sessions whose transcript is gone.
+    pub fn session_ids_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        let searcher = self
+            .reader
+            .searcher();
+        let query = prefix_query(
+            self.fields
+                .session_field,
+            prefix,
+        )?;
+        let mut ids: Vec<String> = self
+            .collect_docs(&searcher, &query)?
+            .into_iter()
+            .map(|r| r.session_id)
+            .filter(|id| starts_with_ignore_case(id, prefix))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// One message per uuid prefix, ignoring case; the exact uuid wins over
+    /// a longer one sharing the prefix.
     pub fn get_messages_by_uuid(&self, uuids: &[String]) -> Result<Vec<SearchResult>> {
         let searcher = self
             .reader
@@ -477,26 +546,26 @@ impl SearchEngine {
         let mut results = Vec::new();
 
         for uuid in uuids {
-            let query = hyphenated_term_query(
+            let query = prefix_query(
                 self.fields
                     .uuid_field,
                 uuid,
+            )?;
+            let mut matches: Vec<SearchResult> = searcher
+                .search(&query, &TopDocs::with_limit(10).order_by_score())?
+                .into_iter()
+                .map(|(_, addr)| self.doc_to_result(&searcher.doc(addr)?))
+                .collect::<Result<_>>()?;
+            matches.retain(|m| starts_with_ignore_case(&m.uuid, uuid));
+            matches.sort_by_key(|m| {
+                !m.uuid
+                    .eq_ignore_ascii_case(uuid)
+            });
+            results.extend(
+                matches
+                    .into_iter()
+                    .next(),
             );
-
-            let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
-
-            for (_, doc_address) in top_docs {
-                let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
-                // Exact match or prefix match
-                if result.uuid == *uuid
-                    || result
-                        .uuid
-                        .starts_with(uuid)
-                {
-                    results.push(result);
-                    break;
-                }
-            }
         }
 
         Ok(results)

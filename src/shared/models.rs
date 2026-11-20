@@ -202,11 +202,20 @@ pub enum SortOrder {
     DateAsc,
 }
 
+/// A session filter after its prefix was resolved against transcript names.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionFilter {
+    /// Full session ids; a hit must carry one of them.
+    Ids(Vec<String>),
+    /// No transcript name matched: a case-insensitive prefix of the stored id.
+    Prefix(String),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     pub text: String,
     pub project_filter: Option<String>,
-    pub session_filter: Option<String>,
+    pub session_filter: Option<SessionFilter>,
     pub limit: usize,
     pub sort_by: SortOrder,
     pub after: Option<DateTime<Utc>>,

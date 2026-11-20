@@ -12,7 +12,8 @@
 use super::format::{DisplayOptions, filter_content};
 use super::models::{ConversationEntry, MessageType, SearchResult};
 use super::parsers::JsonlParser;
-use super::path_utils::{find_session_jsonl, home_to_tilde};
+use super::path_utils::{find_session_jsonl, home_to_tilde, session_of_transcript};
+use super::search::SearchEngine;
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
 use anyhow::{Context, Result, bail};
@@ -85,9 +86,12 @@ pub fn load_session(
     }
 
     let (_cache, engine) = super::search::open_search_engine(index_path)?;
+    let Some(full_id) = resolve_in_index(&engine, session_id)? else {
+        return Ok((Vec::new(), SessionSource::Index));
+    };
     let results = engine
-        .get_session_messages(session_id)
-        .with_context(|| format!("reading session {session_id} from the index"))?;
+        .get_session_messages(&full_id)
+        .with_context(|| format!("reading session {full_id} from the index"))?;
 
     Ok((
         results
@@ -96,6 +100,30 @@ pub fn load_session(
             .collect(),
         SessionSource::Index,
     ))
+}
+
+/// The one indexed session id starting with `prefix`, for a session whose
+/// transcript is gone; more than one is an error naming them.
+pub fn resolve_in_index(engine: &SearchEngine, prefix: &str) -> Result<Option<String>> {
+    let mut ids = engine
+        .session_ids_with_prefix(prefix)
+        .with_context(|| format!("looking up session {prefix} in the index"))?;
+    match ids.len() {
+        0 | 1 => Ok(ids.pop()),
+        n => bail!(
+            "session id '{prefix}' matches {n} indexed sessions: {}",
+            ids.join(", ")
+        ),
+    }
+}
+
+/// The full id of the session `prefix` names: its transcript's, else the
+/// index's for a session whose transcript is gone.
+pub fn resolve_session_id(engine: &SearchEngine, prefix: &str) -> Result<Option<String>> {
+    match find_session_jsonl(prefix)? {
+        Some(path) => Ok(session_of_transcript(&path)),
+        None => resolve_in_index(engine, prefix),
+    }
 }
 
 /// Displayable messages in the order `load_session` returned them, the only
@@ -116,7 +144,8 @@ pub fn select_window(entries: &[ConversationEntry], w: &Window) -> (Range<usize>
             .iter()
             .position(|e| {
                 e.uuid
-                    .starts_with(uuid.as_str())
+                    .to_lowercase()
+                    .starts_with(&uuid.to_lowercase())
             })
     {
         let start = idx.saturating_sub(w.before);

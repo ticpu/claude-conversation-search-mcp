@@ -453,7 +453,9 @@ mod tests {
             .search(crate::shared::SearchQuery {
                 text: "hello".to_string(),
                 project_filter: None,
-                session_filter: Some("sess-b".to_string()),
+                session_filter: Some(crate::shared::SessionFilter::Ids(vec![
+                    "sess-b".to_string(),
+                ])),
                 limit: 10,
                 sort_by: crate::shared::SortOrder::Relevance,
                 after: None,

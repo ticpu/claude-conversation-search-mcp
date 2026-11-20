@@ -17,6 +17,7 @@
 //! debug line can name it.
 
 use super::config::get_config;
+use super::models::SessionFilter;
 use super::parsers::SourceKind;
 use anyhow::{Result, bail};
 use glob::glob;
@@ -177,28 +178,56 @@ fn first_report_of(path: &Path) -> bool {
         .unwrap_or(true)
 }
 
-/// Find a session's JSONL file by session ID (prefix match).
-/// Searches all project directories for a file named `<session_id>.jsonl`.
-pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
-    let root = projects_dir()?;
-    let pattern = root.join("**/*.jsonl");
-    let mut tally = SkipTally::new(&root);
+/// Main transcripts under `projects` whose session id starts with `prefix`,
+/// ignoring case; only the exact match when there is one.
+fn main_transcripts_matching(projects: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
+    let prefix = prefix.to_lowercase();
+    let pattern = projects.join("*/*.jsonl");
+    let mut tally = SkipTally::new(projects);
     let mut prefix_matches: Vec<PathBuf> = Vec::new();
     for path in glob(&pattern.to_string_lossy())?.filter_map(|e| tally.keep_readable(e)) {
         let Some(stem) = path
             .file_stem()
             .and_then(|s| s.to_str())
+            .map(str::to_lowercase)
         else {
             continue;
         };
-        if stem == session_id {
-            return Ok(Some(path));
+        if stem == prefix {
+            return Ok(vec![path]);
         }
-        if stem.starts_with(session_id) {
+        if stem.starts_with(&prefix) {
             prefix_matches.push(path);
         }
     }
+    Ok(prefix_matches)
+}
 
+/// Full session ids whose transcript name starts with `prefix`, ignoring
+/// case; only the exact one when it exists.
+pub fn session_ids_with_prefix_in(projects: &Path, prefix: &str) -> Result<Vec<String>> {
+    let mut ids: Vec<String> = main_transcripts_matching(projects, prefix)?
+        .iter()
+        .filter_map(|p| session_of_transcript(p))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Resolve a user-supplied session prefix for filtering search results.
+pub fn resolve_session_filter(prefix: &str) -> Result<SessionFilter> {
+    let ids = session_ids_with_prefix_in(&projects_dir()?, prefix)?;
+    Ok(if ids.is_empty() {
+        SessionFilter::Prefix(prefix.to_string())
+    } else {
+        SessionFilter::Ids(ids)
+    })
+}
+
+/// Find a session's main transcript by session id prefix, ignoring case.
+pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
+    let mut prefix_matches = main_transcripts_matching(&projects_dir()?, session_id)?;
     match prefix_matches.len() {
         0 => Ok(None),
         1 => Ok(prefix_matches.pop()),
@@ -558,6 +587,19 @@ mod tests {
                 source: ActiveSessionSource::GlobalNewest,
             })
         );
+    }
+
+    #[test]
+    fn session_prefix_resolves_against_main_transcripts_ignoring_case() {
+        let l = layout();
+        let longer = format!("{HERE}-extra");
+        fs::write(l.files[0].with_file_name(format!("{longer}.jsonl")), b"").unwrap();
+        let ids = |prefix: &str| session_ids_with_prefix_in(&l.projects, prefix).unwrap();
+
+        assert_eq!(ids("1111"), [HERE.to_string(), longer.clone()]);
+        assert_eq!(ids("11111111-AAAA-b"), [HERE.to_string(), longer]);
+        assert_eq!(ids(&HERE.to_uppercase()), [HERE], "the exact id wins");
+        assert!(ids("agent").is_empty(), "subagent stems are not sessions");
     }
 
     #[test]

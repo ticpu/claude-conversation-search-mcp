@@ -78,8 +78,12 @@ fn test_get_session_messages_with_short_id() {
     let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
 
     // Test with short ID (first 8 chars)
+    let ids = engine
+        .session_ids_with_prefix("12345678")
+        .unwrap();
+    assert_eq!(ids, [session_id]);
     let messages = engine
-        .get_session_messages("12345678")
+        .get_session_messages(&ids[0])
         .unwrap();
     assert_eq!(
         messages.len(),
@@ -201,7 +205,7 @@ fn test_session_filter_with_full_uuid() {
         .search(SearchQuery {
             text: "hello".to_string(),
             limit: 10,
-            session_filter: Some(session_a.to_string()),
+            session_filter: Some(SessionFilter::Ids(vec![session_a.to_string()])),
             ..Default::default()
         })
         .unwrap();
@@ -214,7 +218,7 @@ fn test_session_filter_with_full_uuid() {
         .search(SearchQuery {
             text: "hello".to_string(),
             limit: 10,
-            session_filter: Some("aaaaaaaa".to_string()),
+            session_filter: Some(SessionFilter::Prefix("aaaaaaaa".to_string())),
             ..Default::default()
         })
         .unwrap();
@@ -225,6 +229,63 @@ fn test_session_filter_with_full_uuid() {
         "Should find 1 result with short session prefix"
     );
     assert_eq!(results[0].uuid, "uuid-1");
+
+    // A prefix ending mid-segment, in another case
+    for prefix in ["AAAA", "aaaaaaaa-11"] {
+        let results = engine
+            .search(SearchQuery {
+                text: "hello".to_string(),
+                limit: 10,
+                session_filter: Some(SessionFilter::Prefix(prefix.to_string())),
+                ..Default::default()
+            })
+            .unwrap();
+        let uuids: Vec<&str> = results
+            .iter()
+            .map(|r| {
+                r.uuid
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(uuids, ["uuid-1"], "{prefix}");
+    }
+}
+
+#[test]
+fn uuid_lookup_matches_any_prefix_ignoring_case() {
+    let tmp = TempDir::new().unwrap();
+    let full = "c3d4e5f6-1234-4abc-8def-0123456789ab";
+    let longer = "c3d4e5f6-1234-4abc-8def-0123456789abcd";
+    index_entries(
+        tmp.path(),
+        vec![
+            EntryBuilder::new(longer, "s1")
+                .content("longer")
+                .build(),
+            EntryBuilder::new(full, "s2")
+                .content("exact")
+                .build(),
+        ],
+    );
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+
+    for prefix in ["C3D4", "c3d4e5f6-12", &full.to_uppercase()] {
+        let found = engine
+            .get_messages_by_uuid(&[prefix.to_string()])
+            .unwrap();
+        assert_eq!(found.len(), 1, "{prefix}");
+        assert!(starts_with_ignore_case(&found[0].uuid, prefix), "{prefix}");
+    }
+    let exact = engine
+        .get_messages_by_uuid(&[full.to_string()])
+        .unwrap();
+    assert_eq!(exact[0].uuid, full, "the exact uuid wins");
+    assert!(
+        engine
+            .get_messages_by_uuid(&["ffff".to_string()])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -265,24 +326,32 @@ fn test_get_session_messages_by_prefix() {
         .unwrap();
     assert_eq!(messages.len(), 3);
 
-    // Short prefix
+    // A prefix is not an id
     let messages = engine
         .get_session_messages("aabbccdd")
         .unwrap();
-    assert_eq!(
-        messages.len(),
-        3,
-        "Should find all messages with short prefix"
-    );
+    assert!(messages.is_empty());
 
-    // Non-matching prefix
-    let messages = engine
-        .get_session_messages("xxxxxxxx")
-        .unwrap();
-    assert_eq!(
-        messages.len(),
-        0,
-        "Should find no messages for wrong prefix"
+    // Prefixes resolve to full ids, across hyphen boundaries and case
+    for prefix in [
+        "aabbccdd",
+        "AABBCC",
+        "aabbccdd-11",
+        "aabbccdd-1122-3344-5566-778899001122",
+    ] {
+        assert_eq!(
+            engine
+                .session_ids_with_prefix(prefix)
+                .unwrap(),
+            [session_id],
+            "{prefix}"
+        );
+    }
+    assert!(
+        engine
+            .session_ids_with_prefix("xxxxxxxx")
+            .unwrap()
+            .is_empty()
     );
 }
 

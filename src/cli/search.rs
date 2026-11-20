@@ -46,7 +46,11 @@ pub(crate) fn search_conversations(index_path: &Path, opts: SearchOpts) -> Resul
     let query = SearchQuery {
         text: opts.query,
         project_filter: opts.project,
-        session_filter: opts.session,
+        session_filter: opts
+            .session
+            .as_deref()
+            .map(shared::resolve_session_filter)
+            .transpose()?,
         limit: opts.limit,
         sort_by: opts.sort,
         after: opts.after,
