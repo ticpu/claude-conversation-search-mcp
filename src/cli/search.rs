@@ -47,24 +47,24 @@ pub(crate) fn search_conversations(index_path: &Path, opts: SearchOpts) -> Resul
         text: opts.query,
         project_filter: opts.project,
         session_filter: opts.session,
-        limit: opts.limit * 3,
+        limit: opts.limit,
         sort_by: opts.sort,
         after: opts.after,
         before: opts.before,
     };
 
-    let results =
-        search_engine.search_with_context(query, opts.context_before, opts.context_after)?;
-
-    let filtered = shared::apply_search_filters(
-        results,
+    let found = search_engine.search_filtered(
+        &query,
         &shared::ResultFilter {
             exclude_projects: opts.exclude_projects,
             exclude_regexes,
             active_session: None,
-            limit: opts.limit,
         },
-    );
+        &opts.display,
+        opts.context_before,
+        opts.context_after,
+    )?;
+    let filtered = found.results;
 
     if filtered.is_empty() {
         println!("No results found.");
@@ -86,6 +86,9 @@ pub(crate) fn search_conversations(index_path: &Path, opts: SearchOpts) -> Resul
         if i < filtered.len() - 1 {
             println!();
         }
+    }
+    if found.more {
+        println!("\n+more: raise --limit above {}", opts.limit);
     }
 
     Ok(())

@@ -231,7 +231,7 @@ fn render_search_response(
     all_exclude_patterns: &[String],
     health: &shared::FileHealthCounts,
     active: Option<&ActiveSession>,
-    filtered: &[shared::SearchResultWithContext],
+    found: &shared::FilteredResults,
     display_opts: &DisplayOptions,
 ) -> String {
     let mut output = String::new();
@@ -274,6 +274,7 @@ fn render_search_response(
         ));
     }
 
+    let filtered = &found.results;
     if filtered.is_empty() {
         output.push_str("No results found.\n");
     } else {
@@ -286,7 +287,7 @@ fn render_search_response(
                 output.push('\n');
             }
         }
-        if filtered.len() == search_args.limit {
+        if found.more {
             output.push_str(&format!("\n+more: limit={}\n", search_args.limit));
         }
     }
@@ -355,7 +356,7 @@ impl McpServer {
             session_filter: search_args
                 .session_filter
                 .clone(),
-            limit: search_args.limit * 3,
+            limit: search_args.limit,
             sort_by: search_args
                 .sort_by
                 .clone(),
@@ -367,24 +368,21 @@ impl McpServer {
             Ok(loaded) => loaded,
             Err(text) => return tool_err(text),
         };
-        let search_engine = &loaded.engine;
-        let results_with_context = search_engine.search_with_context(
-            query,
-            search_args.context_before,
-            search_args.context_after,
-        )?;
-
-        let filtered = shared::apply_search_filters(
-            results_with_context,
-            &shared::ResultFilter {
-                exclude_projects: search_args
-                    .exclude_projects
-                    .clone(),
-                exclude_regexes,
-                active_session: current_session_id.clone(),
-                limit: search_args.limit,
-            },
-        );
+        let found = loaded
+            .engine
+            .search_filtered(
+                &query,
+                &shared::ResultFilter {
+                    exclude_projects: search_args
+                        .exclude_projects
+                        .clone(),
+                    exclude_regexes,
+                    active_session: current_session_id,
+                },
+                &display_opts,
+                search_args.context_before,
+                search_args.context_after,
+            )?;
 
         tool_ok(render_search_response(
             &args,
@@ -394,7 +392,7 @@ impl McpServer {
             probe
                 .active
                 .as_ref(),
-            &filtered,
+            &found,
             &display_opts,
         ))
     }

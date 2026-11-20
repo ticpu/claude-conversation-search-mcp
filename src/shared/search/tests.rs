@@ -693,8 +693,15 @@ fn context_stays_inside_the_hit_transcript() {
         ..Default::default()
     };
     let hits = engine
-        .search_with_context(query("needlemain"), 2, 2)
-        .unwrap();
+        .search_filtered(
+            &query("needlemain"),
+            &ResultFilter::default(),
+            &DisplayOptions::default(),
+            2,
+            2,
+        )
+        .unwrap()
+        .results;
     assert_eq!(hits.len(), 1);
     assert_eq!(
         context_uuids(&hits[0]),
@@ -710,8 +717,15 @@ fn context_stays_inside_the_hit_transcript() {
     assert_eq!(hits[0].total_session_messages, 10, "main transcript only");
 
     let hits = engine
-        .search_with_context(query("needleagent"), 2, 2)
-        .unwrap();
+        .search_filtered(
+            &query("needleagent"),
+            &ResultFilter::default(),
+            &DisplayOptions::default(),
+            2,
+            2,
+        )
+        .unwrap()
+        .results;
     assert_eq!(hits.len(), 1);
     assert_eq!(
         context_uuids(&hits[0]),
@@ -776,4 +790,207 @@ fn session_messages_are_not_capped() {
             .windows(2)
             .all(|w| w[0].sequence_num + 1 == w[1].sequence_num)
     );
+}
+
+/// Indexes `entries`, each session under its own `<session>.jsonl` source
+/// with sequence numbers in entry order.
+fn index_entries(index_path: &Path, entries: Vec<crate::shared::models::ConversationEntry>) {
+    let mut indexer = SearchIndexer::new(index_path).unwrap();
+    let mut by_session: std::collections::BTreeMap<String, Vec<_>> = Default::default();
+    for e in entries {
+        by_session
+            .entry(
+                e.session_id
+                    .clone(),
+            )
+            .or_default()
+            .push(e);
+    }
+    for (session, mut list) in by_session {
+        for (i, e) in list
+            .iter_mut()
+            .enumerate()
+        {
+            e.sequence_num = i;
+        }
+        indexer
+            .index_conversations(list, &format!("/p/{session}.jsonl"))
+            .unwrap();
+    }
+    indexer
+        .commit()
+        .unwrap();
+}
+
+fn filtered(
+    engine: &SearchEngine,
+    query: SearchQuery,
+    filter: &ResultFilter,
+) -> crate::shared::FilteredResults {
+    engine
+        .search_filtered(&query, filter, &DisplayOptions::default(), 0, 0)
+        .unwrap()
+}
+
+fn widget_query(limit: usize) -> SearchQuery {
+    SearchQuery {
+        text: "widget".to_string(),
+        limit,
+        ..Default::default()
+    }
+}
+
+fn matched_sessions(found: &crate::shared::FilteredResults) -> Vec<&str> {
+    found
+        .results
+        .iter()
+        .map(|r| {
+            r.matched_message
+                .session_id
+                .as_str()
+        })
+        .collect()
+}
+
+#[test]
+fn excluded_project_hits_do_not_starve_the_limit() {
+    let tmp = TempDir::new().unwrap();
+    let strong = "widget ".repeat(10);
+    let mut entries: Vec<_> = (0..30)
+        .map(|i| {
+            EntryBuilder::new(&format!("noisy-{i}"), &format!("noisy-session-{i}"))
+                .content(&strong)
+                .project("noisy", "/home/u/GIT/noisy")
+                .build()
+        })
+        .collect();
+    for i in 0..2 {
+        entries.push(
+            EntryBuilder::new(&format!("quiet-{i}"), &format!("quiet-session-{i}"))
+                .content("one widget among many other words here")
+                .project("quiet", "/home/u/GIT/quiet")
+                .build(),
+        );
+    }
+    index_entries(tmp.path(), entries);
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+
+    let found = filtered(
+        &engine,
+        widget_query(2),
+        &ResultFilter {
+            exclude_projects: vec!["noisy".to_string()],
+            ..Default::default()
+        },
+    );
+    let mut sessions = matched_sessions(&found);
+    sessions.sort();
+    assert_eq!(sessions, ["quiet-session-0", "quiet-session-1"]);
+    assert!(!found.more);
+}
+
+#[test]
+fn one_hit_per_session_still_fills_the_limit_and_reports_more() {
+    let tmp = TempDir::new().unwrap();
+    let strong = "widget ".repeat(10);
+    let mut entries: Vec<_> = (0..20)
+        .map(|i| {
+            EntryBuilder::new(&format!("big-{i}"), "big-session")
+                .content(&strong)
+                .build()
+        })
+        .collect();
+    for i in 0..4 {
+        entries.push(
+            EntryBuilder::new(&format!("small-{i}"), &format!("small-session-{i}"))
+                .content("one widget among many other words here")
+                .build(),
+        );
+    }
+    index_entries(tmp.path(), entries);
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+
+    let found = filtered(&engine, widget_query(3), &ResultFilter::default());
+    let sessions = matched_sessions(&found);
+    assert_eq!(sessions.len(), 3, "{sessions:?}");
+    assert_eq!(sessions[0], "big-session");
+    assert!(found.more, "two more sessions match");
+
+    let found = filtered(&engine, widget_query(5), &ResultFilter::default());
+    assert_eq!(matched_sessions(&found).len(), 5);
+    assert!(!found.more, "every matching session is shown");
+}
+
+#[test]
+fn hidden_tool_hit_is_skipped_not_rendered_empty() {
+    let tmp = TempDir::new().unwrap();
+    let entries = vec![
+        EntryBuilder::new("tool-hit", "tool-session")
+            .message_type(MessageType::Assistant)
+            .content(&format!("[Bash] {}", "widget ".repeat(10)))
+            .build(),
+        EntryBuilder::new("text-hit", "text-session")
+            .content("one widget among many other words here")
+            .build(),
+    ];
+    index_entries(tmp.path(), entries);
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+
+    let found = filtered(&engine, widget_query(1), &ResultFilter::default());
+    assert_eq!(matched_sessions(&found), ["text-session"]);
+    let rendered = found.results[0].format_compact_with_options(0, &DisplayOptions::default());
+    assert!(rendered.contains("»  User: one widget"), "{rendered}");
+
+    let with_tools = engine
+        .search_filtered(
+            &widget_query(1),
+            &ResultFilter::default(),
+            &DisplayOptions {
+                include_tools: true,
+                ..Default::default()
+            },
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(matched_sessions(&with_tools), ["tool-session"]);
+}
+
+#[test]
+fn project_filter_matches_worktrees_and_subdirectories() {
+    let tmp = TempDir::new().unwrap();
+    let entries = vec![
+        EntryBuilder::new("root", "s-root")
+            .content("widget")
+            .project("foo", "/home/u/GIT/foo")
+            .build(),
+        EntryBuilder::new("wt", "s-wt")
+            .content("widget")
+            .project("x", "/home/u/GIT/foo/worktrees/x")
+            .build(),
+        EntryBuilder::new("sub", "s-sub")
+            .content("widget")
+            .project("foo", "/home/u/GIT/foo/src/bin")
+            .build(),
+        EntryBuilder::new("near", "s-near")
+            .content("widget")
+            .project("foobar", "/home/u/GIT/foobar")
+            .build(),
+    ];
+    index_entries(tmp.path(), entries);
+    let engine = SearchEngine::new(tmp.path(), HashMap::new()).unwrap();
+
+    for filter in ["/home/u/GIT/foo", "foo"] {
+        let found = filtered(
+            &engine,
+            SearchQuery {
+                project_filter: Some(filter.to_string()),
+                ..widget_query(10)
+            },
+            &ResultFilter::default(),
+        );
+        let mut sessions = matched_sessions(&found);
+        sessions.sort();
+        assert_eq!(sessions, ["s-root", "s-sub", "s-wt"], "filter {filter}");
+    }
 }

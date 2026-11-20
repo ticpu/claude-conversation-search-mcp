@@ -13,12 +13,7 @@
 //! hits survive or the matches run out. The extra survivor is what `more`
 //! reports. Date bounds stay inside the tantivy query, where BM25 only sees
 //! the window. A limit of 0 is an error, never handed to TopDocs, which
-//! asserts on it.
-//!
-//! Project filter. A hit matches when its cwd contains the filter's path
-//! components contiguously, and an absolute filter must be a prefix of it, so
-//! a subdirectory or `worktrees/<x>` of the project matches. The tantivy
-//! clause on the cwd field is a superset prefilter; `project_matches` decides.
+//! asserts on it. The filters themselves live in `filter`.
 //!
 //! Context window. sequence_num restarts at 0 in every JSONL file, and
 //! subagent and resumed transcripts carry their parent's sessionId, so a
@@ -38,49 +33,23 @@
 //! no cap.
 
 mod doc;
+mod filter;
 
-use super::format::{SearchResultWithContext, self_context_result};
+pub use filter::{ResultFilter, compile_exclude_patterns};
+
+use super::format::{DisplayOptions, SearchResultWithContext, self_context_result};
 use super::models::{SearchQuery, SearchResult, SortOrder};
 use super::parsers::SourceKind;
 use super::path_utils::main_transcript_of;
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use filter::{project_matches, project_query};
+use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, IndexReader, Order, ReloadPolicy, Searcher, Term};
-
-/// Extract project name from a path and split into TEXT-tokenizer segments.
-/// Tantivy's default TEXT tokenizer splits on non-alphanumeric characters,
-/// so "/path/to/my-project_name" → ["my", "project", "name"].
-fn project_filter_segments(filter: &str) -> Vec<&str> {
-    let path = Path::new(filter);
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(filter);
-    name.split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-fn build_project_query(project_field: Field, filter: &str) -> Box<dyn tantivy::query::Query> {
-    let segments = project_filter_segments(filter);
-    let segment_queries: Vec<_> = segments
-        .iter()
-        .map(|seg| {
-            let term = Term::from_field_text(project_field, &seg.to_lowercase());
-            (
-                Occur::Must,
-                Box::new(TermQuery::new(term, IndexRecordOption::Basic))
-                    as Box<dyn tantivy::query::Query>,
-            )
-        })
-        .collect();
-    Box::new(BooleanQuery::new(segment_queries))
-}
 
 /// Build a Boolean AND of TermQuery per hyphen segment of `value`.
 /// The TEXT field tokenizes at hyphens, so a UUID or session id must be
@@ -115,16 +84,11 @@ fn transcript_order(r: &SearchResult) -> (bool, &str, usize) {
     )
 }
 
-fn project_matches(project_path: &str, filter: &str) -> bool {
-    let filter_name = Path::new(filter)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(filter);
-    let result_name = Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(project_path);
-    result_name == filter_name
+/// Search hits that survived every filter, at most the requested limit.
+pub struct FilteredResults {
+    pub results: Vec<SearchResultWithContext>,
+    /// More hits survive the filters than the limit let through.
+    pub more: bool,
 }
 
 pub struct SearchEngine {
@@ -162,7 +126,59 @@ impl SearchEngine {
         )
     }
 
+    /// The top `query.limit` hits that pass the project and session filters.
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
+        let mut hits = self.fetch_hits(&query, query.limit)?;
+        hits.retain(|hit| self.passes_post_filters(hit, &query));
+        Ok(hits)
+    }
+
+    /// Up to `limit` hits that pass every filter, each with its context. The
+    /// fetch grows until `limit + 1` hits survive or the matches run out.
+    pub fn search_filtered(
+        &self,
+        query: &SearchQuery,
+        filter: &ResultFilter,
+        display: &DisplayOptions,
+        context_before: usize,
+        context_after: usize,
+    ) -> Result<FilteredResults> {
+        let limit = query.limit;
+        let mut fetch = limit.saturating_mul(3);
+        let survivors = loop {
+            let hits = self.fetch_hits(query, fetch)?;
+            let exhausted = hits.len() < fetch;
+            let mut sessions_seen = HashSet::new();
+            let survivors: Vec<SearchResult> = hits
+                .into_iter()
+                .filter(|hit| self.passes_post_filters(hit, query) && filter.keeps(hit, display))
+                .filter(|hit| {
+                    sessions_seen.insert(
+                        hit.session_id
+                            .clone(),
+                    )
+                })
+                .take(limit.saturating_add(1))
+                .collect();
+            if exhausted || survivors.len() > limit {
+                break survivors;
+            }
+            fetch = fetch.saturating_mul(2);
+        };
+        let more = survivors.len() > limit;
+        let results = self.attach_context(
+            survivors
+                .into_iter()
+                .take(limit)
+                .collect(),
+            context_before,
+            context_after,
+        )?;
+        Ok(FilteredResults { results, more })
+    }
+
+    /// The top `fetch` hits of the tantivy query, before any post-filter.
+    fn fetch_hits(&self, query: &SearchQuery, fetch: usize) -> Result<Vec<SearchResult>> {
         let searcher = self
             .reader
             .searcher();
@@ -186,12 +202,12 @@ impl SearchEngine {
         )];
 
         if let Some(ref project_filter) = query.project_filter {
-            let project_query = build_project_query(
+            let project_query = project_query(
                 self.fields
-                    .project_field,
+                    .cwd_field,
                 project_filter,
             );
-            final_query_parts.push((Occur::Must, project_query));
+            final_query_parts.push((Occur::Must, Box::new(project_query)));
         }
 
         if let Some(ref session_filter) = query.session_filter {
@@ -241,17 +257,14 @@ impl SearchEngine {
         // sort key, leaving a uniform doc address list for the one loop below.
         let doc_addresses: Vec<_> = match &query.sort_by {
             SortOrder::Relevance => searcher
-                .search(
-                    &final_query,
-                    &TopDocs::with_limit(query.limit).order_by_score(),
-                )?
+                .search(&final_query, &TopDocs::with_limit(fetch).order_by_score())?
                 .into_iter()
                 .map(|(_, addr)| addr)
                 .collect(),
             SortOrder::DateDesc => searcher
                 .search(
                     &final_query,
-                    &TopDocs::with_limit(query.limit)
+                    &TopDocs::with_limit(fetch)
                         .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Desc),
                 )?
                 .into_iter()
@@ -260,7 +273,7 @@ impl SearchEngine {
             SortOrder::DateAsc => searcher
                 .search(
                     &final_query,
-                    &TopDocs::with_limit(query.limit)
+                    &TopDocs::with_limit(fetch)
                         .order_by_fast_field::<tantivy::DateTime>("timestamp", Order::Asc),
                 )?
                 .into_iter()
@@ -268,16 +281,10 @@ impl SearchEngine {
                 .collect(),
         };
 
-        let mut results = Vec::new();
-        for doc_address in doc_addresses {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?)?;
-            if !self.passes_post_filters(&result, &query) {
-                continue;
-            }
-            results.push(result);
-        }
-
-        Ok(results)
+        doc_addresses
+            .into_iter()
+            .map(|addr| self.doc_to_result(&searcher.doc(addr)?))
+            .collect()
     }
 
     /// Session and project post-filters: precision checks that Tantivy's segment-based
@@ -298,21 +305,13 @@ impl SearchEngine {
         true
     }
 
-    /// Search with context - returns matches with surrounding messages (grep -C style)
-    pub fn search_with_context(
+    /// Each hit with the context window of its own transcript, in hit order.
+    fn attach_context(
         &self,
-        query: SearchQuery,
+        matches: Vec<SearchResult>,
         context_before: usize,
         context_after: usize,
     ) -> Result<Vec<SearchResultWithContext>> {
-        // Save sort order before consuming query
-        let sort_by = query
-            .sort_by
-            .clone();
-
-        // First, get the matching messages
-        let matches = self.search(query)?;
-
         let searcher = self
             .reader
             .searcher();
@@ -349,33 +348,6 @@ impl SearchEngine {
                 },
                 None => self_context_result(match_result, total_session_messages),
             });
-        }
-
-        // Apply sorting based on sort_by
-        match sort_by {
-            SortOrder::DateDesc => {
-                results_with_context.sort_by(|a, b| {
-                    b.matched_message
-                        .timestamp
-                        .cmp(
-                            &a.matched_message
-                                .timestamp,
-                        )
-                });
-            }
-            SortOrder::DateAsc => {
-                results_with_context.sort_by(|a, b| {
-                    a.matched_message
-                        .timestamp
-                        .cmp(
-                            &b.matched_message
-                                .timestamp,
-                        )
-                });
-            }
-            SortOrder::Relevance => {
-                // Already sorted by BM25 score from Tantivy
-            }
         }
 
         Ok(results_with_context)
@@ -508,69 +480,6 @@ pub fn open_search_engine(index_path: &Path) -> Result<(super::cache::CacheManag
     let cache = super::cache::CacheManager::new(index_path)?;
     let engine = SearchEngine::from_cache(index_path, &cache)?;
     Ok((cache, engine))
-}
-
-/// Compile exclusion patterns, refusing an invalid one rather than searching
-/// unfiltered.
-pub fn compile_exclude_patterns(patterns: &[String]) -> Result<Vec<regex::Regex>> {
-    patterns
-        .iter()
-        .map(|p| regex::Regex::new(p).with_context(|| format!("invalid exclude pattern '{p}'")))
-        .collect()
-}
-
-/// Post-search filtering: excluded projects, excluded path/project regexes,
-/// an optional session to drop (the one currently being written), and the
-/// result cap applied after dedup.
-#[derive(Debug, Default)]
-pub struct ResultFilter {
-    pub exclude_projects: Vec<String>,
-    pub exclude_regexes: Vec<regex::Regex>,
-    pub active_session: Option<String>,
-    pub limit: usize,
-}
-
-/// Drop excluded projects/patterns and the active session (if set), then
-/// deduplicate by session id and cap at `filter.limit`.
-pub fn apply_search_filters(
-    results: Vec<SearchResultWithContext>,
-    filter: &ResultFilter,
-) -> Vec<SearchResultWithContext> {
-    let mut session_seen = std::collections::HashSet::new();
-    results
-        .into_iter()
-        .filter(|r| {
-            let proj = &r
-                .matched_message
-                .project;
-            let path = &r
-                .matched_message
-                .project_path;
-            let session = &r
-                .matched_message
-                .session_id;
-
-            if let Some(ref active) = filter.active_session
-                && session == active
-            {
-                return false;
-            }
-
-            if filter
-                .exclude_projects
-                .contains(proj)
-            {
-                return false;
-            }
-            for regex in &filter.exclude_regexes {
-                if regex.is_match(proj) || regex.is_match(path) {
-                    return false;
-                }
-            }
-            session_seen.insert(session.clone())
-        })
-        .take(filter.limit)
-        .collect()
 }
 
 #[cfg(test)]
