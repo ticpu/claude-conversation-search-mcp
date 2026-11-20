@@ -1090,8 +1090,7 @@ fn code_like_queries_search_instead_of_failing() {
         ("http://example.org", &["s-url"], false),
         (r#""unbalanced quote"#, &["s-quote"], true),
         ("(unbalanced", &["s-quote"], true),
-        // tantivy's lenient parse drops an unclosed range with its word.
-        ("[unbalanced", &[], true),
+        ("[unbalanced", &["s-quote"], true),
     ];
     for (text, sessions, lenient) in cases {
         let found = engine
