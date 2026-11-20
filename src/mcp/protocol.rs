@@ -184,6 +184,7 @@ impl McpServer {
                 self.handle_initialize(request.params)
                     .await
             }
+            "ping" => Ok(serde_json::json!({})),
             "tools/list" => {
                 self.handle_list_tools()
                     .await
@@ -462,5 +463,16 @@ mod tests {
             hits[0].interaction_count, 1,
             "counts from the newer metadata"
         );
+    }
+
+    #[tokio::test]
+    async fn ping_answers_an_empty_result() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut server = McpServer::open(index_with(temp.path(), Vec::new())).unwrap();
+        let out = server
+            .process_line(r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
+            .await
+            .unwrap();
+        assert_eq!(out, [r#"{"jsonrpc":"2.0","id":7,"result":{}}"#]);
     }
 }
