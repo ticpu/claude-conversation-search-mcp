@@ -77,7 +77,7 @@ echo 'deb [signed-by=/usr/share/keyrings/ticpu-archive-keyring.gpg] https://apt.
 sudo apt update && sudo apt install claude-conversation-search
 ```
 
-The package ships the binary and bash/zsh/fish completions. Registering the MCP server with Claude Code stays a user action — run `claude-conversation-search install` afterwards.
+The package ships the binary, bash/zsh/fish completions and the [index service](#index-service) as a systemd user unit, which it does not enable. Registering the MCP server with Claude Code and enabling the service stay a user action — run `claude-conversation-search install` afterwards.
 
 ### One-Line Install
 
@@ -87,7 +87,7 @@ cd claude-conversation-search-mcp
 cargo run --release -- install
 ```
 
-The installer registers the binary with Claude Code MCP.
+The installer registers the binary with Claude Code MCP and, on Linux, enables and starts the [index service](#index-service); `install --standalone` registers only. `claude-conversation-search uninstall` undoes both.
 
 Verify: `claude mcp list` should show `claude-conversation-search`.
 
@@ -119,14 +119,16 @@ claude-conversation-search search "function" --limit 20
 
 ## CLI Reference
 
-### `claude-conversation-search index [status|rebuild|vacuum]`
-Manage the search index. `status` (the default, run with no subcommand) prints the lock state
-and, if an index exists, its path, file/entry counts, last-updated time and size:
+### `claude-conversation-search index [status|rebuild|vacuum|watch]`
+Manage the search index. `status` (the default, run with no subcommand) prints whether the index
+service runs and whether a writer holds the index, and, if an index exists, its path, file/entry
+counts, last-updated time and size:
 
 ```
 Index Status
 ============
-Lock Status: Available
+Index Service: running
+Writer Lock: held by another process
 Index Path: /home/user/.cache/claude-conversation-search
 Total Files: 15
 Total Entries: 2847
@@ -137,8 +139,35 @@ Index Size: 12.40 MB
 `rebuild` clears the cache and re-indexes every JSONL file under `~/.claude/projects/` from
 scratch, printing `Index rebuild completed successfully.` when done. `vacuum` is currently the
 same rebuild under a different name. Every other command (`search`, `topics`, `stats`, `session`,
-`summary`) auto-indexes first when `index.auto_index_on_startup` is true (the default), so running
-`index` explicitly is only needed to check status or force a rebuild.
+`summary`) auto-indexes first when `index.auto_index_on_startup` is true (the default) and the index
+service is not running, so running `index` explicitly is only needed to check status or force a
+rebuild. `rebuild`, `vacuum` and `cache clear` refuse to run while the service holds the index and
+name the command that stops it.
+
+`watch` (Linux) runs the index service in the foreground; see [Index service](#index-service).
+
+### Index service
+
+Tantivy only completes a segment merge while the writer that started it is still open. A writer
+opened per command closes right after its commit, so without a long-lived writer segments
+accumulate and every search gets slower and hungrier. On Linux, `install` therefore sets up
+`claude-conversation-search index watch` as the systemd user unit
+`claude-conversation-search-index`. It keeps the index open, follows `~/.claude/projects/` with
+inotify, and indexes changes in batches, two seconds after the last change or thirty seconds after
+the oldest pending one. While it runs, the CLI and the MCP server only read: they skip their own
+indexing, and the MCP server hides its `reindex` tool.
+
+```bash
+systemctl --user status claude-conversation-search-index
+journalctl --user -u claude-conversation-search-index
+systemctl --user stop claude-conversation-search-index   # before rebuild, vacuum or cache clear
+```
+
+With the package installed, `install` enables the unit shipped in `/usr/lib/systemd/user/`. Any
+other binary gets a unit naming its path, written to `~/.config/systemd/user/`. The service
+restarts on failure and after the binary is upgraded or replaced, and a removed binary leaves the
+unit inactive. Without the service (`install --standalone`, or not Linux), each command indexes
+inline as before and waits for its merges, printing a line first when there are many to do.
 
 ### `claude-conversation-search search <query>`
 Search through your indexed conversations.
@@ -208,7 +237,8 @@ with a non-zero status and an error on stderr if the session has no displayable 
 - `stats [--project <name>]` - Cache and conversation statistics
 - `summary <session_id>` - Summarize a session by piping it to `claude --print --model haiku` in a jailed empty directory
 - `cache info` / `cache clear` - Inspect or clear the on-disk index
-- `install [--project]` - Register this binary as an MCP server with Claude Code (user scope by default)
+- `install [--project] [--standalone]` - Register this binary as an MCP server with Claude Code (user scope by default) and, on Linux and unless `--standalone`, enable the index service
+- `uninstall [--project]` - Remove the registration and stop, disable and (if `install` wrote it) delete the index service unit; the index stays
 - `completions <shell>` - Generate shell completions
 
 ## MCP Integration (Claude Code)
@@ -246,7 +276,9 @@ This tool also provides an MCP (Model Context Protocol) server for seamless inte
 - **get_session_messages**: Paginated session content. Use `center_on` + `-B`/`-A` to jump to a specific message, or `meta_only: true` for the resume command and statistics alone.
 - **get_messages**: Fetch full content of specific messages by UUID (from 💬 in search results).
 - **summarize_session**: Returns Task tool instructions for haiku-powered summarization of large sessions (the agent then calls `get_session_messages` itself).
-- **reindex**: Update index when results seem incomplete.
+- **reindex**: Update index when results seem incomplete. Not listed while the index service runs.
+
+The server answers from the first request: indexing runs in the background, an existing index is searched meanwhile, and only on a first run do the search tools ask to retry while the index is built.
 - **respawn_server**: Reload MCP server after rebuilding.
 
 ## Examples
@@ -311,7 +343,7 @@ index:
   claude_dir: null               # Override ~/.claude (default: autodetects ~/.claude, then ~/.config/claude)
 
 locking:
-  enabled: true
+  enabled: true                  # `index watch` refuses to run with false
   lock_file: null                # Override the lock file path (default: <cache_dir>/index.lock)
 
 limits:
@@ -365,7 +397,7 @@ parsing. With `enable_tagging: false`, entries carry no technologies/languages/t
 
 **"Search is slow"**
 - Run `claude-conversation-search cache info` to check index size
-- Consider `claude-conversation-search index rebuild` to optimize
+- Run the [index service](#index-service), which keeps segments merged, or `claude-conversation-search index rebuild` once
 
 **"Permission denied"**
 - Ensure read access to Claude Code directories

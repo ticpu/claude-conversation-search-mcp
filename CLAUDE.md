@@ -36,7 +36,7 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 ## Project Architecture
 
 - `src/main.rs` - Entry point, clap subcommand routing
-- `src/cli/` - CLI commands: `args.rs` (clap types), `commands.rs` (dispatch, cache/install), `index.rs`, `search.rs`, `session.rs`, `stats.rs` (topics + stats), `summary.rs`
+- `src/cli/` - CLI commands: `args.rs` (clap types), `commands.rs` (dispatch, cache), `index.rs`, `search.rs`, `service.rs` (install/uninstall), `session.rs`, `stats.rs` (topics + stats), `summary.rs`, `watch.rs` (`index watch`)
 - `src/mcp/` - MCP server: `protocol.rs` (JSON-RPC loop), `server.rs`, `tools/mod.rs` (tool bodies), `tools/schema.rs` (tool list + JSON schemas)
 - `src/shared/` - Shared between CLI and MCP: `cache.rs`, `cache_stats.rs`, `config.rs`, `format.rs` (search result rendering), `indexer.rs`, `lock.rs`, `metadata.rs` (tag extraction), `models.rs`, `parsers/` (JSONL parsing), `path_utils.rs`, `search/` (query + engine), `session_view.rs`, `terminal.rs`
 - `src/shared/path_utils.rs` - All `.claude/` filesystem concerns: `projects_dir()`, `project_dir_name()`, `session_jsonl_path()`, `discover_jsonl_files()`, `find_session_jsonl()` (prefix match), `globally_active_session_jsonl()`. This is the single source of truth for Claude directory layout. Do not duplicate this logic elsewhere.
@@ -55,7 +55,7 @@ N. 📁 ~/path 🗒️ session_id (M msgs) 💬 msg_uuid
 
 **Derived package dependencies**: the `.deb`'s `Depends:` is read off the binaries in the build container, never written into `packaging/control`. The glibc floor moves with the base image, and a floor set too low installs cleanly then dies at exec on a symbol version. The `DT_NEEDED` soname list is derived the same way and mapped to packages; an unrecognized soname fails the build rather than shipping an under-declared package.
 
-**`Install` is a user action, not a packaging one**: the `Install` subcommand registers the MCP server into the invoking user's Claude Code config. It never runs from a maintainer script. The package ships the binary, shell completions and a copyright file, nothing else.
+**`Install` is a user action, not a packaging one**: the `Install` subcommand registers the MCP server into the invoking user's Claude Code config and enables the index service unit (`src/cli/service.rs`). It never runs from a maintainer script. The package ships the binary, shell completions, the service unit in `/usr/lib/systemd/user/` (not enabled) and a copyright file, nothing else.
 
 **File-granularity index replacement**: `update_incremental` deletes and re-adds documents per source JSONL file (via exact match on the raw `source_file` STRING field), not per session. Main session files and subagent transcripts (`<uuid>/subagents/**/agent-*.jsonl`) share the same `sessionId`; deleting by session wiped all sibling files' documents whenever any one file was re-indexed.
 
