@@ -66,7 +66,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
             case "$soname" in \
                 libc.so.6|libm.so.6|libdl.so.2|libpthread.so.0|librt.so.1) ;; \
                 ld-linux-x86-64.so.2|ld-linux-aarch64.so.1) ;; \
-                libgcc_s.so.1) printf ', libgcc-s1' >> "/out/depends-extra.$arch" ;; \
+                libgcc_s.so.1) printf ', libgcc-s1 | libgcc1' >> "/out/depends-extra.$arch" ;; \
                 *) echo "$binary needs $soname, which maps to no known package" >&2; exit 1 ;; \
             esac; \
         done; \
