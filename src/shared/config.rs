@@ -170,18 +170,6 @@ impl Config {
         Ok(claude_dir) // Return default even if it doesn't exist
     }
 
-    pub fn get_lock_file_path(&self) -> Result<PathBuf> {
-        if let Some(lock_file) = &self
-            .locking
-            .lock_file
-        {
-            return Ok(lock_file.clone());
-        }
-
-        let cache_dir = self.get_cache_dir()?;
-        Ok(cache_dir.join("index.lock"))
-    }
-
     pub fn get_writer_heap_size(&self) -> usize {
         (self
             .index

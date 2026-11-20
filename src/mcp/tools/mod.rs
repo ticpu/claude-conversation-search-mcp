@@ -554,7 +554,7 @@ Task(
             .unwrap_or(false);
         let all_files = discover_jsonl_files()?;
 
-        let _lock = match crate::shared::ExclusiveIndexAccess::acquire() {
+        let _lock = match crate::shared::ExclusiveIndexAccess::acquire(&self.cache_dir) {
             Ok(lock) => lock,
             Err(e) if crate::shared::is_index_busy(&e) => {
                 return tool_err("Another process is indexing, reindex was not run");

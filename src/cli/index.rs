@@ -9,9 +9,9 @@ pub fn show_status(index_path: &Path) -> Result<()> {
     println!("Index Status");
     println!("============");
 
-    if ExclusiveIndexAccess::is_available() {
+    if ExclusiveIndexAccess::is_available(index_path) {
         println!("Lock Status: Available");
-    } else if SharedIndexAccess::is_available() {
+    } else if SharedIndexAccess::is_available(index_path) {
         println!("Lock Status: Read-only access available");
     } else {
         println!("Lock Status: Locked by another process");
@@ -22,7 +22,7 @@ pub fn show_status(index_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let _lock = match SharedIndexAccess::acquire() {
+    let _lock = match SharedIndexAccess::acquire(index_path) {
         Ok(lock) => lock,
         Err(e) => {
             println!("Index: Unable to read ({})", e);
@@ -54,7 +54,7 @@ pub fn show_status(index_path: &Path) -> Result<()> {
 pub fn rebuild(index_path: &Path) -> Result<()> {
     info!("Starting index rebuild...");
 
-    let _lock = ExclusiveIndexAccess::acquire()?;
+    let _lock = ExclusiveIndexAccess::acquire(index_path)?;
 
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;

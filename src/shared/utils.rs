@@ -98,7 +98,7 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let _lock = match ExclusiveIndexAccess::acquire() {
+    let _lock = match ExclusiveIndexAccess::acquire(index_path) {
         Ok(lock) => lock,
         Err(e) if is_index_busy(&e) => {
             info!("Skipping auto-index: another process is currently indexing");
