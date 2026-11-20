@@ -153,15 +153,23 @@ impl SearchEngine {
         // Push date bounds into the query so BM25 scoring operates only over the
         // matching time window. Post-hoc filtering on a top-K relevance fetch silently
         // drops recent docs when high-frequency terms rank old docs above the limit.
+        let date_term = |dt: &chrono::DateTime<chrono::Utc>| {
+            Term::from_field_date(
+                self.fields
+                    .timestamp_field,
+                tantivy::DateTime::from_timestamp_millis(dt.timestamp_millis()),
+            )
+        };
         let lower = query
             .after
-            .map(|dt| tantivy::DateTime::from_timestamp_millis(dt.timestamp_millis()));
+            .as_ref()
+            .map(date_term);
         let upper = query
             .before
-            .map(|dt| tantivy::DateTime::from_timestamp_millis(dt.timestamp_millis()));
+            .as_ref()
+            .map(date_term);
         if lower.is_some() || upper.is_some() {
-            let date_query = RangeQuery::new_date_bounds(
-                "timestamp".to_string(),
+            let date_query = RangeQuery::new(
                 lower.map_or(Bound::Unbounded, Bound::Included),
                 upper.map_or(Bound::Unbounded, Bound::Included),
             );
@@ -180,7 +188,10 @@ impl SearchEngine {
         // sort key, leaving a uniform doc address list for the one loop below.
         let doc_addresses: Vec<_> = match &query.sort_by {
             SortOrder::Relevance => searcher
-                .search(&final_query, &TopDocs::with_limit(query.limit))?
+                .search(
+                    &final_query,
+                    &TopDocs::with_limit(query.limit).order_by_score(),
+                )?
                 .into_iter()
                 .map(|(_, addr)| addr)
                 .collect(),
@@ -362,7 +373,10 @@ impl SearchEngine {
             session_id,
         );
 
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
+        let top_docs = searcher.search(
+            &query,
+            &TopDocs::with_limit(MAX_SESSION_MESSAGES).order_by_score(),
+        )?;
 
         let mut results = Vec::new();
         for (_, doc_address) in top_docs {
@@ -397,7 +411,7 @@ impl SearchEngine {
                 uuid,
             );
 
-            let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+            let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
 
             for (_, doc_address) in top_docs {
                 let result = self.doc_to_result(&searcher.doc(doc_address)?)?;

@@ -409,6 +409,64 @@ fn test_date_filter_pushed_into_query() {
 }
 
 #[test]
+fn test_before_filter_excludes_later_docs() {
+    let temp_dir = TempDir::new().unwrap();
+    let index_path = temp_dir.path();
+
+    let session_id = "ffffffff-1111-2222-3333-444444444444";
+    let old_ts = "2025-01-01T00:00:00Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+    let new_ts = "2026-07-01T12:00:00Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+
+    let new_content = "common ".repeat(20);
+    let entries = vec![
+        EntryBuilder::new("old-uuid", session_id)
+            .content("common old doc")
+            .timestamp(old_ts)
+            .build(),
+        EntryBuilder::new("new-uuid", session_id)
+            .content(new_content.trim())
+            .sequence_num(1)
+            .timestamp(new_ts)
+            .build(),
+    ];
+
+    let mut indexer = SearchIndexer::new(index_path).unwrap();
+    indexer
+        .index_conversations(entries, "test-source.jsonl")
+        .unwrap();
+    indexer
+        .commit()
+        .unwrap();
+    drop(indexer);
+
+    let engine = SearchEngine::new(index_path, HashMap::new()).unwrap();
+    let before = "2026-06-01T00:00:00Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+    let results = engine
+        .search(SearchQuery {
+            text: "common".to_string(),
+            limit: 1,
+            before: Some(before),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let uuids: Vec<_> = results
+        .iter()
+        .map(|r| {
+            r.uuid
+                .as_str()
+        })
+        .collect();
+    assert_eq!(uuids, ["old-uuid"]);
+}
+
+#[test]
 fn test_date_sort_in_collector() {
     // Without collector-level sort, DateDesc limit=1 could return the high-BM25 old doc.
     let temp_dir = TempDir::new().unwrap();
