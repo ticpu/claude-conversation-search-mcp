@@ -323,10 +323,34 @@ impl CacheManager {
             .session_counts
     }
 
+    /// Replace the metadata file by rename, so a reader or a kill mid-write never
+    /// sees a truncated file. The fixed temp name is safe: only the lock holder saves.
     fn save_metadata(&self) -> Result<()> {
-        fs::create_dir_all(&self.cache_dir)?;
-        let content = serde_json::to_string_pretty(&self.metadata)?;
-        fs::write(&self.metadata_file, content)?;
+        fs::create_dir_all(&self.cache_dir).with_context(|| {
+            format!(
+                "creating {}",
+                self.cache_dir
+                    .display()
+            )
+        })?;
+        let content = serde_json::to_vec_pretty(&self.metadata)?;
+        let tmp = self
+            .metadata_file
+            .with_extension("json.tmp");
+        let write = || -> std::io::Result<()> {
+            let mut file = fs::File::create(&tmp)?;
+            std::io::Write::write_all(&mut file, &content)?;
+            file.sync_all()
+        };
+        write().with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, &self.metadata_file).with_context(|| {
+            format!(
+                "renaming {} to {}",
+                tmp.display(),
+                self.metadata_file
+                    .display()
+            )
+        })?;
         Ok(())
     }
 }
@@ -717,6 +741,61 @@ mod tests {
             Some(&4),
             "a subagent file contributes no counts yet must not block the fold"
         );
+    }
+
+    #[test]
+    fn metadata_readers_never_see_a_partial_save() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp
+            .path()
+            .to_path_buf();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        for i in 0..20_000 {
+            cache
+                .metadata
+                .indexed_files
+                .insert(
+                    PathBuf::from(format!("/projects/p/{i:08}.jsonl")),
+                    FileMetadata {
+                        size: i,
+                        modified: Utc::now(),
+                        indexed_at: Utc::now(),
+                        entry_count: 1,
+                        conversation_counts: HashMap::new(),
+                        counts_backfilled: true,
+                    },
+                );
+        }
+        cache
+            .save_metadata()
+            .unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                for _ in 0..30 {
+                    cache
+                        .save_metadata()
+                        .unwrap();
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        let mut reads = 0;
+        while !done.load(Ordering::SeqCst) {
+            if let Err(e) = CacheManager::new(&cache_dir) {
+                panic!("read {reads} saw a partial metadata file: {e:#}");
+            }
+            reads += 1;
+        }
+        writer
+            .join()
+            .unwrap();
+        assert!(reads > 0);
     }
 
     #[test]
